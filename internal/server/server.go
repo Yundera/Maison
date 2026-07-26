@@ -68,6 +68,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// Rebroadcast the app list whenever a lifecycle op enters/leaves its busy
 		// state, so tiles show/hide the "…" overlay live (docs/app-model.md).
 		s.apps.OnChange = s.broadcastApps
+		// Uninstall progress advances far more often than the busy set changes
+		// (a zipped archive reports every chunk), so it gets the same throttle
+		// the installer's does.
+		s.apps.OnProgress = throttle(300*time.Millisecond, s.broadcastApps)
 		s.hub.AppsSnapshot = s.appsSnapshot
 		s.watchDocker()
 	}
@@ -111,6 +115,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/apps/{id}/reachable", s.handleReachable)
 		r.Get("/apps/{id}/logs", s.handleAppLogs)
 		r.Get("/apps/{id}/stats", s.handleAppStats)
+		r.Post("/apps/{id}/dismiss", s.handleDismissApp)
 		r.Post("/apps/{id}/{action}", s.handleAppAction)
 		r.Delete("/apps/{id}", s.handleUninstallApp)
 
@@ -167,16 +172,16 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.collector.Sample())
 }
 
-// listApps returns the reconciled app list with any in-flight installs overlaid
-// so their tiles carry live progress. Shared by the REST endpoint and the live
-// "apps" channel so both reflect installs identically (a page reload mid-install
-// shows progress without waiting for the next broadcast).
+// listApps returns the reconciled app list with any in-flight installs and
+// uninstalls overlaid so their tiles carry live progress. Shared by the REST
+// endpoint and the live "apps" channel so both reflect them identically (a page
+// reload mid-install shows progress without waiting for a broadcast).
 func (s *Server) listApps(ctx context.Context) []apps.App {
 	list, _ := s.apps.List(ctx)
 	if s.installer != nil {
 		list = overlayInstalls(list, s.installer.Installs())
 	}
-	return list
+	return overlayUninstalls(list, s.apps.Uninstalls())
 }
 
 // appsSnapshot returns the current app list for the live "apps" channel.
@@ -227,6 +232,32 @@ func overlayInstalls(list []apps.App, installs []installer.InstallState) []apps.
 		})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list
+}
+
+// overlayUninstalls stamps uninstall progress onto matching app tiles. Unlike
+// installs there is never a placeholder to append: the app's folder is what
+// makes the tile, and it only disappears at the very last step — so an uninstall
+// that is still running (or that failed) always has a tile to land on.
+func overlayUninstalls(list []apps.App, uninstalls []apps.UninstallState) []apps.App {
+	if len(uninstalls) == 0 {
+		return list
+	}
+	byID := make(map[string]int, len(list))
+	for i, a := range list {
+		byID[a.ID] = i
+	}
+	for _, st := range uninstalls {
+		i, ok := byID[st.ID]
+		if !ok {
+			continue
+		}
+		list[i].Uninstalling = st.Phase != apps.PhaseError
+		list[i].Remove = st.Remove
+		list[i].Archive = st.Archive
+		list[i].Phase = st.Phase
+		list[i].UninstallError = st.Error
+	}
 	return list
 }
 

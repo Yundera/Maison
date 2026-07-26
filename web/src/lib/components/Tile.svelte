@@ -1,9 +1,10 @@
 <script lang="ts">
   import { get } from 'svelte/store'
   import { clickOutside } from '../actions'
-  import { appAction, openApp, appUrl, type App } from '../stores/apps'
+  import { appAction, appProgress, dismissAppError, openApp, appUrl, type App } from '../stores/apps'
   import { removeLink, type Link } from '../stores/links'
-  import { storeOpen, settingsApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
+  import { settingsApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
+  import { openStore } from '../route'
   import { t } from '../i18n'
 
   export type TileData =
@@ -26,14 +27,17 @@
   // A lifecycle operation is running on this stack: the tile is greyed with a
   // "…" overlay and its burger menu is suppressed until the op settles.
   const busy = $derived(tile.kind === 'app' && tile.app.busy === true)
-  // A store install is in flight: the tile is greyed and shows two progress bars
-  // — download (image pull) then start (Docker bring-up). Mirrors the store card.
-  const installing = $derived(tile.kind === 'app' && tile.app.installing === true)
-  const installError = $derived(tile.kind === 'app' ? (tile.app.install_error ?? '') : '')
-  const download = $derived(tile.kind === 'app' ? (tile.app.download ?? 0) : 0)
-  const startPct = $derived(tile.kind === 'app' ? (tile.app.start ?? 0) : 0)
-  // While installing the tile is not clickable (nothing to open yet).
-  const locked = $derived(busy || installing)
+  // An install or an uninstall is in flight: the tile is greyed and shows ONE
+  // progress bar for the step currently running, coloured by which operation it
+  // is (blue download, green start, red uninstall). Same source as the store's
+  // install pill, so the two always agree.
+  const progress = $derived(tile.kind === 'app' ? appProgress(tile.app) : null)
+  const progressing = $derived(progress !== null)
+  const failure = $derived(
+    tile.kind === 'app' ? (tile.app.install_error ?? '') || (tile.app.uninstall_error ?? '') : '',
+  )
+  // While installing or uninstalling the tile is not clickable.
+  const locked = $derived(busy || progressing)
   // An app is openable only when we can build a click URL for it. Apps without a
   // reachable address (no gateway route and no published port) can't be opened —
   // the tile is greyed and its click is disabled. Stopped apps that DO have a URL
@@ -44,7 +48,10 @@
     // A drag that just dropped fires a trailing click on this tile; swallow it so
     // reordering never opens the app. Genuine clicks never set this flag.
     if (get(tileDragging)) return
-    if (tile.kind === 'system') storeOpen.set(true)
+    // Go through the router, not storeOpen: opening the store must push a /store
+    // history entry, otherwise Back from an app's detail page lands on whatever
+    // was below it (the dashboard) instead of the catalog.
+    if (tile.kind === 'system') openStore()
     else if (tile.kind === 'app') {
       if (!openable) return
       openApp(tile.app)
@@ -82,12 +89,20 @@
     </button>
   {/if}
 
-  {#if busy && !installing}
+  {#if busy && !progressing}
     <span class="spinner" title="Working…">…</span>
   {/if}
 
-  {#if installError}
-    <span class="failed" title={installError}>!</span>
+  {#if failure}
+    <button
+      class="failed"
+      title={`${failure}\n\n${$t('dismiss')}`}
+      aria-label={$t('dismiss')}
+      onclick={(e) => {
+        e.stopPropagation()
+        if (tile.kind === 'app') dismissAppError(tile.app.id)
+      }}>!</button
+    >
   {/if}
 
   {#if menuOpen && !locked}
@@ -137,18 +152,16 @@
     <span class="title one-line">{name}</span>
   </button>
 
-  {#if installing}
+  {#if progress}
     <div class="progress">
-      <span class="plabel one-line">
-        {download < 100 ? $t('downloading') : $t('starting_up')}
-        {Math.round(download < 100 ? download : startPct)}%
-      </span>
-      <div class="pbar"><span class="pfill dl" style:width={`${download}%`}></span></div>
-      <div class="pbar"><span class="pfill st" style:width={`${startPct}%`}></span></div>
+      <span class="plabel one-line">{$t(progress.label)} {Math.round(progress.pct)}%</span>
+      <div class="pbar">
+        <span class="pfill {progress.kind}" style:width={`${progress.pct}%`}></span>
+      </div>
     </div>
   {/if}
 
-  {#if tile.kind === 'app' && !tile.app.managed && !installing}
+  {#if tile.kind === 'app' && !tile.app.managed && !progressing}
     <span class="badge">{$t('unmanaged')}</span>
   {/if}
   {#if tile.kind === 'app' && tile.app.health}
@@ -238,7 +251,8 @@
   .busy .body {
     cursor: progress;
   }
-  /* Install progress overlay — two stacked bars (download, then start). */
+  /* Progress overlay — one bar for the step running now; its colour says which
+     operation that is (see appProgress in lib/stores/apps.ts). */
   .progress {
     position: absolute;
     left: 0.6rem;
@@ -270,11 +284,14 @@
     border-radius: 3px;
     transition: width 0.3s ease;
   }
-  .pfill.dl {
-    background: var(--casablue);
+  .pfill.download {
+    background: var(--progress-download);
   }
-  .pfill.st {
-    background: hsl(118, 60%, 48%);
+  .pfill.install {
+    background: var(--progress-install);
+  }
+  .pfill.uninstall {
+    background: var(--progress-uninstall);
   }
   .failed {
     position: absolute;
@@ -285,11 +302,14 @@
     height: 1.3rem;
     display: grid;
     place-items: center;
+    padding: 0;
+    border: none;
     border-radius: 50%;
     background: var(--red);
     color: #fff;
     font-size: 0.85rem;
     font-weight: 700;
+    cursor: pointer;
   }
   .unavailable .icon img,
   .unavailable .icon {

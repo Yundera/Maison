@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fetchStoreBackups, installApp, type Backup } from '../../stores/store'
-  import { apps } from '../../stores/apps'
+  import { apps, appProgress } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
   import { t } from '../../i18n'
 
@@ -27,12 +27,16 @@
 
   const projectId = $derived(sanitizeProject(id))
   const entry = $derived($apps.find((a) => a.id === projectId))
-  const installing = $derived(starting || entry?.installing === true)
-  const download = $derived(entry?.download ?? 0)
-  const start = $derived(entry?.start ?? 0)
-  const pct = $derived(Math.round(download < 100 ? download : start))
+  // The one bar, from the same helper the dashboard tile uses: the step running
+  // now, in its operation's colour. It also covers an uninstall started from the
+  // dashboard — the pill then shows that instead of offering to install.
+  const progress = $derived(appProgress(entry))
+  const busy = $derived(starting || progress !== null)
+  const pct = $derived(Math.round(progress?.pct ?? 0))
   const failed = $derived(entry?.install_error ?? '')
-  const isInstalled = $derived(installed || (!!entry && !entry.installing && !entry.install_error))
+  const isInstalled = $derived(
+    installed || (!!entry && !entry.installing && !entry.uninstalling && !entry.install_error),
+  )
 
   // Drop the optimistic flag once the channel confirms the install is tracked.
   $effect(() => {
@@ -44,7 +48,7 @@
    *  old data instead of a clean slate. */
   async function onclick(e: MouseEvent) {
     e.stopPropagation()
-    if (isInstalled || installing || loading) return
+    if (isInstalled || busy || loading) return
     loading = true
     error = ''
     try {
@@ -104,9 +108,15 @@
   }}
 />
 
-{#if installing}
-  <span class="pill installing" class:normal={size === 'normal'} title="{download < 100 ? $t('downloading') : $t('starting_up')} {pct}%">
-    <span class="track"><span class="fill" style:width={`${pct}%`}></span></span>
+{#if busy}
+  <span
+    class="pill installing"
+    class:normal={size === 'normal'}
+    title="{progress ? $t(progress.label) : $t('installing')} {pct}%"
+  >
+    <span class="track">
+      <span class="fill {progress?.kind ?? 'download'}" style:width={`${pct}%`}></span>
+    </span>
     <span class="pct">{pct}%</span>
   </span>
 {:else}
@@ -267,8 +277,16 @@
   .fill {
     display: block;
     height: 100%;
-    background: var(--casablue);
     transition: width 0.3s ease;
+  }
+  .fill.download {
+    background: var(--progress-download);
+  }
+  .fill.install {
+    background: var(--progress-install);
+  }
+  .fill.uninstall {
+    background: var(--progress-uninstall);
   }
   .pct {
     font-variant-numeric: tabular-nums;

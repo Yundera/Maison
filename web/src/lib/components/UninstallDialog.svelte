@@ -13,6 +13,11 @@
     if (!busy) uninstallTarget.set(null)
   }
 
+  // The uninstall itself is NOT awaited here: the request only has to be
+  // accepted, and from then on the app's tile carries the progress (two red
+  // bars) and any failure. So the dialog closes right away instead of holding
+  // the dashboard hostage through a multi-minute zip. `busy` covers just that
+  // hand-off, which is where an up-front refusal (a protected app) surfaces.
   async function confirm() {
     busy = true
     error = ''
@@ -32,6 +37,7 @@
     <p class="body">
       This stops and removes the app's containers. Your data is never deleted — the app's
       folder is renamed to <code>{target.id}.&lt;date&gt;.archive</code> in <code>AppData/</code>.
+      It runs in the background: the tile shows the progress.
     </p>
 
     <label class="check">

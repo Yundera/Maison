@@ -25,17 +25,27 @@ export interface App {
   /** True while a lifecycle op (start/stop/restart/uninstall) is in flight:
    *  the tile shows a "…" overlay and hides its burger menu. */
   busy?: boolean
-  /** True while a store install is in flight for this app: the tile shows two
-   *  progress bars (download + start) instead of being clickable. */
+  /** True while a store install is in flight for this app: the tile shows a
+   *  progress bar (download, then start) instead of being clickable. */
   installing?: boolean
   /** Image-pull progress, 0-100 (only meaningful while installing). */
   download?: number
   /** Stack-start progress, 0-100, driven by Docker (only while installing). */
   start?: number
-  /** Current install phase: pull | prepare | start | done | error. */
+  /** Current install/uninstall phase: pull | prepare | start | remove |
+   *  archive | done | error. */
   phase?: string
   /** Set when an install failed; the tile shows the error until retried. */
   install_error?: string
+  /** True while an uninstall is in flight for this app: the tile shows the same
+   *  progress bar as an install, in red. */
+  uninstalling?: boolean
+  /** Container-removal progress, 0-100 (only while uninstalling). */
+  remove?: number
+  /** Folder-archiving progress, 0-100 (only while uninstalling). */
+  archive?: number
+  /** Set when an uninstall failed; the tile shows the error until dismissed. */
+  uninstall_error?: string
 }
 
 // Last-known app list, cached in localStorage so a page reload paints the grid
@@ -68,6 +78,10 @@ function persistApps(list: App[]): void {
       delete c.start
       delete c.phase
       delete c.install_error
+      delete c.uninstalling
+      delete c.remove
+      delete c.archive
+      delete c.uninstall_error
       return c
     })
     localStorage.setItem(CACHE_KEY, JSON.stringify(clean))
@@ -116,15 +130,67 @@ export async function appAction(id: string, action: 'start' | 'stop' | 'restart'
   await loadApps()
 }
 
-/** Uninstall an app. Its folder is always preserved — renamed to
+/** Start uninstalling an app. Its folder is always preserved — renamed to
  *  `<app>.<date>.archive` (never deleted). When zip is true it is compressed to
- *  a `.zip` archive instead of a plain rename. Returns the archive's name. */
-export async function uninstallApp(id: string, zip = false): Promise<string> {
-  const res = await api.del<{ status: string; archive?: string }>(
-    `/api/apps/${encodeURIComponent(id)}?zip=${zip}`,
-  )
+ *  a `.zip` archive instead of a plain rename.
+ *
+ *  The request returns as soon as the uninstall is *accepted*, not when it is
+ *  done: from there the tile carries its progress (a red bar, remove then
+ *  archive) over the live app list, so nothing has to wait on a zip that can run
+ *  for minutes. A rejection (a protected app) still surfaces here, as a throw. */
+export async function uninstallApp(id: string, zip = false): Promise<void> {
+  await api.del<{ status: string }>(`/api/apps/${encodeURIComponent(id)}?zip=${zip}`)
   await loadApps()
-  return res?.archive ?? ''
+}
+
+/** Dismiss a failed install/uninstall overlay, clearing the tile's red "!". */
+export async function dismissAppError(id: string): Promise<void> {
+  await api.post(`/api/apps/${encodeURIComponent(id)}/dismiss`)
+  await loadApps()
+}
+
+/** Which operation a progress bar is showing. The kind picks the bar's colour
+ *  (`--progress-*` in styles/tokens.css): downloading is blue, starting the
+ *  stack is green, uninstalling is red. */
+export type ProgressKind = 'download' | 'install' | 'uninstall'
+
+export interface AppProgress {
+  kind: ProgressKind
+  /** 0-100 for the step in progress — not an average across the operation. */
+  pct: number
+  /** i18n key for the step's label ("Downloading…", "Archiving…", …). */
+  label: string
+}
+
+/** The single progress bar an app shows, or null when nothing is in flight.
+ *
+ *  The backend measures each operation on two tracks (install: pull then
+ *  bring-up; uninstall: containers then folder), but the UI shows **one bar at a
+ *  time**: the step currently running, in that operation's colour. Both the
+ *  dashboard tile and the store's install pill read this, so they can never
+ *  disagree about what an app is doing.
+ *
+ *  A failed operation is not progress — it clears the bar and leaves the error
+ *  (install_error / uninstall_error) to be shown instead. */
+export function appProgress(a: App | undefined): AppProgress | null {
+  if (!a) return null
+  if (a.uninstalling) {
+    const removing = (a.remove ?? 0) < 100
+    return {
+      kind: 'uninstall',
+      pct: removing ? (a.remove ?? 0) : (a.archive ?? 0),
+      label: removing ? 'removing' : 'archiving',
+    }
+  }
+  if (a.installing) {
+    const downloading = (a.download ?? 0) < 100
+    return {
+      kind: downloading ? 'download' : 'install',
+      pct: downloading ? (a.download ?? 0) : (a.start ?? 0),
+      label: downloading ? 'downloading' : 'starting_up',
+    }
+  }
+  return null
 }
 
 /** Effective opening-URL (x-compose-app webui-*) config for an app, plus the

@@ -6,8 +6,6 @@ package apps
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 	"net/url"
 	"os"
@@ -16,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/yundera/casadash/internal/composefile"
 	"github.com/yundera/casadash/internal/config"
@@ -64,13 +61,21 @@ type App struct {
 	Busy bool `json:"busy,omitempty"`
 	// Install progress, overlaid by the server from the installer's tracker while
 	// a store install is in flight (see installer.InstallState). The tile renders
-	// two bars — Download (image pull) and Start (Docker bring-up) — while
-	// Installing is true. These are never set by List() itself.
+	// tracks in turn on one bar — Download (image pull) then Start (Docker
+	// bring-up) — while Installing is true. Never set by List() itself.
 	Installing   bool    `json:"installing,omitempty"`
 	Download     float64 `json:"download,omitempty"`
 	Start        float64 `json:"start,omitempty"`
 	Phase        string  `json:"phase,omitempty"`
 	InstallError string  `json:"install_error,omitempty"`
+	// Uninstall progress, the mirror image of the install fields above and
+	// overlaid the same way (see UninstallState). The tile renders the same one
+	// bar, in red — Remove (containers) then Archive (folder) — while
+	// Uninstalling is true. Also never set by List() itself.
+	Uninstalling   bool    `json:"uninstalling,omitempty"`
+	Remove         float64 `json:"remove,omitempty"`
+	Archive        float64 `json:"archive,omitempty"`
+	UninstallError string  `json:"uninstall_error,omitempty"`
 }
 
 // Health verdicts, aggregated across a project's containers.
@@ -90,13 +95,19 @@ type Registry struct {
 	// live). Optional.
 	OnChange func()
 
-	mu   sync.Mutex
-	busy map[string]int // app id -> in-flight operation count
+	// OnProgress, if set, is invoked as a tracked uninstall's progress advances.
+	// It is the fine-grained twin of OnChange — events are frequent (per zipped
+	// chunk), so the server is expected to throttle it. Optional.
+	OnProgress func()
+
+	mu         sync.Mutex
+	busy       map[string]int             // app id -> in-flight operation count
+	uninstalls map[string]*UninstallState // app id -> live uninstall progress
 }
 
 // New creates a Registry.
 func New(cfg config.Config, dx *dockerx.Client) *Registry {
-	return &Registry{cfg: cfg, dx: dx, busy: map[string]int{}}
+	return &Registry{cfg: cfg, dx: dx, busy: map[string]int{}, uninstalls: map[string]*UninstallState{}}
 }
 
 // enter/leave bracket an in-flight lifecycle operation on id. A counter (not a
@@ -558,10 +569,6 @@ func (r *Registry) Restart(ctx context.Context, id string) error {
 	return r.dx.RestartProject(ctx, id)
 }
 
-// ErrProtected is returned when an uninstall targets an app the operator listed
-// in PROTECTED_APPS (see config.Config.IsProtected).
-var ErrProtected = errors.New("this app is protected and cannot be uninstalled")
-
 // Protected reports whether the app is exempt from uninstall, resolving its store
 // id from its compose metadata (falling back to the project name).
 func (r *Registry) Protected(id string) bool {
@@ -574,56 +581,4 @@ func (r *Registry) Protected(id string) bool {
 		storeID = ca.ID
 	}
 	return r.cfg.IsProtected(storeID, id)
-}
-
-// Uninstall stops+removes the project's containers and archives its app
-// directory. CasaDash never deletes user data: the whole ${DATA_ROOT}/AppData/<id>
-// folder (compose + override + .env + data) is renamed to
-// <id>.<date>.archive, or, when zip is set, compressed to
-// <id>.<date>.archive.zip and the folder removed. Either way the dotted name
-// hides it from the dashboard. Returns the archive's base name (empty when there
-// was nothing on disk to archive, e.g. an unmanaged stack).
-func (r *Registry) Uninstall(ctx context.Context, id string, zip bool) (string, error) {
-	if r.Protected(id) {
-		return "", ErrProtected
-	}
-	r.enter(id)
-	defer r.leave(id)
-
-	_ = r.dx.RemoveProject(ctx, id)
-
-	appDir := filepath.Join(r.cfg.AppsDir(), id)
-	if _, err := os.Stat(appDir); err != nil {
-		return "", nil // nothing on disk (unmanaged) — containers already removed
-	}
-
-	stamp := time.Now().Format("2006-01-02")
-	base := uniqueName(r.cfg.AppsDir(), id+"."+stamp+".archive")
-
-	if zip {
-		zipName := base + ".zip"
-		zipPath := filepath.Join(r.cfg.AppsDir(), zipName)
-		if err := archiveDir(appDir, zipPath); err != nil {
-			return "", fmt.Errorf("archive app: %w", err)
-		}
-		if err := os.RemoveAll(appDir); err != nil {
-			return zipName, fmt.Errorf("remove app dir: %w", err)
-		}
-		return zipName, nil
-	}
-
-	if err := os.Rename(appDir, filepath.Join(r.cfg.AppsDir(), base)); err != nil {
-		return "", fmt.Errorf("archive app: %w", err)
-	}
-	return base, nil
-}
-
-// uniqueName returns name, or name with a "-HHMMSS" suffix inserted before any
-// extension, if a same-day archive already exists in dir — so uninstalling the
-// same app twice in one day never clobbers the earlier archive.
-func uniqueName(dir, name string) string {
-	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-		return name
-	}
-	return name + "-" + time.Now().Format("150405")
 }

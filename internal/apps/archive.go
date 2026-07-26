@@ -171,7 +171,17 @@ func copyZipEntry(f *zip.File, path string) error {
 
 // archiveDir zips srcDir into dstZip, preserving the leaf directory name as the
 // top-level folder inside the archive (e.g. filebrowser/db/database.db).
-func archiveDir(srcDir, dstZip string) error {
+//
+// onProgress, when non-nil, is called as bytes are read with (copied, total) —
+// zipping an app's data folder is the one part of an uninstall that can run for
+// minutes, so it drives the uninstall's Archive bar. The total is measured up
+// front with a size-only walk (a stat per file, no reads).
+func archiveDir(srcDir, dstZip string, onProgress func(copied, total int64)) error {
+	if onProgress == nil {
+		onProgress = func(int64, int64) {}
+	}
+	total := dirSize(srcDir)
+
 	zf, err := os.Create(dstZip)
 	if err != nil {
 		return err
@@ -180,6 +190,9 @@ func archiveDir(srcDir, dstZip string) error {
 
 	zw := zip.NewWriter(zf)
 	defer zw.Close()
+
+	var copied int64
+	onProgress(0, total)
 
 	base := filepath.Dir(srcDir)
 	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
@@ -202,7 +215,42 @@ func archiveDir(srcDir, dstZip string) error {
 			return err
 		}
 		defer f.Close()
-		_, err = io.Copy(w, f)
+		_, err = io.Copy(w, &progressReader{r: f, onRead: func(n int64) {
+			copied += n
+			onProgress(copied, total)
+		}})
 		return err
 	})
+}
+
+// progressReader reports every chunk read, so a copy can be metered without
+// buffering it.
+type progressReader struct {
+	r      io.Reader
+	onRead func(n int64)
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.onRead(int64(n))
+	}
+	return n, err
+}
+
+// dirSize sums the size of every regular file under dir. It is a stat-only walk
+// (no reads), and returns 0 for an unreadable tree — the caller then just shows
+// an indeterminate archive step rather than failing.
+func dirSize(dir string) int64 {
+	var total int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // best-effort measurement
+		}
+		if fi, err := d.Info(); err == nil {
+			total += fi.Size()
+		}
+		return nil
+	})
+	return total
 }

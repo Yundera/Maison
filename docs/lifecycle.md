@@ -94,9 +94,12 @@ without special-casing: the strict base is meant to be replaceable, an existing
 
 ### Progress
 
-The install emits `Event`s on two independent tracks, which the tile renders as two
-bars: **Download** (image pull, real per-layer progress) and **Start** (bringing the
-stack up, driven by Docker's live running/healthy fractions rather than a guess).
+The install emits `Event`s on two independent tracks, which the UI shows one at a
+time on a **single bar**: **Download** (image pull, real per-layer progress, blue)
+and then **Start** (bringing the stack up, driven by Docker's live running/healthy
+fractions rather than a guess, green). The bar's colour is what says which step is
+running — see `appProgress()` in `web/src/lib/stores/apps.ts`, the one place that
+turns these fields into a bar, for both the tile and the store's install pill.
 Progress rides the live app list, so the tile keeps advancing after the store panel
 is closed. A failed install **stays visible** on the tile until it is retried or
 dismissed.
@@ -162,6 +165,32 @@ has no `pre_uninstall` / `post_uninstall`, on purpose: a hook that fires while t
 app is being taken away is a hook that can fail and leave the operator unable to
 uninstall. The archive is the safety net instead. See `app-model.md` for the archive
 format and the restore path.
+
+```
+1. remove containers   (Remove progress bar — one tick per container, because a
+                        single stop can block for the whole stop-grace period)
+2. archive the folder  (Archive progress bar — instant for a rename, metered by
+                        bytes for a zip)
+```
+
+### Detached, like an install
+
+`DELETE /api/apps/{id}` **starts** the uninstall and returns `202 Accepted`; only an
+up-front refusal (a protected app → `403`) is answered synchronously. The work runs
+on a background context, so it survives the request, and the confirmation dialog
+closes at once instead of blocking the dashboard on a zip that can take minutes.
+
+Progress rides the live app list exactly the way an install's does — the tracker
+lives in `apps.Registry` (`StartUninstall` / `Uninstalls` / `ClearUninstall`), and
+`server.overlayUninstalls` stamps it onto the app's tile. The tile renders the *same
+single bar as an install, in red*: **Remove**, then **Archive**. There is never a
+placeholder tile to append (unlike an install): the folder is what makes the tile,
+and it only disappears at the last step.
+
+A failed uninstall **stays visible** as a red `!` on the tile, with the error as its
+tooltip, until it is retried or dismissed (`POST /api/apps/{id}/dismiss`, which also
+clears a failed install). Every failure path leaves the app folder in place, so
+there is always a tile for the error to land on.
 
 ---
 

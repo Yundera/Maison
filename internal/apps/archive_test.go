@@ -108,7 +108,7 @@ func TestRestoreBackupZipRoundTripKeepsTheZip(t *testing.T) {
 
 	// Archive exactly the way Uninstall(zip=true) does, then drop the folder.
 	zipName := "jellyfin.2026-07-10.archive.zip"
-	if err := archiveDir(src, filepath.Join(appsDir, zipName)); err != nil {
+	if err := archiveDir(src, filepath.Join(appsDir, zipName), nil); err != nil {
 		t.Fatalf("archiveDir: %v", err)
 	}
 	if err := os.RemoveAll(src); err != nil {

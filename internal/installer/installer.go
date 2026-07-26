@@ -28,8 +28,8 @@ import (
 )
 
 // Event is a progress update emitted during installation. Progress is split into
-// two independent tracks the UI renders as two bars: Download (image pull) and
-// Start (bringing the stack up in Docker).
+// two independent tracks the UI shows one at a time on a single bar: Download
+// (image pull, blue) and Start (bringing the stack up in Docker, green).
 type Event struct {
 	Phase    string  `json:"phase"`    // pull | prepare | start | done | error
 	Message  string  `json:"message"`  // human-readable detail

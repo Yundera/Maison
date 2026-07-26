@@ -172,12 +172,21 @@ func (c *Client) RestartProject(ctx context.Context, project string) error {
 
 // RemoveProject stops and removes every container in a project (best-effort),
 // deleting anonymous volumes. Named app data under DATA_ROOT is left intact.
-func (c *Client) RemoveProject(ctx context.Context, project string) error {
+//
+// onProgress, when non-nil, is called after each container with how many of the
+// project's containers are done — a stop can block for the container's whole
+// stop-grace period, so the uninstall bar needs per-container granularity to
+// keep moving.
+func (c *Client) RemoveProject(ctx context.Context, project string, onProgress func(done, total int)) error {
 	ids, err := c.projectContainerIDs(ctx, project)
 	if err != nil {
 		return err
 	}
-	for _, id := range ids {
+	if onProgress == nil {
+		onProgress = func(int, int) {}
+	}
+	onProgress(0, len(ids))
+	for i, id := range ids {
 		_ = c.cli.ContainerStop(ctx, id, container.StopOptions{})
 		if err := c.cli.ContainerRemove(ctx, id, container.RemoveOptions{
 			RemoveVolumes: true,
@@ -185,6 +194,7 @@ func (c *Client) RemoveProject(ctx context.Context, project string) error {
 		}); err != nil {
 			return err
 		}
+		onProgress(i+1, len(ids))
 	}
 	return nil
 }

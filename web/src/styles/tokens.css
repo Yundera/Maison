@@ -29,6 +29,14 @@
   --status-running: #779e2a;
   --status-exited: #ff1616;
 
+  /* Progress. An app shows ONE bar at a time and the colour says which
+     operation it is — see appProgress() in lib/stores/apps.ts. The tile and the
+     store's install pill both read these, so the three states look the same
+     wherever they appear. */
+  --progress-download: var(--casablue);
+  --progress-install: hsl(118, 60%, 48%);
+  --progress-uninstall: var(--red);
+
   /* Frosted glass (the single most load-bearing visual) */
   --glass-color: rgba(53, 54, 58, 0.4);
   --glass-blur: blur(5px) saturate(180%);

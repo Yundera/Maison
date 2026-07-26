@@ -139,6 +139,7 @@ For each existing app, the tile reflects what Docker reports for that project:
 |---|---|---|
 | **No live stack** (folder exists, stack not started / fully down) | **Greyed** icon | Burger menu available (Start, Settings, Uninstall, …). Not clickable to "open". |
 | **Operation in progress** (up / down / restart / pull mid-flight) | Greyed icon with a **`…` overlay** | **No burger menu** while the operation runs — the tile is busy. |
+| **Install / uninstall in progress** | Greyed icon with **one progress bar**, coloured by the step running: blue (downloading), green (starting), red (uninstalling) | Same as busy: no burger menu, not clickable. The `…` overlay gives way to the bar. |
 | **Live stack** (running) | **Full-colour, clickable** icon | Click opens the web UI; burger menu available. |
 
 ### 3. Health dot — driven by the Docker health check
@@ -171,6 +172,10 @@ a dated archive name alongside it:
 - **Zip is an option.** When enabled, the folder is compressed to
   `<app>.2026-07-10.archive.zip` instead of a plain renamed directory. Default is a
   plain rename (fast, no copy).
+- **It runs detached, with progress on the tile.** Confirming the dialog only
+  *starts* the uninstall; the dialog closes immediately and the tile carries the
+  same progress bar an install shows, in red (see `lifecycle.md`). A zipped
+  archive of a large app is a multi-minute copy, and nothing waits on it.
 - To "reinstall", the operator renames the archive back to `<app>` (or unzips it) —
   data returns exactly as it was.
 

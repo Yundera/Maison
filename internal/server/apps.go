@@ -106,6 +106,11 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "updated": updated})
 }
 
+// handleUninstallApp starts an uninstall and returns immediately: the work runs
+// detached and its progress is overlaid on the app's tile (one red bar — remove,
+// then archive), so the confirmation dialog never has to block on a zip that
+// takes minutes. Only the up-front refusal (a protected app) is reported here;
+// a later failure lands on the tile.
 func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return
@@ -114,7 +119,12 @@ func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 	// zip=true compresses the archived folder; otherwise it is a plain rename.
 	// Either way the app's data is preserved (docs/app-model.md).
 	zip := r.URL.Query().Get("zip") == "true"
-	archiveName, err := s.apps.Uninstall(r.Context(), id, zip)
+	// Drop any lingering install-progress overlay (e.g. a failed install) so the
+	// tile disappears with the archived app instead of ghosting as an error.
+	if s.installer != nil {
+		s.installer.ClearInstall(id)
+	}
+	err := s.apps.StartUninstall(id, zip)
 	if errors.Is(err, apps.ErrProtected) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		return
@@ -123,11 +133,19 @@ func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	// Drop any lingering install-progress overlay (e.g. a failed install) so the
-	// tile disappears with the archived app instead of ghosting as an error.
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// handleDismissApp clears a failed install/uninstall overlay for an app, so the
+// operator can get rid of the red "!" without retrying the operation.
+func (s *Server) handleDismissApp(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	id := chi.URLParam(r, "id")
 	if s.installer != nil {
 		s.installer.ClearInstall(id)
 	}
-	s.broadcastApps()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "archive": archiveName})
+	s.apps.ClearUninstall(id)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

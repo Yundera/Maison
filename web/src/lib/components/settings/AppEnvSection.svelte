@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The .env.app editor — the variables CasaDash forwards into every app.
+  // The .env.app editor — the variables Maison forwards into every app.
   //
   // It edits the file as text rather than as a form. The file's comments are its
   // documentation (see internal/appenv), it has no fixed schema — a deployment adds
@@ -12,6 +12,7 @@
   let text = $state('')
   let saved = $state('') // last text the server accepted — the revert target
   let ignored = $state<string[]>([])
+  let path = $state('')
   let loading = $state(true)
   let busy = $state(false)
   let error = $state('')
@@ -27,6 +28,7 @@
       const f = await loadAppEnv()
       text = saved = f.text
       ignored = f.ignored ?? []
+      path = f.path ?? ''
     } catch (e) {
       error = message(e)
     } finally {
@@ -42,6 +44,7 @@
       // Trust the server's echo over the textarea: it is what is on disk.
       text = saved = f.text
       ignored = f.ignored ?? []
+      path = f.path ?? path
       justSaved = true
       setTimeout(() => (justSaved = false), 2000)
     } catch (e) {
@@ -66,7 +69,9 @@
   <header>
     <h3>{$t('app_env')}</h3>
     <p class="hint">{$t('app_env_hint')}</p>
-    <p class="hint"><code>{$t('app_env_path')}</code></p>
+    {#if path}
+      <p class="hint"><code>{path}</code></p>
+    {/if}
   </header>
 
   <p class="callout">{$t('app_env_owner')}</p>
@@ -133,7 +138,7 @@
     padding: 0.6rem 0.75rem;
     border-radius: 6px;
     background: hsla(208, 16%, 96%, 1);
-    border-left: 3px solid var(--casablue);
+    border-left: 3px solid var(--primary);
     font-size: 0.78rem;
     line-height: 1.45;
     color: var(--grey-600);
@@ -165,7 +170,7 @@
   }
   .go {
     border: none;
-    background: var(--casablue);
+    background: var(--primary);
     color: #fff;
     border-radius: 6px;
     padding: 0.4rem 1rem;

@@ -1,4 +1,4 @@
-// Package stackup is the single path every `docker compose up` in CasaDash goes
+// Package stackup is the single path every `docker compose up` in Maison goes
 // through — install, start, update and config-save all land here. It resolves an
 // app's lifecycle spec from its compose files (x-compose-app `folders` / `hooks`,
 // falling back to x-casaos install commands) and, in order:
@@ -17,12 +17,12 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/yundera/casadash/internal/composecmd"
-	"github.com/yundera/casadash/internal/composefile"
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/xcasaos"
-	"github.com/yundera/casadash/internal/xcomposeapp"
+	"github.com/yundera/maison/internal/composecmd"
+	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/xcasaos"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // Spec is an app's lifecycle declaration, merged across its compose files.
@@ -100,7 +100,7 @@ func merge(base, over map[string]any) map[string]any {
 // and SyncRoutes.
 func Up(ctx context.Context, cfg config.Config, project, dir string, files []string) error {
 	files = SyncRoutes(cfg, project, dir, files)
-	Normalize(cfg, project, dir) // after SyncRoutes: the vars CasaDash owns win over its seeds
+	Normalize(cfg, project, dir) // after SyncRoutes: the vars Maison owns win over its seeds
 	spec := Load(files)
 
 	if err := Prepare(cfg, project, dir, files, spec); err != nil {
@@ -147,12 +147,12 @@ func Prepare(cfg config.Config, project, dir string, files []string, spec Spec) 
 	return EnsureFolders(cfg, project, spec.Folders, envFile)
 }
 
-// RunHook runs a lifecycle hook. Hooks execute in CasaDash's own container
+// RunHook runs a lifecycle hook. Hooks execute in Maison's own container
 // (/bin/bash) but against the HOST Docker daemon, so `/DATA` and `${DATA_ROOT}`
 // references are rewritten to host paths — a `docker run -v` in a hook must name
 // a path the host daemon can resolve. Hooks that only need a directory to exist
 // should declare it under `folders` instead: those are created container-side,
-// through CasaDash's data mount, and are correct on both sides.
+// through Maison's data mount, and are correct on both sides.
 func RunHook(ctx context.Context, cfg config.Config, project, dir, script string) error {
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", envinject.RewriteToHostPath(script, cfg))
 	cmd.Dir = dir

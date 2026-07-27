@@ -7,7 +7,7 @@
 //	caddy_0.import: gateway_tls
 //	caddy_0.reverse_proxy: "{{upstreams 80}}"
 //
-// For every configured additional domain, CasaDash clones that group with the
+// For every configured additional domain, Maison clones that group with the
 // domain swapped, and writes the clone into the app's docker-compose.override.yml:
 //
 //	caddy_1: outline-${APP_PUBLIC_IP_DASH}.sslip.io
@@ -22,7 +22,7 @@
 //
 // The host is emitted still-templated, so it resolves through ordinary Compose
 // interpolation exactly like the primary route does — and a bare
-// `docker compose up -d` in the app's folder reproduces what CasaDash runs.
+// `docker compose up -d` in the app's folder reproduces what Maison runs.
 //
 // # Why the override, and how it stays safe
 //
@@ -30,7 +30,7 @@
 // (internal/installer/update.go), so a label written there would read as a
 // permanent "update available". The override is the only legal target — but it is
 // also the operator's file. So generation is exact rather than heuristic: the
-// keys CasaDash writes are recorded in a manifest, and the next run deletes
+// keys Maison writes are recorded in a manifest, and the next run deletes
 // precisely those before writing the new set. Nothing else in the file is read or
 // touched, and it is patched through its node tree, so comments and key order
 // survive.
@@ -45,17 +45,22 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/yundera/casadash/internal/domains"
-	"github.com/yundera/casadash/internal/yamlnode"
+	"github.com/yundera/maison/internal/brand"
+	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/yamlnode"
 )
 
 // ManifestKey names the generated-key manifest inside the override's
-// x-compose-app block — the same block that already carries CasaDash's other
+// x-compose-app block — the same block that already carries Maison's other
 // bookkeeping (store, store-app-id, tips).
-const ManifestKey = "x-casadash-routes"
+//
+// The name is deliberately brand-free. It is written into files that belong to
+// the operator and outlive any one release, so it is the one identifier a rename
+// of the product must not be able to reach — see internal/brand.
+const ManifestKey = "generated-routes"
 
 // primaryTokens are the placeholders a compose file uses for the deployment's
-// primary domain. A caddy label that references one of them is a route CasaDash
+// primary domain. A caddy label that references one of them is a route Maison
 // can republish; one that doesn't (a hardcoded host, an already-generated
 // sslip.io route) is left alone.
 var primaryTokens = []string{"${APP_DOMAIN}", "${DOMAIN}", "${domain}"}
@@ -89,7 +94,7 @@ func Sync(base, override []byte, doms []domains.Domain) ([]byte, error) {
 	// Nothing was generated before and nothing is now — an app with no routes on the
 	// primary domain, or a deployment with no additional domains. Hand the override
 	// back exactly as it came in: re-emitting it would rewrite the operator's file
-	// (quoting, indent, key style) to say the same thing, and a file CasaDash has no
+	// (quoting, indent, key style) to say the same thing, and a file Maison has no
 	// business in is a file it must not write.
 	if !dropped && len(manifest) == 0 {
 		if len(override) == 0 {
@@ -110,9 +115,9 @@ func Sync(base, override []byte, doms []domains.Domain) ([]byte, error) {
 // Vars lists the interpolation variables the app's routes reference, once the
 // additional domains are in play (${APP_DOMAIN}, ${APP_PUBLIC_IP_DASH}, …).
 //
-// These come from the deployment's environment, not from CasaDash's own base
+// These come from the deployment's environment, not from Maison's own base
 // variables, so they are absent from an app's prefilled .env — which means a
-// route resolves under CasaDash and to an empty host under a hand-run
+// route resolves under Maison and to an empty host under a hand-run
 // `docker compose up -d`. The caller seeds them into the .env so the app folder
 // stands on its own; see internal/stackup.
 func Vars(base []byte, doms []domains.Domain) []string {
@@ -175,7 +180,7 @@ func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain) map[string][
 
 		// A host that is already routed — because the store still ships the sslip.io
 		// label itself, or because the operator wrote it by hand — is left to whoever
-		// declared it. This is what lets CasaDash run against a store that has not
+		// declared it. This is what lets Maison run against a store that has not
 		// been trimmed yet without publishing every app twice.
 		routed := map[string]bool{}
 		for _, p := range append(append([]kv{}, baseLabels...), overLabels...) {
@@ -203,7 +208,7 @@ func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain) map[string][
 				labels := ensureLabels(overRoot, name)
 
 				setLabel(labels, key, host)
-				comment(labels, key, fmt.Sprintf("CasaDash: %s — generated from %s (Settings › Domains)", d.Name, g.key))
+				comment(labels, key, fmt.Sprintf("%s: %s — generated from %s (Settings › Domains)", brand.Name, d.Name, g.key))
 				written = append(written, key)
 
 				// The domain's own directives lead, as they do in a hand-written store
@@ -373,7 +378,7 @@ func writeManifest(overRoot *yaml.Node, manifest map[string][]string) {
 	}
 	xca = yamlnode.EnsureMap(overRoot, "x-compose-app")
 	yamlnode.Set(xca, ManifestKey, node)
-	comment(xca, ManifestKey, "generated by CasaDash — the routes it owns in this file, and will rewrite")
+	comment(xca, ManifestKey, "generated by Maison — the routes it owns in this file, and will rewrite")
 }
 
 // --- label access (compose accepts labels in two shapes) ---
@@ -461,7 +466,7 @@ func comment(m *yaml.Node, key, text string) {
 	}
 }
 
-// prune drops the containers CasaDash emptied out, so removing the last domain
+// prune drops the containers Maison emptied out, so removing the last domain
 // leaves an override no larger than it found it (and possibly no file at all).
 func prune(overRoot *yaml.Node) {
 	svcs := yamlnode.Get(overRoot, "services")

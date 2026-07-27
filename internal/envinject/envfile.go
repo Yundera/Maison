@@ -113,7 +113,7 @@ func ValidateVars(vars []Var) error {
 	return nil
 }
 
-// ValidateEnvFile rejects .env text CasaDash would read back differently from how
+// ValidateEnvFile rejects .env text Maison would read back differently from how
 // it was written. It backs the raw editors, where the operator types the file
 // itself rather than filling in fields.
 //

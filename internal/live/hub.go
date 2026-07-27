@@ -14,7 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/yundera/casadash/internal/system"
+	"github.com/yundera/maison/internal/system"
 )
 
 // Channel names clients can subscribe to.

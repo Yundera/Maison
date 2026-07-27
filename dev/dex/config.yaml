@@ -1,11 +1,11 @@
-# Dex configuration — CasaDash DEV.
+# Dex configuration — Maison DEV.
 #
 # This is a hand-maintained DEV copy. In production (template-root) this file is
 # rendered from dex.config.yaml.tmpl by scripts/self-check/ensure-dex.sh and the
 # identity source is the casaos-oidc-bridge connector, which federates login to
 # CasaOS's /v1/users/login API.
 #
-# CasaDash has NO auth and NO login API, so that bridge cannot federate to it.
+# Maison has NO auth and NO login API, so that bridge cannot federate to it.
 # For local testing we instead use Dex's built-in local password DB with a single
 # seeded test user (see staticPasswords below). This is the only intended
 # difference from prod — every other moving part (issuer shape, gRPC client
@@ -41,11 +41,11 @@ enablePasswordDB: true
 
 # --- DEV identity source -----------------------------------------------------
 # Single seeded test user. Log in with these at any SSO-enabled app.
-#   email:    test@casadash.local
-#   password: casadash
-# hash is bcrypt (Go-compatible $2a$) of "casadash".
+#   email:    test@maison.local
+#   password: maison
+# hash is bcrypt (Go-compatible $2a$) of "maison".
 staticPasswords:
-  - email: "test@casadash.local"
+  - email: "test@maison.local"
     hash: "$2a$10$ivrjUPjYMf4HF./kGxx7/e/WjJxITZqz0ESBOI21BrdCpjid9Y3QS"
     username: test
     userID: "00000000-0000-0000-0000-000000000001"

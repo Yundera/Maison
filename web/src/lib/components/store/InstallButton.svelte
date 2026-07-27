@@ -241,7 +241,7 @@
     font-size: 0.72rem;
     font-weight: 600;
     padding: 0.22rem 0.75rem;
-    /* is-primary is-light: pale casablue bg + dark-blue text */
+    /* is-primary is-light: pale accent bg + dark-blue text */
     background: hsla(216, 90%, 54%, 0.14);
     color: hsl(216, 72%, 42%);
     cursor: pointer;

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yundera/casadash/internal/domains"
+	"github.com/yundera/maison/internal/domains"
 )
 
 // The deployment's two additional domains, exactly as the Yundera Caddyfile
@@ -36,7 +36,7 @@ func sync(t *testing.T, base, override string, doms []domains.Domain) string {
 	return string(out)
 }
 
-// The acceptance test: what CasaDash generates is what the store used to ship by
+// The acceptance test: what Maison generates is what the store used to ship by
 // hand — the same hosts, the same upstream, gateway_tls on nip and absent on sslip.
 func TestSyncReproducesTheStoresRoutes(t *testing.T) {
 	got := sync(t, outlineBase, "", yundera)
@@ -69,7 +69,7 @@ func TestSyncIsIdempotent(t *testing.T) {
 	}
 }
 
-// Removing every domain must leave the override exactly as CasaDash found it —
+// Removing every domain must leave the override exactly as Maison found it —
 // here, with nothing of its own, so the file goes away entirely.
 func TestSyncRemovesItsOwnRoutes(t *testing.T) {
 	generated := sync(t, outlineBase, "", yundera)
@@ -83,7 +83,7 @@ func TestSyncRemovesItsOwnRoutes(t *testing.T) {
 	}
 }
 
-// The operator's content is not CasaDash's to touch — including a route they
+// The operator's content is not Maison's to touch — including a route they
 // wrote themselves on an index we could otherwise have used.
 func TestSyncKeepsTheOperatorsOverride(t *testing.T) {
 	override := `services:
@@ -129,7 +129,7 @@ x-compose-app:
 }
 
 // A store that still ships its own nip/sslip labels must not be published twice —
-// this is what lets CasaDash roll out before the store is trimmed.
+// this is what lets Maison roll out before the store is trimmed.
 func TestSyncSkipsRoutesTheStoreAlreadyShips(t *testing.T) {
 	base := outlineBase + `      caddy_1: outline-${APP_PUBLIC_IP_DASH}.nip.io
       caddy_1.import: gateway_tls

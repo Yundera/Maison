@@ -1,10 +1,10 @@
-// Package domains describes the additional domains a CasaDash deployment answers
+// Package domains describes the additional domains a Maison deployment answers
 // on, beyond the primary one the store's compose already routes.
 //
 // A store app declares exactly one Caddy route, on the deployment's primary
 // domain (`jellyfin-${APP_DOMAIN}`). Reaching the same app at a second name —
 // an sslip.io / nip.io host, so a box with no DNS is still usable — is a property
-// of the *deployment*, not of the app, so it is configured here and CasaDash
+// of the *deployment*, not of the app, so it is configured here and Maison
 // generates the extra routes (see internal/caddyroutes).
 package domains
 

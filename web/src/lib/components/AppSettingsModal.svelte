@@ -16,6 +16,7 @@
     type UpdateStatus,
     type EnvVar,
   } from '../stores/apps'
+  import { BRAND } from '../brand'
   import { openStream } from '../live/stream'
   import { renderSize } from '../format'
   import OverrideForm from './OverrideForm.svelte'
@@ -498,7 +499,7 @@
         {#if composeView === 'store'}
           <p class="hint">
             The strict <code>docker-compose.yml</code> as shipped by the store —
-            <strong>read-only</strong>. CasaDash never modifies it, so updates stay clean; your
+            <strong>read-only</strong>. {BRAND} never modifies it, so updates stay clean; your
             changes live in the <strong>Override</strong> tab instead.
           </p>
           <pre class="code readonly">{baseCompose || (configLoaded ? '(empty)' : 'Loading…')}</pre>
@@ -552,7 +553,7 @@
           <p class="hint">Checking the store…</p>
         {:else if update && !update.has_ref}
           <p class="hint">
-            This app has no store reference recorded, so CasaDash can't check for updates.
+            This app has no store reference recorded, so {BRAND} can't check for updates.
             Reinstall it from the store to enable updates.
           </p>
         {:else if update}
@@ -711,7 +712,7 @@
   }
   .tabs button.active {
     color: var(--grey-100);
-    border-bottom-color: var(--casablue);
+    border-bottom-color: var(--primary);
   }
   .content {
     flex: 1;
@@ -748,7 +749,7 @@
     margin: 0 0 0.5rem;
   }
   .hint a {
-    color: var(--casablue);
+    color: var(--primary);
   }
   code {
     background: rgba(255, 255, 255, 0.1);
@@ -861,7 +862,7 @@
     color: var(--grey-400);
   }
   .primary {
-    background: var(--casablue);
+    background: var(--primary);
     color: #fff;
     border: none;
     border-radius: 8px;
@@ -989,7 +990,7 @@
   }
   .fill {
     height: 100%;
-    background: var(--casablue);
+    background: var(--primary);
     transition: width 0.4s;
   }
 </style>

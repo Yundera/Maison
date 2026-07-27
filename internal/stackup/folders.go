@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/xcomposeapp"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // DefaultFolderMode is the permission a declared folder gets when it names none.
@@ -22,13 +22,13 @@ const DefaultFolderMode = 0o755
 // so an app that drops privileges to PUID:PGID can write to its bind mounts on
 // first boot. Paths (and the user/group/mode fields) are interpolated with the
 // app's own variables — ${DATA_ROOT}, ${AppID}, ${PUID}, anything in its .env —
-// then mapped into CasaDash's data mount, which is where the container can
+// then mapped into Maison's data mount, which is where the container can
 // actually create them.
 //
 // A folder that cannot be resolved (unresolved variable, relative path, outside
 // the data root) is a declaration error and fails the up. A folder that resolves
 // but cannot be created is also fatal: the app would start with an unwritable
-// mount. Ownership and mode are applied best-effort — CasaDash may not be able to
+// mount. Ownership and mode are applied best-effort — Maison may not be able to
 // chown on every filesystem, and that shouldn't stop an otherwise healthy start.
 func EnsureFolders(cfg config.Config, appID string, folders []xcomposeapp.Folder, envFile []byte) error {
 	for _, f := range folders {
@@ -102,7 +102,7 @@ func ensure(cfg config.Config, f xcomposeapp.Folder) error {
 }
 
 // resolvePath maps a declared folder path into this container's data mount and
-// rejects anything CasaDash has no business creating.
+// rejects anything Maison has no business creating.
 func resolvePath(p string, cfg config.Config) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {

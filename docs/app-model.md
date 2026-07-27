@@ -1,16 +1,16 @@
 # App storage & lifecycle model
 
-How CasaDash lays apps out on disk and derives their dashboard state. This model
+How Maison lays apps out on disk and derives their dashboard state. This model
 **diverges from CasaOS** on purpose: the on-disk folder is the single source of
 truth for *what apps exist*, and the live Docker state is the single source of
 truth for *how each one is doing*. Nothing about an app is kept in a database or a
 registry file — the filesystem and the Docker daemon **are** the state.
 
 > This document is authoritative for the app layout and supersedes the older
-> `AppData/casaos/apps/<app>` nesting described elsewhere. CasaDash uses a **flat**
+> `AppData/casaos/apps/<app>` nesting described elsewhere. Maison uses a **flat**
 > `AppData/<app>` layout.
 
-For what CasaDash *does* to this layout — the install / start / update / save /
+For what Maison *does* to this layout — the install / start / update / save /
 uninstall sequences, and the `folders` and `hooks` that hang off them — see
 [`lifecycle.md`](./lifecycle.md).
 
@@ -24,7 +24,7 @@ Every app is one directory directly under the data root:
 /DATA/AppData/<app>/
 ├── docker-compose.yml            # strict copy from the store — never modified
 ├── docker-compose.override.yml   # user edits from the config window (Compose override)
-├── .env                          # prefilled by CasaDash on create, then user-editable
+├── .env                          # prefilled by Maison on create, then user-editable
 └── …                             # any other files the app needs (configs, seed data, …)
 ```
 
@@ -35,10 +35,10 @@ what the dashboard shows.
 
 | File | Origin | Mutated by | Purpose |
 |------|--------|-----------|---------|
-| `docker-compose.yml` | **Strict copy from the store listing.** | Never — CasaDash treats it as read-only. | The pristine app definition. Keeping it byte-for-byte identical to the store is what lets updates stay clean (re-copy on update, overrides survive). |
-| `docker-compose.override.yml` | Generated from the **per-app config window** (ports, env, volumes, …). | CasaDash, on every config save — and on every up, for the routes it generates (see [`domains.md`](./domains.md)). | User customizations, layered on top via Compose override semantics. The running stack = `docker-compose.yml` + `docker-compose.override.yml`. |
-| `.env` | **Prefilled by CasaDash on create** (PUID/PGID, TZ, `REF_*`, domain, generated secrets, …), then hand-editable. | CasaDash on create; user thereafter. | Variable substitution for both compose files. |
-| everything else | The app (bind-mount targets, config files, databases, …). | The app at runtime. | User data. **Never** deleted by CasaDash (see uninstall). |
+| `docker-compose.yml` | **Strict copy from the store listing.** | Never — Maison treats it as read-only. | The pristine app definition. Keeping it byte-for-byte identical to the store is what lets updates stay clean (re-copy on update, overrides survive). |
+| `docker-compose.override.yml` | Generated from the **per-app config window** (ports, env, volumes, …). | Maison, on every config save — and on every up, for the routes it generates (see [`domains.md`](./domains.md)). | User customizations, layered on top via Compose override semantics. The running stack = `docker-compose.yml` + `docker-compose.override.yml`. |
+| `.env` | **Prefilled by Maison on create** (PUID/PGID, TZ, `REF_*`, domain, generated secrets, …), then hand-editable. | Maison on create; user thereafter. | Variable substitution for both compose files. |
+| everything else | The app (bind-mount targets, config files, databases, …). | The app at runtime. | User data. **Never** deleted by Maison (see uninstall). |
 
 The stack is always brought up from this directory as
 `docker compose -f docker-compose.yml -f docker-compose.override.yml … up`, with
@@ -46,7 +46,7 @@ The stack is always brought up from this directory as
 
 ### Update reference (in the override's `x-compose-app`)
 
-On install, CasaDash records **where the app came from** so it can later pull a
+On install, Maison records **where the app came from** so it can later pull a
 fresher `docker-compose.yml`. The reference lives in the override's
 `x-compose-app` block (so it survives base re-copies, and the strict base stays
 byte-identical to the store):
@@ -58,9 +58,9 @@ x-compose-app:
   store-app-id: jellyfin                                                  # catalog id within it
 ```
 
-The same block carries the manifest of the **Caddy routes CasaDash generates** to
-publish the app on the deployment's additional domains (`x-casadash-routes`) — the
-record of which label keys are CasaDash's to rewrite, so regenerating them can
+The same block carries the manifest of the **Caddy routes Maison generates** to
+publish the app on the deployment's additional domains (`generated-routes`) — the
+record of which label keys are Maison's to rewrite, so regenerating them can
 never touch the operator's. See [`docs/domains.md`](./domains.md).
 
 The per-app **Update** tab uses this to:
@@ -82,7 +82,7 @@ The settings window splits the two compose files by what you can *do* to them:
 |---|---|---|
 | **Override** | **Form** | Field-by-field editor (image, restart, ports, volumes, environment; devices, cap_add, command, privileged, limits under *Advanced*). Each field shows the store's value as a ghost placeholder and is marked when overridden; clearing a field resets it to the store's. |
 | **Override** | **YAML** | The `docker-compose.override.yml` itself. Anything the form can't express belongs here. |
-| **Compose** | **Store** | The strict `docker-compose.yml` as shipped. Read-only — CasaDash never modifies it. |
+| **Compose** | **Store** | The strict `docker-compose.yml` as shipped. Read-only — Maison never modifies it. |
 | **Compose** | **Effective** | `docker compose config` over base + override: the merged, interpolated project. Read-only; this is what actually runs, and the view that answers "what did my override actually *do*" — which of the store's values survived, and which yours replaced. |
 
 Form and YAML are two views of the same file and either can save it. The form
@@ -118,13 +118,13 @@ so a typo can't leave an app that no longer comes up.
 
 ## State model — the folder and Docker together
 
-CasaDash never invents state. A tile's existence comes from the **folder**; a
+Maison never invents state. A tile's existence comes from the **folder**; a
 tile's appearance comes from **Docker**.
 
 ### 1. Existence — driven by the folder
 
 ```
-folder present at /DATA/AppData/<app>   ≡   an app tile in CasaDash
+folder present at /DATA/AppData/<app>   ≡   an app tile in Maison
 no folder                               ≡   no tile
 ```
 
@@ -158,7 +158,7 @@ with no health check has no dot.
 
 ## Uninstall = archive by rename (never delete)
 
-CasaDash **never removes user data.** Uninstalling an app **renames** its folder to
+Maison **never removes user data.** Uninstalling an app **renames** its folder to
 a dated archive name alongside it:
 
 ```
@@ -230,7 +230,7 @@ about to replace.
 
 ## Dot in a name = hidden
 
-`.` is a **reserved character** for CasaDash. Any entry under `AppData/` whose name
+`.` is a **reserved character** for Maison. Any entry under `AppData/` whose name
 contains a `.` is **not displayed** as an app:
 
 ```
@@ -243,7 +243,7 @@ AppData/.tmp-download                → hidden (scratch / hidden dir)
 This single rule does double duty:
 
 - It keeps **archives** (which always carry a date-dotted suffix) out of the grid.
-- It gives CasaDash a namespace for **scratch / internal** folders — anything it
+- It gives Maison a namespace for **scratch / internal** folders — anything it
   doesn't want to surface, it names with a `.`.
 
 An app that needs to be visible therefore **must not** have a `.` in its directory

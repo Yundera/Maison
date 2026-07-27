@@ -67,7 +67,7 @@
   }
   .fill {
     height: 100%;
-    background: var(--casablue);
+    background: var(--primary);
     border-radius: 2px;
     transition: width 0.6s ease;
   }

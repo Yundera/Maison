@@ -307,7 +307,7 @@
   }
   .services button.active {
     color: var(--grey-100);
-    border-color: var(--casablue);
+    border-color: var(--primary);
   }
   .fields {
     flex: 1;
@@ -388,7 +388,7 @@
     padding: 0.2rem;
   }
   .icon.revert {
-    color: var(--casablue);
+    color: var(--primary);
     margin-top: 0.35rem;
   }
   .icon-gap {
@@ -437,7 +437,7 @@
     margin-right: auto;
   }
   .primary {
-    background: var(--casablue);
+    background: var(--primary);
     color: #fff;
     border: none;
     border-radius: 8px;

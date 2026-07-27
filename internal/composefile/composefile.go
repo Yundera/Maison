@@ -8,8 +8,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/yundera/casadash/internal/xcasaos"
-	"github.com/yundera/casadash/internal/xcomposeapp"
+	"github.com/yundera/maison/internal/xcasaos"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // File is a minimal view of a compose project file.

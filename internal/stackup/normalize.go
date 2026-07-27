@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yundera/casadash/internal/appenv"
-	"github.com/yundera/casadash/internal/composefile"
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/envinject"
+	"github.com/yundera/maison/internal/appenv"
+	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/envinject"
 )
 
 // Normalize reconciles an app's base compose and .env with the deployment as it is

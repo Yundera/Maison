@@ -1,11 +1,11 @@
-// Package xcomposeapp models CasaDash's own `x-compose-app` compose extension and
+// Package xcomposeapp models Maison's own `x-compose-app` compose extension and
 // resolves an app's web-UI click URL from it.
 //
 // Unlike x-casaos (which declares a container port and derives a hostname at
 // install time), x-compose-app declares the final web-UI URL directly — the
 // `webui-host` value is the app's reverse-proxy route host, e.g. `app-${domain}`.
 // The URL is built by string construction on every render, so it tracks domain
-// changes and works for apps CasaDash merely discovered.
+// changes and works for apps Maison merely discovered.
 package xcomposeapp
 
 import (
@@ -30,7 +30,7 @@ var (
 // v2 added `folders` and `hooks`; v1 files keep working unchanged.
 const SchemaVersion = 2
 
-// App is the CasaDash-native app metadata. Only the fields CasaDash consumes are
+// App is the Maison-native app metadata. Only the fields Maison consumes are
 // modelled; unknown keys are ignored.
 type App struct {
 	Schema        int       `yaml:"schema_version,omitempty"`
@@ -46,7 +46,7 @@ type App struct {
 	Architectures []string  `yaml:"architectures,omitempty"`
 
 	// Tips is the app's guidance note (Markdown, may reference ${VAR}). It is also
-	// where CasaDash persists operator edits — into the override's x-compose-app
+	// where Maison persists operator edits — into the override's x-compose-app
 	// block, never into the store-provided base compose.
 	Tips Localized `yaml:"tips,omitempty"`
 
@@ -56,7 +56,7 @@ type App struct {
 	WebUIScheme string `yaml:"webui-scheme,omitempty"`
 	WebUIPath   string `yaml:"webui-path,omitempty"`
 
-	// Update reference: where this app was installed from, so CasaDash can pull a
+	// Update reference: where this app was installed from, so Maison can pull a
 	// fresher docker-compose.yml from the same store and re-apply it. Written into
 	// the override's x-compose-app block at install time (see installer). Store is
 	// the reference store URL; StoreAppID is the catalog id within that store.
@@ -71,7 +71,7 @@ type App struct {
 	Hooks   Hooks    `yaml:"hooks,omitempty"`
 }
 
-// Folder is a directory CasaDash creates (and takes ownership of) before it
+// Folder is a directory Maison creates (and takes ownership of) before it
 // brings the stack up, so an app that drops privileges can write to its bind
 // mounts on first boot. Paths live under the data root and may use the app's
 // interpolation variables (${DATA_ROOT}, ${AppID}, ${PUID}, …).
@@ -133,7 +133,7 @@ func (t *text) UnmarshalYAML(n *yaml.Node) error {
 }
 
 // Hooks are host shell snippets run around an app's lifecycle. The install hooks
-// run once, when CasaDash first installs the app; the up hooks run on every
+// run once, when Maison first installs the app; the up hooks run on every
 // `docker compose up` (install, start, update, config save).
 type Hooks struct {
 	PreInstall  string `yaml:"pre_install,omitempty"`

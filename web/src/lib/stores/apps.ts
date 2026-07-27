@@ -52,7 +52,7 @@ export interface App {
 // instantly — before the backend (or Docker) has answered. The server is now the
 // source of truth for *what exists* (folder-driven, docs/app-model.md), so the
 // cache only bridges the first-paint gap; a fresh snapshot supersedes it in ms.
-const CACHE_KEY = 'casadash.apps'
+const CACHE_KEY = 'maison.apps'
 
 /** Read the cached tiles, or [] when absent/corrupt. */
 function cachedApps(): App[] {
@@ -111,16 +111,27 @@ export async function loadApps(): Promise<void> {
 
 /** Live updates over the WebSocket "apps" channel. Returns unsubscribe.
  *
- *  Non-destructive: an empty live frame never blanks a populated grid. Post
- *  step-1 the server only emits [] when there genuinely are no apps or it is
- *  still warming up, and those cases are already covered by loadApps()'s
- *  authoritative REST replace (mount + after every mutation, incl. uninstall).
- *  Ignoring empty frames here trades a rare stale ghost tile — self-healing on
- *  the next reload/mutation — for never flashing an empty dashboard. */
+ *  Non-destructive: an empty live frame never blanks a populated grid, because
+ *  the server also emits [] while it is still warming up (Docker not answered
+ *  yet) and a cache-painted dashboard must not flash empty underneath it.
+ *
+ *  With ONE exception, and it is the whole reason this is not a plain guard:
+ *  when the grid holds an operation in flight, an empty frame is that
+ *  operation's completion — uninstalling the last app on the box is exactly
+ *  this — and dropping it strands the tile on its final progress bar
+ *  ("Removing… 0%") until the page is reloaded. loadApps() cannot cover it: the
+ *  DELETE returns when the uninstall is *accepted*, so the REST replace that
+ *  follows it still reports the app as uninstalling.
+ *
+ *  The exception is safe during warm-up because the in-flight flags only ever
+ *  come from a server snapshot — persistApps() strips them from the cache — so
+ *  a grid painted from localStorage alone can never satisfy it. */
 export function subscribeApps(): () => void {
   return live.subscribe('apps', (d) => {
     const list = (d as App[]) ?? []
-    if (list.length === 0 && get(apps).length > 0) return
+    const current = get(apps)
+    const inFlight = current.some((a) => a.installing || a.uninstalling || a.busy)
+    if (list.length === 0 && current.length > 0 && !inFlight) return
     applySnapshot(list)
   })
 }

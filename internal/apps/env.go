@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/stackup"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/stackup"
 )
 
 // GetEnv reads a managed app's .env as an ordered key/value list — the app's

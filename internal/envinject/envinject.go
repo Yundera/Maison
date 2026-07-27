@@ -16,16 +16,16 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/yundera/casadash/internal/config"
+	"github.com/yundera/maison/internal/config"
 )
 
-// BaseVars returns the variables CasaDash computes for an app itself — the ones
-// that depend on the app or on where CasaDash is installed, and so cannot be stated
+// BaseVars returns the variables Maison computes for an app itself — the ones
+// that depend on the app or on where Maison is installed, and so cannot be stated
 // in the deployment's .env.app: the app's ID, the identity its files are owned by,
 // and the data root.
 //
 // Everything else an app receives comes from .env.app (see internal/appenv), which
-// merges these in. CasaDash's own configuration — APPSTORE_URL, PROTECTED_APPS, the
+// merges these in. Maison's own configuration — APPSTORE_URL, PROTECTED_APPS, the
 // listen address — is not here and is never forwarded to an app.
 func BaseVars(cfg config.Config, appID string) map[string]string {
 	tz := cfg.TZ
@@ -44,7 +44,7 @@ func BaseVars(cfg config.Config, appID string) map[string]string {
 	}
 }
 
-// DerivedKeys names the variables BaseVars computes — the ones CasaDash merges in
+// DerivedKeys names the variables BaseVars computes — the ones Maison merges in
 // after the deployment's .env.app, and which therefore cannot be stated there.
 //
 // It reads the names off BaseVars rather than listing them again, so the two can
@@ -168,16 +168,16 @@ func EnvFileVars(b []byte) map[string]string {
 //   - attach the main service to the external ${APP_NET} network (if set)
 //
 // Both are written as *references*, never as the resolved value. That is what lets
-// an app survive a change to CasaDash's own deployment: the compose file says
+// an app survive a change to Maison's own deployment: the compose file says
 // "wherever the data root is" and "whatever the app network is", and every
 // `docker compose up` resolves that afresh against the .env SyncBaseVars keeps
-// current. Baking the values in — as CasaDash once did — froze the app to the
+// current. Baking the values in — as Maison once did — froze the app to the
 // deployment it happened to be installed on, and left it unstartable, with
 // reinstall as the only way out, the moment that deployment moved.
 //
 // It is therefore idempotent, and running it over an already-transformed file is
 // how a stale one heals: a compose still carrying baked literals from an older
-// CasaDash comes back in reference form. stackup.Normalize does exactly that,
+// Maison comes back in reference form. stackup.Normalize does exactly that,
 // before every up.
 //
 // ${VAR} interpolation itself is left to `docker compose`.
@@ -200,7 +200,7 @@ func Transform(raw []byte, cfg config.Config, mainService string) ([]byte, error
 
 // VolumeDirs returns the CONTAINER-side directories that back an app's bind
 // mounts, so the installer can pre-create them (they then exist on the host via
-// CasaDash's own data mount, ready for the app's bind sources). File-style bind
+// Maison's own data mount, ready for the app's bind sources). File-style bind
 // sources (a '.' in the last segment) are skipped — Docker would otherwise
 // create a directory where a file is expected.
 func VolumeDirs(raw []byte, cfg config.Config) []string {
@@ -246,7 +246,7 @@ func VolumeDirs(raw []byte, cfg config.Config) []string {
 	return dirs
 }
 
-// toContainerPath maps a compose bind source to the path CasaDash can create
+// toContainerPath maps a compose bind source to the path Maison can create
 // inside its own data mount, or "" if it isn't a data-root bind directory.
 func toContainerPath(src string, cfg config.Config) string {
 	src = ContainerPath(src, cfg)
@@ -268,7 +268,7 @@ func toContainerPath(src string, cfg config.Config) string {
 
 // ContainerPath maps a host-side data path (the form written into an app's
 // compose: `/DATA/...`, `${DATA_ROOT}/...`, or the literal host path) to the
-// same location as seen INSIDE this container, so CasaDash can create it through
+// same location as seen INSIDE this container, so Maison can create it through
 // its own data mount. Paths that don't live under the data root are returned
 // unchanged — the caller decides whether to reject them.
 func ContainerPath(src string, cfg config.Config) string {
@@ -306,8 +306,8 @@ func RewriteToHostPath(s string, cfg config.Config) string {
 		return s
 	}
 	// One pass, not three ReplaceAll calls: a host path normally *ends* in /DATA
-	// (e.g. /opt/casadash/DATA), so expanding ${DATA_ROOT} first and then rewriting
-	// /DATA would rewrite the path we just wrote — /opt/casadash/opt/casadash/DATA.
+	// (e.g. /opt/maison/DATA), so expanding ${DATA_ROOT} first and then rewriting
+	// /DATA would rewrite the path we just wrote — /opt/maison/opt/maison/DATA.
 	// A Replacer scans left to right and never re-scans what it emitted.
 	return strings.NewReplacer(
 		"${DATA_ROOT}", cfg.DataHostPath,
@@ -354,7 +354,7 @@ func rewriteDataRoot(services map[string]any, cfg config.Config) {
 // idempotent. A source under neither (/etc/localtime, a named volume) is returned
 // untouched.
 //
-// A compose baked by a previous CasaDash whose DataHostPath differed from the
+// A compose baked by a previous Maison whose DataHostPath differed from the
 // current one cannot be recognised here: the old prefix is not something this
 // process can know. Such a file is re-materialised from the store instead (see
 // installer.ApplyUpdate), which is a one-time cost — no compose written from here
@@ -375,7 +375,7 @@ func refDataRoot(src string, cfg config.Config) string {
 	return src
 }
 
-// AppNetKey is the compose-local key of the external network CasaDash attaches an
+// AppNetKey is the compose-local key of the external network Maison attaches an
 // app's main service to. It is deliberately *not* the network's name: the name is
 // the deployment's (${APP_NET}, resolved at up time), while the key is a fixed
 // handle inside the project, so that changing the network the deployment uses does
@@ -385,7 +385,7 @@ const AppNetKey = "appnet"
 // attachExternalNetwork joins the main service to the deployment's external
 // network, referenced as ${APP_NET} rather than by its current name.
 //
-// It also drops the network a previous CasaDash attached, recognisable by its
+// It also drops the network a previous Maison attached, recognisable by its
 // exact signature — an external network whose compose key *is* its name, which is
 // what `networks[refNet] = {name: refNet, external: true}` used to produce. That
 // entry names a network that may no longer exist (it names the one the app was
@@ -437,7 +437,7 @@ func attachExternalNetwork(doc, services map[string]any, mainService string) {
 	}
 }
 
-// staleNetworks names the external networks a previous CasaDash attached, which
+// staleNetworks names the external networks a previous Maison attached, which
 // must be dropped before the current one is added. Left behind, they name a network
 // that may no longer exist — and compose insists every declared external network
 // does — so the stack would stay unstartable even once the right network is
@@ -450,7 +450,7 @@ func attachExternalNetwork(doc, services map[string]any, mainService string) {
 //
 //	networks: {traefik: {external: true}}          → no `name` → not ours
 //
-// whereas every external network CasaDash has ever generated writes `name`
+// whereas every external network Maison has ever generated writes `name`
 // explicitly, and in one of exactly two shapes:
 //
 //	name: pcs                                      → the key, resolved (the original bug)

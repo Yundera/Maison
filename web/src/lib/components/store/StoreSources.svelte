@@ -217,7 +217,7 @@
     text-align: left;
     border: none;
     background: none;
-    color: var(--casablue);
+    color: var(--primary);
     font-size: 0.82rem;
     padding: 0.35rem;
     border-radius: 5px;
@@ -240,7 +240,7 @@
   }
   .go {
     border: none;
-    background: var(--casablue);
+    background: var(--primary);
     color: #fff;
     border-radius: 6px;
     padding: 0 0.8rem;

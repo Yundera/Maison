@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/envinject"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/envinject"
 )
 
 // newCfg gives a Config rooted at a temp dir, with a .env.app holding envApp.
@@ -80,7 +80,7 @@ func TestEnsureSeedsDefaultAndNeverOverwrites(t *testing.T) {
 }
 
 // The core contract: every key of .env.app is ensured in the app's .env, merged
-// with the vars CasaDash computes — and nothing else in the file is disturbed.
+// with the vars Maison computes — and nothing else in the file is disturbed.
 func TestSyncEnsuresDeploymentAndComputedVars(t *testing.T) {
 	cfg := newCfg(t, "APP_NET=pcs\nAPP_DOMAIN=example.com\n")
 	// A stale value, a comment, and a key that is the operator's alone.
@@ -94,8 +94,8 @@ func TestSyncEnsuresDeploymentAndComputedVars(t *testing.T) {
 	for k, want := range map[string]string{
 		"APP_DOMAIN":     "example.com", // refreshed from .env.app
 		"APP_NET":        "pcs",         // appended from .env.app
-		"AppID":          "psitransfer", // computed by CasaDash
-		"DATA_ROOT":      "/host/DATA",  // computed by CasaDash
+		"AppID":          "psitransfer", // computed by Maison
+		"DATA_ROOT":      "/host/DATA",  // computed by Maison
 		"DATA_HOST_PATH": "/host/DATA",
 		"TZ":             "Europe/Paris",
 		"PSI_RETENTION":  "7d", // the operator's — untouched

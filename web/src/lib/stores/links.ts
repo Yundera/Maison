@@ -11,7 +11,7 @@ export interface Link {
 
 function load(): Link[] {
   try {
-    const raw = localStorage.getItem('casadash.links')
+    const raw = localStorage.getItem('maison.links')
     if (raw) return JSON.parse(raw)
   } catch {
     /* ignore */
@@ -23,7 +23,7 @@ export const links = writable<Link[]>(load())
 
 links.subscribe((v) => {
   try {
-    localStorage.setItem('casadash.links', JSON.stringify(v))
+    localStorage.setItem('maison.links', JSON.stringify(v))
   } catch {
     /* ignore */
   }

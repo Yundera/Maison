@@ -1,4 +1,4 @@
-// Minimal path router for the URLs CasaDash exposes:
+// Minimal path router for the URLs Maison exposes:
 //
 //   /                        the dashboard
 //   /store                   the store, browsing the catalog
@@ -72,7 +72,7 @@ function apply(r: Route) {
 
 // Each history entry we create carries how deep into *our* stack it is. depth 0 is
 // the entry the SPA loaded on; the one below it belongs to wherever the user came
-// from, so history.back() from depth 0 would leave CasaDash altogether. Keeping the
+// from, so history.back() from depth 0 would leave Maison altogether. Keeping the
 // depth in the entry (rather than a counter) keeps it right under Back *and* Forward.
 type Entry = Route & { depth: number }
 

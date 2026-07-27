@@ -14,7 +14,7 @@ import (
 // trouble. See internal/server/launch.go.
 //
 // The signal is advisory — it never gates anything — so it is stored as a plain
-// empty file per app id under CasaDash's own state dir, and every failure here
+// empty file per app id under Maison's own state dir, and every failure here
 // is swallowed: a missing or unreadable marker just means "treat as first boot",
 // which is the safe direction.
 

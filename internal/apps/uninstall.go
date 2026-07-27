@@ -127,7 +127,7 @@ func (r *Registry) progressed() {
 }
 
 // Uninstall stops+removes the project's containers and archives its app
-// directory, emitting progress events (safe to pass a nil emit). CasaDash never
+// directory, emitting progress events (safe to pass a nil emit). Maison never
 // deletes user data: the whole ${DATA_ROOT}/AppData/<id> folder (compose +
 // override + .env + data) is renamed to <id>.<date>.archive, or, when zip is
 // set, compressed to <id>.<date>.archive.zip and the folder removed. Either way

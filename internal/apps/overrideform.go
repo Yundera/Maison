@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yundera/casadash/internal/composecmd"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/overrideform"
+	"github.com/yundera/maison/internal/composecmd"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/overrideform"
 )
 
 // overrideName is the file the settings window edits, and the name a validation

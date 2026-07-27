@@ -1,9 +1,9 @@
 services:
-  casadash:
-    image: casadash:latest
+  maison:
+    image: maison:latest
     build: .
-    container_name: casadash
-    hostname: casadash
+    container_name: maison
+    hostname: maison
     restart: unless-stopped
     ports:
       # Host port is configurable; the container always listens on 8080.
@@ -11,7 +11,7 @@ services:
     environment:
       # Path INSIDE the container where the data folder is mounted (fixed target).
       DATA_ROOT: "/DATA"
-      # Path on the HOST of that SAME data folder. Apps installed by CasaDash bind
+      # Path on the HOST of that SAME data folder. Apps installed by Maison bind
       # their volumes to the host daemon, so their compose files must reference
       # this host path (not the in-container /DATA). Set it to wherever DATA_HOST_PATH
       # points below. Must match the bind `source` under `volumes`.
@@ -19,15 +19,15 @@ services:
       PUID: "1000"
       PGID: "1000"
       TZ: "${TZ:-UTC}"
-      # NOTE: the variables CasaDash forwards to the apps it installs (APP_NET,
+      # NOTE: the variables Maison forwards to the apps it installs (APP_NET,
       # APP_DOMAIN, APP_PUBLIC_IP_DASH, …) are deliberately NOT here. They live in
-      # the deployment's own file, ${DATA_HOST_PATH}/AppData/casadash/.env.app,
-      # which CasaDash creates with a documented default on first boot. Keeping them
-      # out of this compose is what keeps the two apart: this block is what CasaDash
+      # the deployment's own file, ${DATA_HOST_PATH}/AppData/maison/.env.app,
+      # which Maison creates with a documented default on first boot. Keeping them
+      # out of this compose is what keeps the two apart: this block is what Maison
       # needs to run; .env.app is what an app receives. See docs/app-env.md.
       APPSTORE_URL: "https://github.com/Yundera/AppStore/archive/refs/heads/main.zip"
       # Apps the user must not uninstall from the dashboard (comma-separated store
-      # ids, e.g. "casadash,casaos"). They still appear as tiles; only the
+      # ids, e.g. "maison,casaos"). They still appear as tiles; only the
       # Uninstall action is withheld — and the API refuses it too.
       PROTECTED_APPS: "${PROTECTED_APPS:-}"
     # The Docker socket is root-owned here; grant the group so a non-root process
@@ -38,7 +38,7 @@ services:
       - mesh
     volumes:
       # Bind the host data folder to /DATA. `source` MUST equal DATA_HOST_PATH so
-      # that CasaDash and the apps it installs agree on where data lives.
+      # that Maison and the apps it installs agree on where data lives.
       - type: bind
         source: ${DATA_HOST_PATH:-/DATA}
         target: /DATA

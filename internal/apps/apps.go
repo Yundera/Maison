@@ -1,5 +1,5 @@
 // Package apps builds the dashboard's view of installed applications by
-// reconciling CasaDash-managed compose projects (on disk) with what is actually
+// reconciling Maison-managed compose projects (on disk) with what is actually
 // running in Docker, and surfacing externally-created x-casaos stacks as
 // "unmanaged" apps.
 package apps
@@ -15,12 +15,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yundera/casadash/internal/composefile"
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/dockerx"
-	"github.com/yundera/casadash/internal/stackup"
-	"github.com/yundera/casadash/internal/xcasaos"
-	"github.com/yundera/casadash/internal/xcomposeapp"
+	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/stackup"
+	"github.com/yundera/maison/internal/xcasaos"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // Status values for an app tile.
@@ -36,7 +36,7 @@ type App struct {
 	Name     string `json:"name"`    // display title
 	Icon     string `json:"icon"`    // icon URL
 	Status   string `json:"status"`  // running|stopped|partial
-	Managed  bool   `json:"managed"` // installed by CasaDash
+	Managed  bool   `json:"managed"` // installed by Maison
 	Store    string `json:"store,omitempty"`
 	Scheme   string `json:"scheme,omitempty"`
 	Hostname string `json:"hostname,omitempty"`
@@ -52,7 +52,7 @@ type App struct {
 	// Drives the tile's top-left status dot (green/orange).
 	Health string `json:"health,omitempty"`
 	// Protected marks an app the operator pinned via PROTECTED_APPS (matched on
-	// store id, e.g. "casadash"): it shows as a normal tile but its Uninstall
+	// store id, e.g. "maison"): it shows as a normal tile but its Uninstall
 	// entry is hidden and the DELETE endpoint refuses it.
 	Protected bool `json:"protected,omitempty"`
 	// Busy is set while a lifecycle operation (start/stop/restart/uninstall) is
@@ -255,7 +255,7 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 		}
 		si, ca := r.metaFor(name, ps.workingDir)
 		if si == nil && ca == nil {
-			continue // a non-CasaDash stack without any recognised metadata: not ours.
+			continue // a non-Maison stack without any recognised metadata: not ours.
 		}
 		app := buildApp(name, si, ca, r.cfg.AppDomain(), false, statusOf(ps.running, ps.total), ps.svcPorts)
 		app.Health = ps.health()
@@ -282,7 +282,7 @@ func (r *Registry) managedDirs() []string {
 	var names []string
 	for _, e := range entries {
 		// A dot in the directory name hides it from the dashboard: this covers
-		// uninstall archives (<app>.<date>.archive) and CasaDash's own
+		// uninstall archives (<app>.<date>.archive) and Maison's own
 		// dot-prefixed state dir. See docs/app-model.md.
 		if e.IsDir() && !strings.Contains(e.Name(), ".") && r.isManaged(e.Name()) {
 			names = append(names, e.Name())
@@ -292,7 +292,7 @@ func (r *Registry) managedDirs() []string {
 }
 
 // metaFor loads an app's metadata (x-casaos and/or x-compose-app), preferring the
-// CasaDash-managed copy, then the working dir Docker reports. For a managed app the
+// Maison-managed copy, then the working dir Docker reports. For a managed app the
 // user override is merged on top of the strict base, so override-only metadata (a
 // webui-host pinned via the Web UI editor, say) wins. Both may be nil when neither
 // file carries a recognised block.
@@ -510,10 +510,10 @@ func (r *Registry) composeFiles(dir string) []string {
 	return files
 }
 
-// EnsureStarted brings an app up. For a CasaDash-managed project it goes through
+// EnsureStarted brings an app up. For a Maison-managed project it goes through
 // stackup (ensure folders → pre_up hook → `docker compose up -d` from base +
 // override → post_up hook), which is idempotent: it starts a stopped stack or
-// recreates a removed one. For a discovered/unmanaged stack — one CasaDash has no
+// recreates a removed one. For a discovered/unmanaged stack — one Maison has no
 // compose files for — it just starts the existing containers. The tile shows a "…"
 // busy overlay while it runs.
 func (r *Registry) EnsureStarted(ctx context.Context, id string) error {

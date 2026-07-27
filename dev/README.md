@@ -1,6 +1,6 @@
-# CasaDash — dev stack ("closer to prod")
+# Maison — dev stack ("closer to prod")
 
-The default `docker-compose.yml` at the repo root runs CasaDash **alone** on a
+The default `docker-compose.yml` at the repo root runs Maison **alone** on a
 plain `mesh` bridge. That is enough to browse the store and install ordinary
 apps, but it can't test **SSO-enabled** store apps: those apps expect a **Caddy
 router** to route them by their `caddy_*` labels and a **Dex** OIDC provider to
@@ -11,25 +11,25 @@ production PCS (`yundera-root/packages/template-root`) wires them.
 
 | Service | Image | Role |
 |---|---|---|
-| `casadash` | built from `..` | The dashboard (prod calls this `casaos`). |
+| `maison` | built from `..` | The dashboard (prod calls this `casaos`). |
 | `mesh-router-caddy` | `ghcr.io/yundera/mesh-router-caddy` | Reverse proxy. Discovers app containers by `caddy_*` labels; owns `:80`/`:443`. |
 | `dex` | `ghcr.io/dexidp/dex` | OIDC provider at `https://auth-<DOMAIN>`. |
 | `auth-registrar` | `ghcr.io/yundera/mesh-auth` | Apps POST their redirect URI here on first login and get an OIDC `client_id`/`secret` back (registered into Dex over gRPC). |
 
 All four run on the **`pcs`** network — the same external network store apps
-declare (`networks: pcs external: true`) — and CasaDash is configured with
+declare (`networks: pcs external: true`) — and Maison is configured with
 `REF_NET=pcs`, so every app it installs joins `pcs` too.
 
 ### The one deliberate difference from prod
 
 In production, Dex federates login to CasaOS via the `casaos-oidc-bridge`
-(→ `POST /v1/users/login`). **CasaDash has no auth and no login API by design**,
+(→ `POST /v1/users/login`). **Maison has no auth and no login API by design**,
 so that bridge can't work here. Instead Dex uses its built-in local password DB
 with a single seeded test user (`dev/dex/config.yaml`):
 
 ```
-email:    test@casadash.local
-password: casadash
+email:    test@maison.local
+password: maison
 ```
 
 Everything else — issuer shape (`https://auth-<DOMAIN>`), dynamic gRPC client
@@ -46,8 +46,8 @@ docker compose --env-file .env.dev up -d --build
 
 Then open:
 
-- **Dashboard:** <https://app.localhost> (root domain → casadash) or
-  <https://casadash-app.localhost>
+- **Dashboard:** <https://app.localhost> (root domain → maison) or
+  <https://maison-app.localhost>
 - **Dex:** <https://auth-app.localhost/.well-known/openid-configuration>
 
 `*.localhost` resolves to `127.0.0.1` in modern browsers, and the mounted dev CA
@@ -60,7 +60,7 @@ covers `*.localhost`, so no hosts-file editing is needed on the host.
 2. On first hit, the app's auth sidecar POSTs its callback to `auth-registrar`,
    which registers a client in Dex and returns `client_id`/`secret` + the issuer
    `https://auth-app.localhost`.
-3. The app redirects you to Dex; log in as `test@casadash.local` / `casadash`;
+3. The app redirects you to Dex; log in as `test@maison.local` / `maison`;
    Dex redirects back to the app's callback and you're in.
 
 ### TLS trust caveat (read this if OIDC login fails)

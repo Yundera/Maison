@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yundera/casadash/internal/config"
+	"github.com/yundera/maison/internal/config"
 )
 
 func TestParseEnvFile(t *testing.T) {
@@ -24,7 +24,7 @@ func TestParseEnvFile(t *testing.T) {
 // The whole point of patching rather than regenerating: an operator's comments,
 // blank lines and key order survive a save from the editor.
 func TestPatchEnvFilePreservesCommentsAndOrder(t *testing.T) {
-	old := []byte("# CasaDash seeded these\nPUID=1000\nPGID=1000\n\n# my own note\nTZ=UTC\n")
+	old := []byte("# Maison seeded these\nPUID=1000\nPGID=1000\n\n# my own note\nTZ=UTC\n")
 	got, err := PatchEnvFile(old, []Var{
 		{Key: "PUID", Value: "1000"},
 		{Key: "TZ", Value: "Europe/Paris"}, // edited
@@ -34,7 +34,7 @@ func TestPatchEnvFilePreservesCommentsAndOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "# CasaDash seeded these\nPUID=1000\n\n# my own note\nTZ=Europe/Paris\nAPI_KEY=s3cret\n"
+	want := "# Maison seeded these\nPUID=1000\n\n# my own note\nTZ=Europe/Paris\nAPI_KEY=s3cret\n"
 	if string(got) != want {
 		t.Fatalf("PatchEnvFile() =\n%q\nwant\n%q", got, want)
 	}

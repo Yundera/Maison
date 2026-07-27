@@ -1,12 +1,12 @@
 # =============================================================================
-# CADDY CONFIGURATION — CasaDash DEV
+# CADDY CONFIGURATION — Maison DEV
 # =============================================================================
 # Mirrors the production PCS Caddyfile (template-root/root/Caddyfile). Container
 # routing is done via Docker labels (caddy-docker-proxy); this file only defines
 # global config + reusable snippets + root-domain routing.
 #
 # DEV differences from prod:
-#   - The default (root-domain) service is `casadash`, not `casaos`.
+#   - The default (root-domain) service is `maison`, not `casaos`.
 #   - No Let's Encrypt / sslip.io path: everything is served with the local dev
 #     CA in dev/certs (see gen-certs.sh). Browsers warn unless you trust ca.pem.
 # =============================================================================
@@ -24,7 +24,7 @@
 }
 
 # Gateway/dev TLS: serve the mounted dev-CA leaf cert for every gateway-routed
-# host (auth-<DOMAIN>, casadash-<DOMAIN>, <app>-<DOMAIN>, …). The cert SANs cover
+# host (auth-<DOMAIN>, maison-<DOMAIN>, <app>-<DOMAIN>, …). The cert SANs cover
 # *.localhost + localhost, so one cert serves them all. Trust dev/certs/ca.pem in
 # your browser (and in app containers, see README) to silence warnings and let
 # OIDC back-channel TLS validate.
@@ -37,8 +37,8 @@
 }
 
 # =============================================================================
-# ROOT DOMAIN ROUTING — default service (the CasaDash dashboard)
-# Configure via .env.dev: DEFAULT_SERVICE_HOST=casadash DEFAULT_SERVICE_PORT=8080
+# ROOT DOMAIN ROUTING — default service (the Maison dashboard)
+# Configure via .env.dev: DEFAULT_SERVICE_HOST=maison DEFAULT_SERVICE_PORT=8080
 # =============================================================================
 
 {$DOMAIN} {

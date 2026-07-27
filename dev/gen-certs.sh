@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Generate a local dev CA + a leaf cert that mesh-router-caddy serves for every
-# gateway-routed host (auth-<DOMAIN>, casadash-<DOMAIN>, <app>-<DOMAIN>, …).
+# gateway-routed host (auth-<DOMAIN>, maison-<DOMAIN>, <app>-<DOMAIN>, …).
 #
 # Output (dev/certs/):
 #   ca.pem / ca.key   the dev root CA — trust ca.pem in your browser and in app
@@ -19,7 +19,7 @@ if [ -f cert.pem ] && [ "${1:-}" != "--force" ]; then
 fi
 
 openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -days 3650 \
-  -subj "/CN=CasaDash Dev Local CA"
+  -subj "/CN=Maison Dev Local CA"
 
 openssl req -newkey rsa:2048 -nodes -keyout key.pem -out leaf.csr \
   -subj "/CN=*.localhost"

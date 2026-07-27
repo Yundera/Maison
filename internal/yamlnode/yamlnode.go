@@ -1,11 +1,11 @@
-// Package yamlnode holds the small helpers CasaDash uses to patch a YAML
+// Package yamlnode holds the small helpers Maison uses to patch a YAML
 // document in place, through its node tree.
 //
 // The alternative — unmarshal into map[string]any, edit, re-marshal — flattens
 // everything it round-trips: comments vanish, keys get re-sorted, and the indent
-// changes. That is fine for a file CasaDash owns outright, but the compose
+// changes. That is fine for a file Maison owns outright, but the compose
 // override is shared with the operator (they edit it by hand, in the YAML view),
-// so writes to it have to leave the parts CasaDash didn't touch byte-for-byte
+// so writes to it have to leave the parts Maison didn't touch byte-for-byte
 // intact. These helpers are what make that possible.
 package yamlnode
 

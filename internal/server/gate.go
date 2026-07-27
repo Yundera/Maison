@@ -7,21 +7,23 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/yundera/maison/internal/brand"
 )
 
 // The launch gate is the launch page in "gate" mode (see launch.go).
 //
 // When an app is down, the mesh-router-caddy catch-all reverse-proxies its
-// gateway host (`<app>-<domain>`) to CasaDash, preserving the original Host. We
+// gateway host (`<app>-<domain>`) to Maison, preserving the original Host. We
 // detect that we are standing in for an app host (rather than serving our own
 // dashboard) and serve the launch page there. Because it is served on the app's
 // OWN origin, its readiness redirect is simply a reload of "/", which — once the
 // app is up — caddy routes to the real app instead of back to us.
 //
 // Apps that are already up never hit this path: caddy routes their host straight
-// to the app and CasaDash is not involved.
+// to the app and Maison is not involved.
 
-// isDashboardHost reports whether host addresses CasaDash's own dashboard
+// isDashboardHost reports whether host addresses Maison's own dashboard
 // (rather than an app gateway host it is catching for). With no gateway domain
 // configured, every request is treated as the dashboard (the gate is inert).
 func (s *Server) isDashboardHost(hostport string) bool {
@@ -36,7 +38,7 @@ func (s *Server) isDashboardHost(hostport string) bool {
 	switch host {
 	case "", "localhost", "127.0.0.1",
 		s.cfg.AppDomain(),
-		"casadash-" + s.cfg.AppDomain(),
+		brand.Slug+"-"+s.cfg.AppDomain(),
 		"casaos-" + s.cfg.AppDomain():
 		return true
 	}
@@ -48,8 +50,8 @@ func (s *Server) isDashboardHost(hostport string) bool {
 // renders the launch page.
 func (s *Server) gateRouter() http.Handler {
 	m := chi.NewRouter()
-	m.Get("/__casadash/reachable", s.gateReachable)
-	m.Post("/__casadash/start", s.gateStart)
+	m.Get(brand.GateRoot+"/reachable", s.gateReachable)
+	m.Post(brand.GateRoot+"/start", s.gateStart)
 	m.Handle("/*", http.HandlerFunc(s.gatePage))
 	return m
 }
@@ -86,11 +88,11 @@ func (s *Server) gateStart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) gatePage(w http.ResponseWriter, _ *http.Request) {
 	boot := launchBoot{
 		Mode:      "gate",
-		Reachable: "/__casadash/reachable",
-		Start:     "/__casadash/start",
+		Reachable: brand.GateRoot + "/reachable",
+		Start:     brand.GateRoot + "/start",
 	}
 	if d := s.cfg.AppDomain(); d != "" {
-		host := "https://casadash-" + d
+		host := "https://" + brand.Slug + "-" + d
 		boot.Dashboard = &host
 	}
 	writeLaunchPage(w, boot)

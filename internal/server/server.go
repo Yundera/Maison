@@ -15,14 +15,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/yundera/casadash/internal/apps"
-	"github.com/yundera/casadash/internal/appstore"
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/dockerx"
-	"github.com/yundera/casadash/internal/installer"
-	"github.com/yundera/casadash/internal/live"
-	"github.com/yundera/casadash/internal/system"
-	"github.com/yundera/casadash/internal/usersettings"
+	"github.com/yundera/maison/internal/brand"
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/appstore"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/installer"
+	"github.com/yundera/maison/internal/live"
+	"github.com/yundera/maison/internal/system"
+	"github.com/yundera/maison/internal/usersettings"
 )
 
 // Server holds shared dependencies for the HTTP handlers.
@@ -146,8 +147,8 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	return s.rootHandler(r)
 }
 
-// rootHandler marks every response with the X-Casadash header (so the launch
-// gate can tell CasaDash's catch-all apart from a real app, same-origin) and
+// rootHandler marks every response with the X-Maison header (so the launch
+// gate can tell Maison's catch-all apart from a real app, same-origin) and
 // dispatches by Host: our own dashboard hosts get the dashboard router; any
 // other host is an app gateway host we are catching for while the app is down,
 // so it gets the launch gate. With Docker unavailable there is no app registry,
@@ -155,7 +156,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 func (s *Server) rootHandler(dashboard http.Handler) http.Handler {
 	gate := s.gateRouter()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Casadash", "1")
+		w.Header().Set(brand.Header, "1")
 		if s.apps == nil || s.isDashboardHost(r.Host) {
 			dashboard.ServeHTTP(w, r)
 			return

@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/yundera/maison/internal/brand"
 )
 
 // Reachability: the single question the launch page asks on a loop — "can I send
 // the user to this app yet, and if not, why not?". The answer combines two
-// sources CasaDash already trusts:
+// sources Maison already trusts:
 //
 //   - Docker container state (always available, never lies about what is running)
 //   - an HTTP probe of the app's own URL (precise about 2xx vs 502 vs a TLS
@@ -26,7 +28,7 @@ import (
 // containers are up and (if declared) healthy does the HTTP classification get to
 // decide "ready" vs a specific failure. A healthy container whose URL the
 // *container* can't reach is still reported ready: the health check already
-// proved the app is listening, and it is the user's browser — not CasaDash — that
+// proved the app is listening, and it is the user's browser — not Maison — that
 // will open it. See internal/server/launch.go for how phases render.
 
 // Launch phases. These are what the launch page keys its copy off; they are a
@@ -46,7 +48,7 @@ const (
 // Raw HTTP probe classifications.
 const (
 	probeOK         = "ok"
-	probeCasadash   = "casadash" // our own catch-all still standing in for the app host
+	probeMaison     = brand.Slug // our own catch-all still standing in for the app host
 	probeBadGateway = "bad_gateway"
 	probeAppError   = "app_error"
 	probeTLS        = "tls"
@@ -126,7 +128,7 @@ func (r *Registry) ProjectState(ctx context.Context, id string) (running, total 
 }
 
 // Reach evaluates whether app can be opened yet and why not. It is the body
-// behind both /api/apps/{id}/reachable and the gate's /__casadash/reachable.
+// behind both /api/apps/{id}/reachable and the gate's /__maison/reachable.
 func (r *Registry) Reach(ctx context.Context, app App) Reach {
 	scheme := app.Scheme
 	if scheme == "" {
@@ -170,7 +172,7 @@ func (r *Registry) derivePhase(ctx context.Context, res *Reach, id, health strin
 		case probeOK:
 			r.MarkReached(id)
 			return PhaseReady
-		case probeCasadash:
+		case probeMaison:
 			return PhaseStarting // the app host still resolves to our catch-all
 		case probeBadGateway:
 			return PhaseBadGateway
@@ -184,7 +186,7 @@ func (r *Registry) derivePhase(ctx context.Context, res *Reach, id, health strin
 	}
 
 	// Port-only app: the backend has no reachable URL to probe (the port is
-	// published on the host, and the browser — not CasaDash — reaches it). Lean on
+	// published on the host, and the browser — not Maison — reaches it). Lean on
 	// the health check; the launch page pings it client-side to catch the
 	// no-health-check case.
 	return r.settleUnreachable(id, res, health)
@@ -244,7 +246,7 @@ func httpProbe(ctx context.Context, rawurl string) (result string, status int) {
 	if err != nil {
 		return probeNet, 0
 	}
-	req.Header.Set("User-Agent", "CasaDash-LaunchProbe")
+	req.Header.Set("User-Agent", brand.Name+"-LaunchProbe")
 	resp, err := probeClient.Do(req)
 	if err != nil {
 		return classifyErr(err), 0
@@ -252,9 +254,9 @@ func httpProbe(ctx context.Context, rawurl string) (result string, status int) {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<10))
 	// Our own catch-all marks its responses; that means the app host is still
-	// standing in on CasaDash, not the real app answering.
-	if resp.Header.Get("X-Casadash") != "" {
-		return probeCasadash, resp.StatusCode
+	// standing in on Maison, not the real app answering.
+	if resp.Header.Get(brand.Header) != "" {
+		return probeMaison, resp.StatusCode
 	}
 	return classifyStatus(resp.StatusCode), resp.StatusCode
 }

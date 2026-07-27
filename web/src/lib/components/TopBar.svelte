@@ -180,7 +180,7 @@
     padding: 0;
   }
   .thumb.active {
-    border-color: var(--casablue);
+    border-color: var(--primary);
   }
   .toggles {
     display: flex;

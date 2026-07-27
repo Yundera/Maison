@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ExtensionKey is the compose extension key CasaOS/CasaDash apps carry.
+// ExtensionKey is the compose extension key CasaOS/Maison apps carry.
 const ExtensionKey = "x-casaos"
 
 // ErrNoExtension is returned when a compose file has no x-casaos block.

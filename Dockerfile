@@ -17,12 +17,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /src/internal/ui/dist ./internal/ui/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /casadash ./cmd/casadash
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /maison ./cmd/maison
 
 # 3) Minimal runtime: the binary + the docker compose plugin (installs shell out
 #    to `docker compose`) + bash (for x-casaos pre/post-install hooks).
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose bash tzdata
-COPY --from=backend /casadash /casadash
+COPY --from=backend /maison /maison
 EXPOSE 8080
-ENTRYPOINT ["/casadash"]
+ENTRYPOINT ["/maison"]

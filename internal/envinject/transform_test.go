@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/yundera/casadash/internal/config"
+	"github.com/yundera/maison/internal/config"
 )
 
 func testCfg() config.Config {
@@ -97,7 +97,7 @@ func TestTransformIsIdempotent(t *testing.T) {
 // The regression this whole change exists for: an app installed against one
 // deployment (network `pcs`, data root `/old/DATA`) must come back in reference
 // form — not keep a dangling external network that no longer exists.
-func TestTransformHealsComposeBakedByAnOlderCasaDash(t *testing.T) {
+func TestTransformHealsComposeBakedByAnOlderMaison(t *testing.T) {
 	const baked = `
 name: psitransfer
 networks:
@@ -139,7 +139,7 @@ services:
 	}
 }
 
-// Every external network CasaDash has ever generated must be recognised and
+// Every external network Maison has ever generated must be recognised and
 // replaced — including the intermediate ${REF_NET} spelling. Two live external
 // networks would leave the app attached to a network that may not exist.
 func TestTransformReplacesEveryGeneratedNetworkSpelling(t *testing.T) {
@@ -180,7 +180,7 @@ services:
 }
 
 // A store app that joins an external network of its own must keep it: it omits
-// `name`, which is what tells it apart from anything CasaDash generated.
+// `name`, which is what tells it apart from anything Maison generated.
 func TestTransformKeepsTheStoreAppsOwnExternalNetwork(t *testing.T) {
 	const withOwnNet = `
 name: psitransfer

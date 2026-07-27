@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/yundera/casadash/internal/domains"
+	"github.com/yundera/maison/internal/domains"
 )
 
 // Settings is the persisted preference set.

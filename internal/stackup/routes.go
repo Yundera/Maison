@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yundera/casadash/internal/caddyroutes"
-	"github.com/yundera/casadash/internal/config"
+	"github.com/yundera/maison/internal/caddyroutes"
+	"github.com/yundera/maison/internal/config"
 )
 
 // SyncRoutes reconciles the app's generated Caddy routes — the ones publishing it

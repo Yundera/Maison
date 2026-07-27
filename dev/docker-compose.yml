@@ -1,11 +1,11 @@
 # =============================================================================
-# CasaDash — DEV stack ("closer to prod")
+# Maison — DEV stack ("closer to prod")
 # =============================================================================
 # Stands up the pieces an SSO-enabled store app needs at install time, matching
 # the production PCS layout (template-root/root/docker-compose.yml) but trimmed
-# to what CasaDash actually needs to *test* apps locally:
+# to what Maison actually needs to *test* apps locally:
 #
-#   casadash            the dashboard (replaces prod `casaos`)
+#   maison            the dashboard (replaces prod `casaos`)
 #   mesh-router-caddy   the "caddy router" — discovers app containers by their
 #                       caddy_* labels and reverse-proxies them (ports 80/443)
 #   dex                 OIDC provider at https://auth-<DOMAIN> (SSO for apps)
@@ -15,36 +15,36 @@
 # Dropped vs prod (not needed to test locally):
 #   mesh-router-tunnel / mesh-router-agent   NAT traversal / public routing
 #   casaos-oidc-bridge                        federates Dex -> CasaOS login;
-#                                             CasaDash has no login API, so Dex
+#                                             Maison has no login API, so Dex
 #                                             uses a local test user instead
 #                                             (see dev/dex/config.yaml).
-#   smtp, admin (settings-center)             out of scope for CasaDash
+#   smtp, admin (settings-center)             out of scope for Maison
 #
 # Everything runs on the `pcs` network so that store apps (which declare
 # `networks: pcs external: true`) and auth-registrar's PTR-based caller
-# attestation work exactly as in prod. CasaDash is told REF_NET=pcs so the apps
+# attestation work exactly as in prod. Maison is told REF_NET=pcs so the apps
 # it installs are attached to the same network.
 #
 #   cp .env.dev.example .env.dev   # then edit DOCKER_GID / DATA_HOST_PATH
 #   ./gen-certs.sh                 # once, if dev/certs is empty
 #   docker compose --env-file .env.dev up -d --build
 #
-# Dashboard:  https://app.localhost           (root domain -> casadash)
-#             https://casadash-app.localhost  (label route)
-# SSO login:  https://auth-app.localhost      (Dex; user test@casadash.local / casadash)
+# Dashboard:  https://app.localhost           (root domain -> maison)
+#             https://maison-app.localhost  (label route)
+# SSO login:  https://auth-app.localhost      (Dex; user test@maison.local / maison)
 # =============================================================================
 
-name: casadash-dev
+name: maison-dev
 
 services:
   # ---------------------------------------------------------------------------
   # .env.app — what every installed app receives (prod: written by the PCS
   # orchestrator at provisioning; here, by this init container at `up`).
   #
-  # CasaDash creates a default .env.app if none exists, but that default is a
+  # Maison creates a default .env.app if none exists, but that default is a
   # standalone local install (network `mesh`, no domain). This stack is the
   # prod-shaped one — apps on the `pcs` network, fronted by caddy over https — so
-  # the deployment states that itself, which is precisely the separation: CasaDash
+  # the deployment states that itself, which is precisely the separation: Maison
   # never invents the deployment's identity, it forwards it.
   #
   # Rewritten on every `up`, so changing DOMAIN/PUBLIC_IP in .env.dev reaches every
@@ -60,8 +60,8 @@ services:
       - sh
       - -c
       - |
-        mkdir -p /DATA/AppData/casadash
-        cat > /DATA/AppData/casadash/.env.app <<'EOF'
+        mkdir -p /DATA/AppData/maison
+        cat > /DATA/AppData/maison/.env.app <<'EOF'
         # Written by dev/docker-compose.yml — edit .env.dev, not this file.
         APP_NET=pcs
         APP_DOMAIN=${DOMAIN}
@@ -70,23 +70,23 @@ services:
         APP_PUBLIC_IP_DASH=${PUBLIC_IP_DASH}
         APP_PUBLIC_IPV4=${PUBLIC_IP}
         APP_PUBLIC_IPV4_DASH=${PUBLIC_IP_DASH}
-        APP_EMAIL=${EMAIL:-test@casadash.local}
-        APP_DEFAULT_PASSWORD=${DEFAULT_PWD:-casadash}
+        APP_EMAIL=${EMAIL:-test@maison.local}
+        APP_DEFAULT_PASSWORD=${DEFAULT_PWD:-changeme-please}
         DefaultUserName=admin
-        DefaultPassword=${DEFAULT_PWD:-casadash}
+        DefaultPassword=${DEFAULT_PWD:-changeme-please}
         EOF
 
   # ---------------------------------------------------------------------------
-  # CasaDash dashboard (prod `casaos` stand-in)
+  # Maison dashboard (prod `casaos` stand-in)
   # ---------------------------------------------------------------------------
-  casadash:
-    image: casadash:latest
+  maison:
+    image: maison:latest
     build: ..
-    container_name: casadash
-    hostname: casadash
+    container_name: maison
+    hostname: maison
     restart: unless-stopped
     environment:
-      # --- CasaDash structural config -----------------------------------------
+      # --- Maison structural config -----------------------------------------
       DATA_ROOT: "/DATA"
       DATA_HOST_PATH: "${DATA_HOST_PATH:-/DATA}"
       PUID: "1000"
@@ -98,7 +98,7 @@ services:
 
       # NOTE: what an app *receives* is not set here — it is written to .env.app by
       # the `appenv` service below, exactly as a Yundera PCS orchestrator writes it
-      # at provisioning. This block is only what CasaDash needs to run itself.
+      # at provisioning. This block is only what Maison needs to run itself.
       # See docs/app-env.md.
     depends_on:
       appenv:
@@ -119,7 +119,7 @@ services:
     labels:
       # Reach the dashboard by label (dev CA). The root domain also routes here
       # via the Caddyfile's DEFAULT_SERVICE_HOST/PORT.
-      caddy_0: casadash-${DOMAIN}, casaos-${DOMAIN}
+      caddy_0: maison-${DOMAIN}, casaos-${DOMAIN}
       caddy_0.import: gateway_tls
       caddy_0.reverse_proxy: "{{upstreams 8080}}"
 
@@ -143,10 +143,10 @@ services:
     environment:
       - CADDY_DOCKER_CADDYFILE_PATH=/etc/caddy/Caddyfile
       - CADDY_INGRESS_NETWORKS=pcs
-      - PCS_EMAIL=${EMAIL:-test@casadash.local}
+      - PCS_EMAIL=${EMAIL:-test@maison.local}
       - DOMAIN=${DOMAIN}
       - PUBLIC_IP_DASH=${PUBLIC_IP_DASH}
-      - DEFAULT_SERVICE_HOST=casadash
+      - DEFAULT_SERVICE_HOST=maison
       - DEFAULT_SERVICE_PORT=8080
     networks:
       pcs:

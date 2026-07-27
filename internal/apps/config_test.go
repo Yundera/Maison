@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yundera/casadash/internal/config"
+	"github.com/yundera/maison/internal/config"
 )
 
 // seedTipsApp writes a store-shipped base compose carrying x-casaos tips.

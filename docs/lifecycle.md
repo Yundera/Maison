@@ -1,6 +1,6 @@
 # App lifecycle
 
-What CasaDash actually *does* to an app — install, start, update, save, uninstall —
+What Maison actually *does* to an app — install, start, update, save, uninstall —
 and in what order. This document is authoritative for the sequences and their
 failure semantics.
 
@@ -9,13 +9,13 @@ Its two companions:
 - [`app-model.md`](./app-model.md) — where an app **lives** on disk and how its tile
   state is derived. Read that first; this document is what happens *to* that layout.
 - [`x-compose-app.md`](./x-compose-app.md) — the **declaration** of `folders` and
-  `hooks`. This document is what CasaDash does with them.
+  `hooks`. This document is what Maison does with them.
 
 ---
 
 ## The one rule
 
-> **Every `docker compose up` CasaDash runs goes through `internal/stackup`.**
+> **Every `docker compose up` Maison runs goes through `internal/stackup`.**
 
 There is no other place in the codebase that starts an app's stack. This is the
 whole reason the package exists: "create this folder before the stack comes up" has
@@ -108,7 +108,7 @@ dismissed.
 
 ## Start · Stop · Restart
 
-| Operation | Managed app (CasaDash wrote its folder) | Unmanaged app (a stack CasaDash merely discovered) |
+| Operation | Managed app (Maison wrote its folder) | Unmanaged app (a stack Maison merely discovered) |
 |---|---|---|
 | **Start** | `stackup.Up` — so a fully-down stack whose containers were removed is *recreated*, folders and hooks included. | `docker start` on the existing containers. There are no compose files, so there is nothing to declare. |
 | **Stop** | `docker stop` on the project's containers. No hooks. The folder stays. | Same. |
@@ -160,7 +160,7 @@ writes the override and stops there. No Docker call at all.
 ## Uninstall
 
 Stop and remove the containers, then **rename** the app folder to
-`<app>.<date>.archive` (or zip it). Nothing is deleted, and no hooks run — CasaDash
+`<app>.<date>.archive` (or zip it). Nothing is deleted, and no hooks run — Maison
 has no `pre_uninstall` / `post_uninstall`, on purpose: a hook that fires while the
 app is being taken away is a hook that can fail and leave the operator unable to
 uninstall. The archive is the safety net instead. See `app-model.md` for the archive
@@ -196,7 +196,7 @@ there is always a tile for the error to land on.
 
 ## What a hook sees
 
-Hooks run through `/bin/bash -c` **inside the CasaDash container**, with the working
+Hooks run through `/bin/bash -c` **inside the Maison container**, with the working
 directory set to the app's folder, but they act on the **host** Docker daemon.
 
 | Variable | Value |
@@ -214,9 +214,9 @@ path the host daemon can resolve.
 That rewrite is also the one trap worth knowing:
 
 > A hook that just wants a directory to exist must **not** `mkdir` it. The path it
-> writes is a *host* path, but the `mkdir` runs *in the CasaDash container* —
+> writes is a *host* path, but the `mkdir` runs *in the Maison container* —
 > creating the wrong directory in the wrong place, and leaving the app with an empty
-> mount. **Declare it under `folders`** instead: those are created through CasaDash's
+> mount. **Declare it under `folders`** instead: those are created through Maison's
 > data mount and are correct on both sides of the socket.
 
 Hooks are for Docker-level work (pulling a sidecar image, priming a volume with
@@ -230,7 +230,7 @@ Two mappings, easy to confuse, both in `internal/envinject`:
 |---|---|---|
 | `ContainerPath` | a **real path** | host spelling (`/DATA/…`, `${DATA_ROOT}/…`, the literal host path) → this container's data mount. This is how folders get created. |
 | `HostPath` | a **real path** | the inverse: container path → host path. This is how `APP_DIR` is built. |
-| `RewriteToHostPath` | **script text** | rewrites the `/DATA` / `${DATA_ROOT}` *spellings* a hook author wrote. Single-pass — a host path normally ends in `/DATA`, so rewriting twice would yield `/opt/casadash/opt/casadash/DATA`. |
+| `RewriteToHostPath` | **script text** | rewrites the `/DATA` / `${DATA_ROOT}` *spellings* a hook author wrote. Single-pass — a host path normally ends in `/DATA`, so rewriting twice would yield `/opt/maison/opt/maison/DATA`. |
 
 ---
 
@@ -239,7 +239,7 @@ Two mappings, easy to confuse, both in `internal/envinject`:
 | Step | Fails the operation? | Why |
 |---|---|---|
 | Declared `folders` entry (bad path, unknown user, unquoted mode) | **Yes** | It is the author's explicit contract, and starting without it gives the app an unwritable mount — a confusing "permission denied" instead of a clear error. |
-| Inferred bind directory | No (logged) | CasaDash guessed it from a volume; a guess should not block a valid start. |
+| Inferred bind directory | No (logged) | Maison guessed it from a volume; a guess should not block a valid start. |
 | `pre_install`, `pre_up` | **Yes** | Preconditions. |
 | `post_install`, `post_up` | No (logged) | The stack is already up. |
 | `docker compose up` | **Yes** | Obviously. |

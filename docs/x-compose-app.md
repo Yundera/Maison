@@ -1,15 +1,15 @@
-# `x-compose-app` — CasaDash's compose extension
+# `x-compose-app` — Maison's compose extension
 
-`x-compose-app` is a Compose top-level extension that CasaDash reads to render an
+`x-compose-app` is a Compose top-level extension that Maison reads to render an
 app tile, open its web UI, and populate the store. It exists **alongside**
 `x-casaos`, not instead of it:
 
-- CasaDash still consumes the **unmodified CasaOS App Store** (`x-casaos`). Nothing
+- Maison still consumes the **unmodified CasaOS App Store** (`x-casaos`). Nothing
   here requires changing existing store apps.
-- When an app *also* carries `x-compose-app`, CasaDash **prefers** it for every
+- When an app *also* carries `x-compose-app`, Maison **prefers** it for every
   field it defines, and falls back to `x-casaos` (then to derivation) for anything
   it omits.
-- An app may ship `x-compose-app` **alone** — CasaDash renders it fully without an
+- An app may ship `x-compose-app` **alone** — Maison renders it fully without an
   `x-casaos` block.
 
 The design goal is a **click URL that mirrors the reverse-proxy route**. Instead of
@@ -27,7 +27,7 @@ x-compose-app:
   webui-host: jellyfin-${domain}             # the click URL host — same string
 ```
 
-> Scope: this document specifies **only what CasaDash consumes**. Unknown keys are
+> Scope: this document specifies **only what Maison consumes**. Unknown keys are
 > tolerated and skipped.
 
 ---
@@ -65,9 +65,9 @@ x-compose-app:
 
 ### Fields
 
-| Field | Type | Required | Meaning / CasaDash use | `x-casaos` fallback |
+| Field | Type | Required | Meaning / Maison use | `x-casaos` fallback |
 |---|---|---|---|---|
-| `schema_version` | int | no (default `1`) | Spec version (currently **2**). CasaDash refuses versions it doesn't understand and falls back to `x-casaos`. v1 files keep working; declare `2` if the app *needs* `folders`/`hooks` to be honoured, so an older CasaDash refuses it instead of silently starting it without its directories. | — |
+| `schema_version` | int | no (default `1`) | Spec version (currently **2**). Maison refuses versions it doesn't understand and falls back to `x-casaos`. v1 files keep working; declare `2` if the app *needs* `folders`/`hooks` to be honoured, so an older Maison refuses it instead of silently starting it without its directories. | — |
 | `id` | string | no | Stable app identifier (should equal the Compose project `name`). Defaults to the project name. | `store_app_id` |
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | url | no | Tile icon. | `icon` |
@@ -83,7 +83,7 @@ x-compose-app:
 | `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` |
 | `webui-path` | string | no (default `/`) | Path appended to the host. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
 | `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url`. Never the tile's default action. | — |
-| `tips` | string \| localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where CasaDash writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. When set, it replaces the `x-casaos` tips; clearing it falls back to them. | `tips.before_install` + `tips.custom` |
+| `tips` | string \| localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. When set, it replaces the `x-casaos` tips; clearing it falls back to them. | `tips.before_install` + `tips.custom` |
 | **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
 
@@ -92,13 +92,13 @@ x-compose-app:
 action.
 
 **Localized** means either a plain string (`title: Jellyfin`) or a locale map
-(`title: { en_us: Jellyfin, fr_fr: Jellyfin }`). CasaDash prefers `en_us`.
+(`title: { en_us: Jellyfin, fr_fr: Jellyfin }`). Maison prefers `en_us`.
 
 ---
 
 ## The web-UI URL
 
-CasaDash builds the click URL by **direct string construction** — no container
+Maison builds the click URL by **direct string construction** — no container
 ports, no reading routes back, no baked-in state:
 
 ```
@@ -114,15 +114,15 @@ ports, no reading routes back, no baked-in state:
 
 ### Host placeholders
 
-`webui-host` may contain deployment placeholders, resolved by CasaDash from its
+`webui-host` may contain deployment placeholders, resolved by Maison from its
 own configuration (so the value can be shared verbatim with the Caddy label):
 
 | Placeholder | Resolves to | Source |
 |---|---|---|
-| `${domain}` / `${DOMAIN}` | the deployment's base domain | CasaDash `REF_DOMAIN` |
+| `${domain}` / `${DOMAIN}` | the deployment's base domain | Maison `REF_DOMAIN` |
 
 - Resolution happens on **every render**, so the URL tracks a domain change and
-  works for **unmanaged/discovered** apps CasaDash never installed — nothing is
+  works for **unmanaged/discovered** apps Maison never installed — nothing is
   stored.
 - If `webui-host` references `${domain}` but the deployment has no domain
   configured (`REF_DOMAIN` empty), the URL is treated as **unresolvable**: the tile
@@ -164,19 +164,19 @@ x-compose-app:
 
 ---
 
-## Reserved keys CasaDash writes
+## Reserved keys Maison writes
 
-Two keys in an *installed* app's **override** are CasaDash's own bookkeeping rather
+Two keys in an *installed* app's **override** are Maison's own bookkeeping rather
 than author fields. They are listed here so a store author doesn't reuse the names,
 and so an operator reading the file knows what they are:
 
 | Key | Written by |
 |---|---|
 | `store` / `store-app-id` | The install, recording where the app came from so it can be updated later. |
-| `x-casadash-routes` | Route generation: the Caddy label keys CasaDash added to publish the app on the deployment's **additional domains**, and will delete before rewriting them. See [`domains.md`](./domains.md). |
+| `generated-routes` | Route generation: the Caddy label keys Maison added to publish the app on the deployment's **additional domains**, and will delete before rewriting them. See [`domains.md`](./domains.md). |
 
 Route generation is the other reason to keep `webui-host` and the app's `caddy_N`
-label the same string. CasaDash clones the app's **Caddy route group** onto every
+label the same string. Maison clones the app's **Caddy route group** onto every
 additional domain the deployment answers on (`sslip.io`, `nip.io`, …), so an app
 that declares its route in labels is reachable at all of them with no extra field
 here — and its click URL keeps mirroring the route it was cloned from.
@@ -186,7 +186,7 @@ here — and its click URL keeps mirroring the route it was cloned from.
 ## The stack-up sequence
 
 `folders` and `hooks` hang off one sequence, which **every** `docker compose up`
-CasaDash runs goes through — install, start from the tile, store update, and
+Maison runs goes through — install, start from the tile, store update, and
 saving the app's config all take the same path:
 
 ```
@@ -215,7 +215,7 @@ what the other operations (start, restart, update, save, uninstall) do with them
 Compose creates a missing bind-mount source as an empty **root-owned** directory.
 An app that drops privileges to `PUID:PGID` then can't write to its own config
 volume — the classic "permission denied on first start". `folders` fixes that
-declaratively: CasaDash creates each one and takes ownership of it *before* the
+declaratively: Maison creates each one and takes ownership of it *before* the
 stack comes up.
 
 ```yaml
@@ -251,7 +251,7 @@ app's own compose sees: the base variables (`${DATA_ROOT}`, `${AppID}`, `${PUID}
 follow a path the operator configured there.
 
 The path names the **host** location, exactly as a bind-mount source does
-(`/DATA/...`, `${DATA_ROOT}/...`, or the literal host path). CasaDash maps it back
+(`/DATA/...`, `${DATA_ROOT}/...`, or the literal host path). Maison maps it back
 into its own data mount to create it, so it is correct on both sides of the socket.
 
 Three things make a folder a **declaration error** and fail the up, rather than
@@ -260,8 +260,8 @@ being silently skipped:
 - a variable that resolves to nothing (`${NOPE}` left in the path),
 - a relative path,
 - a path outside the data root (`/etc/cron.d`, or `/DATA/../etc`) — the data root is
-  the only host directory CasaDash has mounted, so anything else would quietly
-  create a directory *inside the CasaDash container* and mount an empty one into the
+  the only host directory Maison has mounted, so anything else would quietly
+  create a directory *inside the Maison container* and mount an empty one into the
   app.
 
 Ownership and mode are applied **best-effort**: a filesystem that can't `chown`
@@ -272,10 +272,10 @@ logs a warning rather than blocking an otherwise healthy start.
 ```yaml
 mode: "0755"   # ✅
 mode: 0755     # ❌ YAML types this as an octal *int* — the leading zero is gone
-               #    by the time CasaDash sees it, and the app fails to install.
+               #    by the time Maison sees it, and the app fails to install.
 ```
 
-CasaDash rejects the unquoted form with an error naming the fix rather than
+Maison rejects the unquoted form with an error naming the fix rather than
 guessing what `493` was supposed to mean.
 
 ### `recursive`
@@ -301,7 +301,7 @@ fire:
 
 | Hook | Runs |
 |---|---|
-| `pre_install` | Once, when CasaDash installs the app — after the images are pulled, before the first up. |
+| `pre_install` | Once, when Maison installs the app — after the images are pulled, before the first up. |
 | `post_install` | Once, right after that first up succeeds. |
 | `pre_up` | Before **every** `docker compose up` — first install, every later start, update, and config save. |
 | `post_up` | After every `docker compose up`. |
@@ -315,7 +315,7 @@ x-compose-app:
     pre_up: |
       docker pull ghcr.io/example/sidecar:latest
     post_up: |
-      echo "$AppID up at $(date)" >> /var/log/casadash-apps.log
+      echo "$AppID up at $(date)" >> /var/log/maison-apps.log
 ```
 
 `pre_install` / `post_install` generalise the CasaOS `pre-install-cmd` /
@@ -333,7 +333,7 @@ carries only `x-casaos` keeps working with no change.
 
 ### Execution environment
 
-Hooks run through `/bin/bash -c` **inside the CasaDash container**, with the working
+Hooks run through `/bin/bash -c` **inside the Maison container**, with the working
 directory set to the app's folder, but they talk to the **host** Docker daemon
 (`DOCKER_HOST=unix:///var/run/docker.sock`). They get the app's interpolation
 variables plus its `.env`, `AppID`, and `APP_DIR`.
@@ -343,9 +343,9 @@ script are rewritten to **host** paths — a `docker run -v` in a hook must name
 path the host daemon can resolve. The consequence is the one trap worth knowing:
 
 > A hook that just wants a directory to exist should **not** `mkdir` it. Written in a
-> hook, that path is a host path, and the `mkdir` would run in the CasaDash
+> hook, that path is a host path, and the `mkdir` would run in the Maison
 > container — creating the wrong directory in the wrong place. Declare it under
-> `folders` instead: those are created through CasaDash's data mount and are correct
+> `folders` instead: those are created through Maison's data mount and are correct
 > on both sides.
 
 Hooks are for **Docker-level** work (pulling a sidecar image, priming a volume with
@@ -355,7 +355,7 @@ Hooks are for **Docker-level** work (pulling a sidecar image, priming a volume w
 
 ## Precedence
 
-For any concern, CasaDash reads in this order and stops at the first hit:
+For any concern, Maison reads in this order and stops at the first hit:
 
 ```
 x-compose-app  →  x-casaos  →  runtime derivation (published host port)
@@ -367,7 +367,7 @@ the click URL and keeps `x-casaos` for CasaOS-store compatibility.
 
 ## Minimum viable block
 
-The smallest `x-compose-app` that changes CasaDash's behavior is just the host:
+The smallest `x-compose-app` that changes Maison's behavior is just the host:
 
 ```yaml
 x-compose-app:

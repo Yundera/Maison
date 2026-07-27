@@ -149,7 +149,7 @@
     flex: none;
   }
   .item.active .ico {
-    color: var(--casablue);
+    color: var(--primary);
   }
 
   .panel {

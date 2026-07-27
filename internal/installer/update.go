@@ -9,14 +9,14 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/yundera/casadash/internal/composefile"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/stackup"
+	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/stackup"
 )
 
 // UpdateStatus reports whether a managed app has a pending store update. It is
 // derived by diffing the store's current (transformed) docker-compose.yml against
-// the copy on disk — the same strict base CasaDash brought the app up from.
+// the copy on disk — the same strict base Maison brought the app up from.
 type UpdateStatus struct {
 	// HasRef is true when the app records where it was installed from (so an
 	// update can be resolved at all). Apps installed before this feature, or

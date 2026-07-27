@@ -19,13 +19,13 @@ import (
 //
 // One template, two modes (chosen by the injected boot config):
 //
-//   - "dashboard": served at /launch?app=<id> on CasaDash's own origin. Polls
+//   - "dashboard": served at /launch?app=<id> on Maison's own origin. Polls
 //     /api/apps/<id>/reachable (a server-side probe — the browser can't read a
 //     cross-origin app's status) and, when ready, redirects to the app URL. This
 //     is how port-published apps launch, and any app opened from a tile.
 //
 //   - "gate": served by the host-based catch-all when a request lands on a down
-//     app's own gateway host (see rootHandler). Polls /__casadash/reachable and,
+//     app's own gateway host (see rootHandler). Polls /__maison/reachable and,
 //     when ready, reloads "/" — same origin, now the real app.
 //
 // Both share the phase machine and copy below; only the endpoints and the
@@ -89,7 +89,7 @@ func writeLaunchPage(w http.ResponseWriter, boot launchBoot) {
 }
 
 // launchHTML is the self-contained launch page. It carries no external assets so
-// it keeps working while an app host flips from CasaDash's catch-all to the real
+// it keeps working while an app host flips from Maison's catch-all to the real
 // app under it. The copy and behaviour per phase live entirely in the script.
 const launchHTML = `<!doctype html>
 <html lang="en">
@@ -188,7 +188,7 @@ const launchHTML = `<!doctype html>
   }
 
   // Redirect target for a port-only app, built browser-side because only the
-  // browser knows which host it reached CasaDash on. Gateway apps carry a full url.
+  // browser knows which host it reached Maison on. Gateway apps carry a full url.
   function targetFrom(res) {
     if (boot.mode === 'gate') return '/';
     if (res.url) return res.url;
@@ -276,7 +276,7 @@ const launchHTML = `<!doctype html>
 
   // A port-only app has no server-probeable URL; once its containers are up we
   // confirm readiness with a no-cors ping from the browser (which — unlike
-  // CasaDash — can reach the published host port). An opaque resolve means the
+  // Maison — can reach the published host port). An opaque resolve means the
   // port is listening.
   function clientPing(res) {
     if (boot.mode !== 'dashboard' || res.url || !res.port) return Promise.resolve(false);

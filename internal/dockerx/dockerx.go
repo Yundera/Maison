@@ -1,4 +1,4 @@
-// Package dockerx wraps the Docker Engine API for the operations CasaDash needs:
+// Package dockerx wraps the Docker Engine API for the operations Maison needs:
 // discovering compose projects, per-project lifecycle, and an event stream for
 // live status. The heavier compose install engine is layered on top separately.
 package dockerx

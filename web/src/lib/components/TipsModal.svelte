@@ -139,7 +139,7 @@
     background: hsla(208, 16%, 92%, 1);
   }
   .markdown :global(a) {
-    color: var(--casablue);
+    color: var(--primary);
   }
   .markdown :global(strong) {
     color: #29343d;

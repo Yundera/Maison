@@ -40,7 +40,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/yundera/casadash/internal/yamlnode"
+	"github.com/yundera/maison/internal/yamlnode"
 )
 
 // Tags Compose understands in an override file.

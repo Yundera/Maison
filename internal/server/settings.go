@@ -7,10 +7,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/yundera/casadash/internal/appenv"
-	"github.com/yundera/casadash/internal/domains"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/usersettings"
+	"github.com/yundera/maison/internal/appenv"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/usersettings"
 )
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
@@ -73,15 +74,20 @@ func (s *Server) handlePutDomains(w http.ResponseWriter, r *http.Request) {
 // file. See internal/appenv.
 type appEnvBody struct {
 	Text string `json:"text"`
-	// Ignored are keys the text sets that CasaDash computes per app anyway
+	// Path is the file's location inside this container, for the editor to show.
+	// It is reported rather than described in the UI's translations because it
+	// follows STATE_DIR: a deployment that moves the state directory would
+	// otherwise be shown a path that does not exist.
+	Path string `json:"path"`
+	// Ignored are keys the text sets that Maison computes per app anyway
 	// (envinject.DerivedKeys) and will overwrite. Reported rather than rejected —
 	// the file is the deployment's, and a PCS may well list them for its own
 	// reasons; the editor just says they have no effect.
 	Ignored []string `json:"ignored"`
 }
 
-// newAppEnvBody pairs .env.app's text with the derived keys it sets.
-func newAppEnvBody(raw []byte) appEnvBody {
+// newAppEnvBody pairs .env.app's text with its path and the derived keys it sets.
+func newAppEnvBody(cfg config.Config, raw []byte) appEnvBody {
 	derived := envinject.DerivedKeys()
 	var ignored []string
 	for _, v := range envinject.ParseEnvFile(raw) {
@@ -89,7 +95,7 @@ func newAppEnvBody(raw []byte) appEnvBody {
 			ignored = append(ignored, v.Key)
 		}
 	}
-	return appEnvBody{Text: string(raw), Ignored: ignored}
+	return appEnvBody{Text: string(raw), Path: appenv.Path(cfg), Ignored: ignored}
 }
 
 // handleGetAppEnv returns the deployment's .env.app as text.
@@ -99,7 +105,7 @@ func (s *Server) handleGetAppEnv(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, newAppEnvBody(raw))
+	writeJSON(w, http.StatusOK, newAppEnvBody(s.cfg, raw))
 }
 
 // handlePutAppEnv replaces the deployment's .env.app.
@@ -109,7 +115,7 @@ func (s *Server) handleGetAppEnv(w http.ResponseWriter, _ *http.Request) {
 // each app's next start. Recreating every container on the box because someone
 // edited a comment would be a poor trade, and the editor tells the operator the
 // change lands on next start instead. Config.AppEnv reads the file live, so the
-// next `docker compose up` picks this up with no CasaDash restart.
+// next `docker compose up` picks this up with no Maison restart.
 func (s *Server) handlePutAppEnv(w http.ResponseWriter, r *http.Request) {
 	var in appEnvBody
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -121,5 +127,5 @@ func (s *Server) handlePutAppEnv(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, newAppEnvBody([]byte(in.Text)))
+	writeJSON(w, http.StatusOK, newAppEnvBody(s.cfg, []byte(in.Text)))
 }

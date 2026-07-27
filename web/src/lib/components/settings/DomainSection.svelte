@@ -178,7 +178,7 @@
   .chip {
     border: 1px dashed #cfcfcf;
     background: none;
-    color: var(--casablue);
+    color: var(--primary);
     border-radius: 999px;
     padding: 0.3rem 0.75rem;
     font-size: 0.8rem;
@@ -204,7 +204,7 @@
   }
   .go {
     border: none;
-    background: var(--casablue);
+    background: var(--primary);
     color: #fff;
     border-radius: 6px;
     padding: 0 0.9rem;

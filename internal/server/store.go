@@ -9,8 +9,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/yundera/casadash/internal/apps"
-	"github.com/yundera/casadash/internal/appstore"
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/appstore"
 )
 
 type storeResponse struct {

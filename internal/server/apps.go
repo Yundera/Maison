@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/yundera/casadash/internal/apps"
+	"github.com/yundera/maison/internal/apps"
 )
 
 func (s *Server) requireApps(w http.ResponseWriter) bool {

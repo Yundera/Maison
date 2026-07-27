@@ -17,14 +17,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yundera/casadash/internal/appenv"
-	"github.com/yundera/casadash/internal/apps"
-	"github.com/yundera/casadash/internal/appstore"
-	"github.com/yundera/casadash/internal/composefile"
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/dockerx"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/stackup"
+	"github.com/yundera/maison/internal/appenv"
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/appstore"
+	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/stackup"
 )
 
 // Event is a progress update emitted during installation. Progress is split into
@@ -253,7 +253,7 @@ func (in *Installer) Install(ctx context.Context, storeURL, id, fromBackup strin
 	}
 
 	// Prefill the app's .env from the deployment's .env.app (merged with the vars
-	// CasaDash computes per app), so its compose resolves offline and the operator
+	// Maison computes per app), so its compose resolves offline and the operator
 	// can hand-edit it afterwards — see docs/app-model.md and internal/appenv.
 	// Keys are ensured one by one, so a reinstall over a restored archive refreshes
 	// what the deployment provides and keeps everything the user added.

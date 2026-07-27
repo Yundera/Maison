@@ -1,4 +1,4 @@
-module github.com/yundera/casadash
+module github.com/yundera/maison
 
 go 1.25.0
 

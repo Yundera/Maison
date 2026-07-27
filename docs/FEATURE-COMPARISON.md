@@ -1,4 +1,4 @@
-# CasaDash vs casa-img — Feature Comparison
+# Maison vs casa-img — Feature Comparison
 
 Spec-level (feature) comparison. Deliberately **not** implementation-level — no language,
 runtime, supervision, or transport is chosen yet. Rows that were purely about *how*
@@ -7,10 +7,10 @@ behaviour they deliver.
 
 **Legend:** ✅ in scope · ❌ out of scope · 🔶 in scope but **diverges** from casa-img
 
-| #                                        | Feature                                                                                                  | casa-img | CasaDash | Notes                                                                                                                                          |
+| #                                        | Feature                                                                                                  | casa-img | Maison | Notes                                                                                                                                          |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |:--------:|:--------:| ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Dashboard / home**                     |                                                                                                          |          |          |                                                                                                                                                |
-| 1                                        | App grid home screen                                                                                     | ✅        | ✅        | The core of CasaDash                                                                                                                           |
+| 1                                        | App grid home screen                                                                                     | ✅        | ✅        | The core of Maison                                                                                                                           |
 | 2                                        | App tiles with burger menu (open, **restart, stop, start**, uninstall…)                                  | ✅        | ✅        | Same options as CasaOS                                                                                                                         |
 | 3                                        | Drag-to-reorder tiles                                                                                    | ✅        | ✅        |                                                                                                                                                |
 | 4                                        | Add external link (bookmark tile)                                                                        | ✅        | ✅        |                                                                                                                                                |
@@ -19,11 +19,11 @@ behaviour they deliver.
 | **Apps — model**                         |                                                                                                          |          |          |                                                                                                                                                |
 | 7                                        | An "app" = a multi-service Docker Compose stack                                                          | ✅        | ✅        | Full compose stacks, same as CasaOS                                                                                                            |
 | 8                                        | Same on-disk app file structure as CasaOS                                                                | ✅        | ✅        | App data / compose layout matches CasaOS                                                                                                       |
-| 9                                        | Store apps: compose copied **as-is** and brought up                                                      | ✅        | ✅        | CasaDash does not rewrite the store's yml                                                                                                      |
+| 9                                        | Store apps: compose copied **as-is** and brought up                                                      | ✅        | ✅        | Maison does not rewrite the store's yml                                                                                                      |
 | 10                                       | Unmanaged-app discovery: detect an external Compose stack carrying `x-casaos` and show it as an app tile | 🔶       | ✅        | Not store-linked = "unmanaged app". Replaces the manual "install customized app" form                                                          |
 | 11                                       | Manual "Install a customized app" form                                                                   | ✅        | ❌        | Replaced by #10 (auto-discovery)                                                                                                               |
 | **App configuration (per-app settings)** |                                                                                                          |          |          |                                                                                                                                                |
-| 12                                       | App settings/config window (ports, env, volumes…)                                                        | ✅        | 🔶       | **Diverges:** CasaDash keeps a CasaOS-style config window, but writes a **separate override compose file** instead of editing the original yml |
+| 12                                       | App settings/config window (ports, env, volumes…)                                                        | ✅        | 🔶       | **Diverges:** Maison keeps a CasaOS-style config window, but writes a **separate override compose file** instead of editing the original yml |
 | 13                                       | Restart / stop / start / uninstall controls                                                              | ✅        | ✅        | Via the burger menu (#2)                                                                                                                       |
 | 14                                       | Live per-app logs                                                                                        | ✅        | ✅        |                                                                                                                                                |
 | 15                                       | Live per-container stats                                                                                 | ✅        | ✅        |                                                                                                                                                |
@@ -54,10 +54,10 @@ behaviour they deliver.
 
 ## Key divergences from casa-img (not just subtractions)
 
-- **App config → override file (#12).** CasaDash never mutates the compose file it got
+- **App config → override file (#12).** Maison never mutates the compose file it got
   from the store. User edits in the settings window are written to a *separate override
   compose file* that is layered on top, so the original stays pristine and updates stay
   clean.
-- **Unmanaged apps (#10, #11).** No manual custom-install form. Instead CasaDash watches
+- **Unmanaged apps (#10, #11).** No manual custom-install form. Instead Maison watches
   Docker: any Compose stack that carries `x-casaos` metadata — even one it didn't install
   — surfaces as an app tile, marked as unmanaged (not tied to a store entry).

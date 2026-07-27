@@ -3,18 +3,18 @@ package envinject
 import (
 	"testing"
 
-	"github.com/yundera/casadash/internal/config"
+	"github.com/yundera/maison/internal/config"
 )
 
 // A deployment's host path normally ends in /DATA, which is exactly what makes
 // naive sequential replacement double-rewrite an expanded ${DATA_ROOT}.
 func TestRewriteToHostPath(t *testing.T) {
-	cfg := config.Config{DataRoot: "/DATA", DataHostPath: "/opt/casadash/DATA"}
+	cfg := config.Config{DataRoot: "/DATA", DataHostPath: "/opt/maison/DATA"}
 	cases := []struct{ in, want string }{
-		{"mkdir -p ${DATA_ROOT}/AppData/x", "mkdir -p /opt/casadash/DATA/AppData/x"},
-		{"mkdir -p $DATA_ROOT/AppData/x", "mkdir -p /opt/casadash/DATA/AppData/x"},
-		{"docker run -v /DATA/Media:/media img", "docker run -v /opt/casadash/DATA/Media:/media img"},
-		{"echo ${DATA_ROOT} /DATA", "echo /opt/casadash/DATA /opt/casadash/DATA"},
+		{"mkdir -p ${DATA_ROOT}/AppData/x", "mkdir -p /opt/maison/DATA/AppData/x"},
+		{"mkdir -p $DATA_ROOT/AppData/x", "mkdir -p /opt/maison/DATA/AppData/x"},
+		{"docker run -v /DATA/Media:/media img", "docker run -v /opt/maison/DATA/Media:/media img"},
+		{"echo ${DATA_ROOT} /DATA", "echo /opt/maison/DATA /opt/maison/DATA"},
 		{"echo nothing here", "echo nothing here"},
 	}
 	for _, c := range cases {
@@ -32,18 +32,18 @@ func TestRewriteToHostPath(t *testing.T) {
 
 // ContainerPath and HostPath are inverses across the data mount.
 func TestPathMapping(t *testing.T) {
-	cfg := config.Config{DataRoot: "/DATA", DataHostPath: "/opt/casadash/DATA"}
+	cfg := config.Config{DataRoot: "/DATA", DataHostPath: "/opt/maison/DATA"}
 	for _, in := range []string{
 		"/DATA/AppData/jellyfin/config",
 		"${DATA_ROOT}/AppData/jellyfin/config",
-		"/opt/casadash/DATA/AppData/jellyfin/config",
+		"/opt/maison/DATA/AppData/jellyfin/config",
 	} {
 		const wantContainer = "/DATA/AppData/jellyfin/config"
 		got := ContainerPath(in, cfg)
 		if got != wantContainer {
 			t.Fatalf("ContainerPath(%q) = %q, want %q", in, got, wantContainer)
 		}
-		const wantHost = "/opt/casadash/DATA/AppData/jellyfin/config"
+		const wantHost = "/opt/maison/DATA/AppData/jellyfin/config"
 		if back := HostPath(got, cfg); back != wantHost {
 			t.Fatalf("HostPath(%q) = %q, want %q", got, back, wantHost)
 		}

@@ -12,9 +12,9 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/go-chi/chi/v5"
 
-	"github.com/yundera/casadash/internal/apps"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/overrideform"
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/overrideform"
 )
 
 type configBody struct {

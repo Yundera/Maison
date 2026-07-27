@@ -1,11 +1,10 @@
 /*
- * CasaDash design tokens — ported verbatim from CasaOS-UI SCSS variables so the
+ * Maison design tokens — ported verbatim from CasaOS-UI SCSS variables so the
  * dashboard reads as CasaOS. Source: casa-img/CasaOS-UI/src/assets/scss/common/
  * _variables.scss + _others.scss (.blur-background).
  */
 :root {
   /* Brand / semantic */
-  --casablue: hsl(216, 90%, 54%);
   --blue: hsla(208, 100%, 45%, 1);
   --green: hsla(118, 70%, 45%, 1);
   --orange: hsl(14, 100%, 53%);
@@ -14,7 +13,7 @@
   --turquoise: hsl(171, 100%, 41%);
   --purple: hsl(271, 100%, 71%);
   --cyan: hsl(204, 86%, 53%);
-  --primary: var(--casablue);
+  --primary: hsl(216, 90%, 54%);
 
   /* CasaOS greys (text on dark glass) */
   --grey-100: hsla(208, 16%, 96%, 1);
@@ -33,7 +32,7 @@
      operation it is — see appProgress() in lib/stores/apps.ts. The tile and the
      store's install pill both read these, so the three states look the same
      wherever they appear. */
-  --progress-download: var(--casablue);
+  --progress-download: var(--primary);
   --progress-install: hsl(118, 60%, 48%);
   --progress-uninstall: var(--red);
 

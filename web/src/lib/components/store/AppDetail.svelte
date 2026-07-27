@@ -119,7 +119,7 @@
     align-self: flex-start;
     background: none;
     border: none;
-    color: var(--casablue);
+    color: var(--primary);
     font-size: 0.95rem;
     cursor: pointer;
     padding: 0;
@@ -250,7 +250,7 @@
     font-size: 0.82rem;
   }
   .markdown :global(a) {
-    color: var(--casablue);
+    color: var(--primary);
   }
   .markdown :global(strong) {
     color: #29343d;

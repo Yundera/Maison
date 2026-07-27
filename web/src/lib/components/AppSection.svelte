@@ -22,13 +22,13 @@
 
   function loadOrder(): string[] {
     try {
-      return JSON.parse(localStorage.getItem('casadash.order') ?? '[]')
+      return JSON.parse(localStorage.getItem('maison.order') ?? '[]')
     } catch {
       return []
     }
   }
   function saveOrder(ids: string[]) {
-    localStorage.setItem('casadash.order', JSON.stringify(ids))
+    localStorage.setItem('maison.order', JSON.stringify(ids))
   }
 
   const STORE_TILE: TileData = { kind: 'system', id: '__store', name: 'App Store' }

@@ -5,13 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/xcomposeapp"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // testConfig points the data root at a temp dir and gives it a distinct host
 // path, so the tests also cover the host→container path mapping a real
-// deployment does (an app's compose names /DATA/..., CasaDash creates it under
+// deployment does (an app's compose names /DATA/..., Maison creates it under
 // its own mount).
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
@@ -220,7 +220,7 @@ services:
 }
 
 // A hook sees the app's variables (base + .env), its AppID and APP_DIR, and has
-// its /DATA references rewritten to host paths — it runs in CasaDash's container
+// its /DATA references rewritten to host paths — it runs in Maison's container
 // but acts on the host daemon.
 func TestRunHookEnvironment(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {

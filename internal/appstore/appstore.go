@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yundera/casadash/internal/composefile"
-	"github.com/yundera/casadash/internal/xcasaos"
+	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/xcasaos"
 )
 
 // CatalogApp is one installable app from a store.

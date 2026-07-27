@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yundera/casadash/internal/config"
+	"github.com/yundera/maison/internal/config"
 )
 
 // newTestRegistry builds a Registry over a temp DATA_ROOT with no Docker client:
@@ -110,16 +110,16 @@ func TestStartUninstallRefusesProtectedApps(t *testing.T) {
 	if err := os.MkdirAll(appsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	seedApp(t, filepath.Join(appsDir, "casadash"))
-	r := New(config.Config{DataRoot: root, ProtectedApps: []string{"casadash"}}, nil)
+	seedApp(t, filepath.Join(appsDir, "maison"))
+	r := New(config.Config{DataRoot: root, ProtectedApps: []string{"maison"}}, nil)
 
-	if err := r.StartUninstall("casadash", false); err != ErrProtected {
+	if err := r.StartUninstall("maison", false); err != ErrProtected {
 		t.Fatalf("StartUninstall = %v; want ErrProtected", err)
 	}
 	if len(r.Uninstalls()) != 0 {
 		t.Errorf("a refused uninstall was tracked: %+v", r.Uninstalls())
 	}
-	if _, err := os.Stat(filepath.Join(appsDir, "casadash")); err != nil {
+	if _, err := os.Stat(filepath.Join(appsDir, "maison")); err != nil {
 		t.Errorf("protected app folder was touched: %v", err)
 	}
 }

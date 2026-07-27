@@ -334,7 +334,7 @@
     display: grid;
     place-items: center;
     border-radius: var(--radius-icon);
-    background: var(--casablue);
+    background: var(--primary);
     font-size: 2rem;
     font-weight: 600;
   }

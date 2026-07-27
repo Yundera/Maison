@@ -1,4 +1,4 @@
-// Command casadash is a lightweight, dashboard-only reimagining of CasaOS.
+// Command maison is a lightweight, dashboard-only reimagining of CasaOS.
 // It serves the embedded Svelte UI plus a REST + WebSocket API and drives the
 // host Docker engine over the mounted socket.
 package main
@@ -13,22 +13,23 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yundera/casadash/internal/appenv"
-	"github.com/yundera/casadash/internal/config"
-	"github.com/yundera/casadash/internal/server"
-	"github.com/yundera/casadash/internal/ui"
+	"github.com/yundera/maison/internal/brand"
+	"github.com/yundera/maison/internal/appenv"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/server"
+	"github.com/yundera/maison/internal/ui"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("casadash: ")
+	log.SetPrefix(brand.Slug + ": ")
 
 	cfg := config.FromEnv()
 
 	// .env.app states what every app receives (see internal/appenv). Create it with
 	// the documented default when the deployment has none, then read it live: it is
 	// the deployment's file, and an edit to it must reach the next app start without
-	// restarting CasaDash.
+	// restarting Maison.
 	if err := appenv.Ensure(cfg); err != nil {
 		log.Fatalf("app env: %v", err)
 	}

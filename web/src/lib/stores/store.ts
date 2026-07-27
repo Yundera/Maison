@@ -35,7 +35,7 @@ export function fetchStoreApp(id: string, store?: string): Promise<StoreApp> {
   return api.get<StoreApp>(`/api/store/app/${encodeURIComponent(id)}${storeQuery(store)}`)
 }
 
-/** One uninstall archive of an app, still on disk under AppData. CasaDash never
+/** One uninstall archive of an app, still on disk under AppData. Maison never
  *  deletes app data — uninstall renames the folder to `<app>.<date>.archive` — so
  *  a previously removed app can be reinstalled on top of its old data. */
 export interface Backup {

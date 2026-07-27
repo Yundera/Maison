@@ -8,11 +8,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/yundera/casadash/internal/composefile"
-	"github.com/yundera/casadash/internal/envinject"
-	"github.com/yundera/casadash/internal/stackup"
-	"github.com/yundera/casadash/internal/xcasaos"
-	"github.com/yundera/casadash/internal/xcomposeapp"
+	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/stackup"
+	"github.com/yundera/maison/internal/xcasaos"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // Config carries a managed app's base compose, its user override, and the
@@ -138,7 +138,7 @@ func (r *Registry) SetTips(id, tips string) error {
 		doc["x-compose-app"] = xca
 	}
 
-	// Tips written by older CasaDash builds lived in the override's x-casaos block;
+	// Tips written by older Maison builds lived in the override's x-casaos block;
 	// drop them so they can't resurface once the x-compose-app tips are cleared.
 	if xc, ok := doc["x-casaos"].(map[string]any); ok {
 		delete(xc, "tips")
@@ -161,7 +161,7 @@ func (r *Registry) SetTips(id, tips string) error {
 }
 
 // SetConfig writes the override file (or removes it when empty) and recreates
-// the app as base + override — CasaDash never mutates the store-provided base.
+// the app as base + override — Maison never mutates the store-provided base.
 //
 // The candidate is validated first: an override Compose won't parse is rejected
 // before it is written, so a typo can't leave an app whose stack no longer comes

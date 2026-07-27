@@ -80,7 +80,7 @@
     color: var(--grey-800);
   }
   .primary {
-    background: var(--casablue);
+    background: var(--primary);
     color: #fff;
   }
 </style>

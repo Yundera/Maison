@@ -7,20 +7,34 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // storeZip builds a minimal store archive: a top-level folder (as GitHub's
 // codeload archives have) containing an Apps/ directory, which is what
 // findAppsRoot looks for.
+//
+// The compose file carries an x-casaos block because parseStore drops any app
+// without one — a fixture of bare `services: {}` extracts fine but yields an
+// empty catalog, which silently passes any test that only counts HTTP transfers.
 func storeZip(t *testing.T, appName string) []byte {
 	t.Helper()
+	compose := "name: " + appName + "\n" +
+		"services:\n" +
+		"  app:\n" +
+		"    image: example/" + appName + ":1\n" +
+		"x-casaos:\n" +
+		"  main: app\n" +
+		"  title:\n" +
+		"    en_us: " + appName + "\n"
+
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	w, err := zw.Create("AppStore-main/Apps/" + appName + "/docker-compose.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Write([]byte("services: {}\n")); err != nil {
+	if _, err := w.Write([]byte(compose)); err != nil {
 		t.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
@@ -158,5 +172,124 @@ func TestSyncStoreWithoutValidators(t *testing.T) {
 	}
 	if gets != 2 {
 		t.Fatalf("got %d GETs, want 2", gets)
+	}
+}
+
+// The nightly refresh must land on the next 03:00 wall-clock time, whether that
+// is later today or tomorrow — never on "24h from whenever the process booted".
+func TestUntilNext(t *testing.T) {
+	loc := time.FixedZone("TST", 2*3600)
+	cases := []struct {
+		name string
+		now  time.Time
+		want time.Duration
+	}{
+		{"before", time.Date(2026, 7, 28, 1, 30, 0, 0, loc), 90 * time.Minute},
+		{"after", time.Date(2026, 7, 28, 3, 30, 0, 0, loc), 23*time.Hour + 30*time.Minute},
+		{"exactly on it", time.Date(2026, 7, 28, 3, 0, 0, 0, loc), 24 * time.Hour},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := untilNext(c.now, 3, 0); got != c.want {
+				t.Fatalf("untilNext(%s) = %s, want %s", c.now, got, c.want)
+			}
+		})
+	}
+}
+
+// An unreachable store must be reported, not swallowed: the ⟳ button and the
+// add-source flow both decide what to tell the user from this error.
+func TestRefreshReportsUnreachableStore(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	m := New([]string{srv.URL}, t.TempDir())
+	if err := m.Refresh(context.Background()); err == nil {
+		t.Fatal("Refresh reported success for a store that 404s")
+	}
+}
+
+// ...but one dead store must not empty the catalog: the healthy ones still parse,
+// and the failure rides alongside them.
+func TestRefreshKeepsHealthyStoresWhenOneFails(t *testing.T) {
+	good := newStoreServer(t, `"v1"`, storeZip(t, "jellyfin"))
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+
+	m := New([]string{good.URL, bad.URL}, t.TempDir())
+	if err := m.Refresh(context.Background()); err == nil {
+		t.Fatal("want the failing store reported")
+	}
+	if got := len(m.Catalog()); got != 1 {
+		t.Fatalf("catalog has %d apps, want the 1 from the healthy store", got)
+	}
+}
+
+// A store that goes offline after a successful sync keeps serving its cached copy
+// — but the refresh still says it never reached the origin, so a ⟳ on an offline
+// box doesn't render as a successful reload.
+func TestRefreshReportsStaleFallback(t *testing.T) {
+	body := storeZip(t, "jellyfin")
+	up := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !up {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	m := New([]string{srv.URL}, t.TempDir())
+	ctx := context.Background()
+	if err := m.Refresh(ctx); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	up = false
+	if err := m.Refresh(ctx); err == nil {
+		t.Fatal("offline origin reported as a successful refresh")
+	}
+	if got := len(m.Catalog()); got != 1 {
+		t.Fatalf("catalog has %d apps, want the cached copy to survive", got)
+	}
+}
+
+// The catalog must never be observable as "missing" while a refresh swaps in a new
+// copy of a store — that window is what makes a browse or an install fail on a
+// store that is perfectly fine (see swapIn).
+func TestConcurrentRefreshKeepsCatalogReadable(t *testing.T) {
+	srv := newStoreServer(t, `"v1"`, storeZip(t, "jellyfin"))
+	m := New([]string{srv.URL}, t.TempDir())
+	ctx := context.Background()
+	if err := m.Refresh(ctx); err != nil {
+		t.Fatalf("seed refresh: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10; i++ {
+			// Force a real re-download and swap each time.
+			if err := m.RefreshStore(ctx, srv.URL); err != nil {
+				t.Errorf("refresh %d: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		if _, _, err := m.Get("jellyfin"); err != nil {
+			t.Fatalf("app unreadable mid-swap: %v", err)
+		}
 	}
 }

@@ -84,7 +84,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		initialURLs = ss
 	}
 	s.store = appstore.New(initialURLs, filepath.Join(cfg.StateDir(), "appstore"))
-	s.store.StartAutoRefresh(context.Background(), time.Hour)
+	// Once at boot, then every night at 03:00 container time. Stores change on the
+	// order of days, and the ⟳ in the source list is there when a user wants the
+	// catalog now.
+	s.store.StartDailyRefresh(context.Background(), 3, 0)
 	s.installer = installer.New(cfg, s.store, s.dx)
 	// Rebroadcast the app list as install progress advances so the tile's
 	// Download/Start bars move live. Pull events are frequent, so throttle.

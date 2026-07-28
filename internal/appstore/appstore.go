@@ -10,8 +10,10 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,6 +49,20 @@ type CatalogApp struct {
 type Manager struct {
 	urls     []string
 	cacheDir string
+
+	// syncMu serializes the download/extract half of a refresh. Two refreshes of
+	// the same store share a workdir and a `<workdir>.tmp` staging directory, so
+	// running them concurrently means one wiping the other's half-extracted tree.
+	// The nightly refresh, the boot refresh and the ⟳ button can all overlap, so
+	// this is not hypothetical.
+	syncMu sync.Mutex
+
+	// filesMu guards the extracted store trees against the rename that swaps a new
+	// copy in. A CatalogApp holds a *path*, not an open file, and the path is the
+	// same string before and after a swap — so without this a read landing between
+	// the two renames reports "no such file" for an app that exists in both copies.
+	// Writers hold it for two renames; readers for one os.ReadFile.
+	filesMu sync.RWMutex
 
 	mu        sync.RWMutex
 	catalog   map[string]*CatalogApp
@@ -111,7 +127,9 @@ func (m *Manager) Get(id string) (*CatalogApp, []byte, error) {
 	if app == nil {
 		return nil, nil, fmt.Errorf("app %q not found", id)
 	}
+	m.filesMu.RLock()
 	raw, err := os.ReadFile(app.composePath)
+	m.filesMu.RUnlock()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -137,32 +155,46 @@ func (m *Manager) GetFrom(ctx context.Context, storeURL, id string) (*CatalogApp
 	}
 	root, err := findAppsRoot(m.workdir(storeURL))
 	if err != nil {
-		if root, err = m.syncStore(ctx, storeURL); err != nil {
+		m.syncMu.Lock()
+		root, err = m.syncStore(ctx, storeURL)
+		m.syncMu.Unlock()
+		// root != "" with a non-nil err means a cached copy was served; there is
+		// none here (findAppsRoot just failed), but branch on root so this stays
+		// correct if that ever changes.
+		if root == "" {
 			return nil, nil, err
 		}
 	}
-	return appIn(root, storeURL, id)
+	return m.appIn(root, storeURL, id)
 }
 
 // AppComposeFrom returns the raw docker-compose.yml bytes for app id as it
 // currently stands in store storeURL. Unlike GetFrom it always syncs the store
 // first: the update flow diffs the store's live version against what's installed,
-// so a stale extracted copy would report "up to date" when it isn't.
+// so a stale extracted copy would report "up to date" when it isn't. That is also
+// why an unreachable origin is an error here even when a cached copy exists —
+// "couldn't check" must not render as "up to date".
 func (m *Manager) AppComposeFrom(ctx context.Context, storeURL, id string) ([]byte, error) {
 	if strings.TrimSpace(storeURL) == "" {
 		_, raw, err := m.Get(id)
 		return raw, err
 	}
+	m.syncMu.Lock()
 	root, err := m.syncStore(ctx, storeURL)
+	m.syncMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	_, raw, err := appIn(root, storeURL, id)
+	_, raw, err := m.appIn(root, storeURL, id)
 	return raw, err
 }
 
-// appIn finds app id in an extracted store root and reads its compose file.
-func appIn(root, storeURL, id string) (*CatalogApp, []byte, error) {
+// appIn finds app id in an extracted store root and reads its compose file. It
+// walks the tree on disk, so it runs under filesMu like any other reader.
+func (m *Manager) appIn(root, storeURL, id string) (*CatalogApp, []byte, error) {
+	m.filesMu.RLock()
+	defer m.filesMu.RUnlock()
+
 	apps, _, _ := parseStore(root, storeURL)
 	for _, a := range apps {
 		if a.ID == id {
@@ -177,17 +209,30 @@ func appIn(root, storeURL, id string) (*CatalogApp, []byte, error) {
 }
 
 // Refresh downloads and reparses every configured store.
+//
+// A store that cannot be reached does not sink the rest: the catalog is rebuilt
+// from every store that did answer (plus any usable cached copy of the ones that
+// didn't), and the failures come back joined in the error. Callers that only
+// display a catalog can ignore it; the ones driven by a user action — the ⟳
+// button, adding a source — report it, so a reload that never reached the origin
+// doesn't look like it worked.
 func (m *Manager) Refresh(ctx context.Context) error {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	catalog := map[string]*CatalogApp{}
 	var order []string
 	catSet := map[string]bool{}
 	var recommend []string
+	var errs []error
 
 	for _, u := range m.URLs() {
 		root, err := m.syncStore(ctx, u)
 		if err != nil {
-			// One bad store shouldn't sink the rest.
-			continue
+			errs = append(errs, fmt.Errorf("%s: %w", u, err))
+		}
+		if root == "" {
+			continue // nothing on disk to fall back on either
 		}
 		apps, cats, rec := parseStore(root, u)
 		for _, a := range apps {
@@ -218,27 +263,46 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	m.cats = cats
 	m.recommend = recommend
 	m.mu.Unlock()
-	return nil
+	return errors.Join(errs...)
 }
 
 // RefreshStore forces a re-download of a single store — dropping its cached
 // validators so the conditional GET in syncStore can't come back 304 — then
 // rebuilds the merged catalog. Other stores are re-synced too but skip their
 // download when unchanged.
+//
+// Only storeURL's own outcome is reported. Refresh reports every store's, and a
+// second, unrelated broken source must not make this store's reload look failed.
 func (m *Manager) RefreshStore(ctx context.Context, storeURL string) error {
 	clearValidators(m.workdir(storeURL))
-	return m.Refresh(ctx)
+
+	// Sync the named store on its own first so its error is the one that surfaces.
+	// This costs no extra download: on success the validators are back on disk, so
+	// the Refresh below re-checks this store with a conditional GET that 304s.
+	m.syncMu.Lock()
+	_, err := m.syncStore(ctx, storeURL)
+	m.syncMu.Unlock()
+
+	_ = m.Refresh(ctx)
+	return err
 }
 
-// StartAutoRefresh refreshes now and then every interval until ctx is done.
-func (m *Manager) StartAutoRefresh(ctx context.Context, interval time.Duration) {
+// StartDailyRefresh refreshes once at startup (so a box that has been off for a
+// week doesn't browse a week-old catalog until 03:00) and then once a day at
+// hour:minute in the process's local timezone — i.e. container time, which is
+// whatever TZ the container was started with.
+//
+// The delay is recomputed before every wait instead of a fixed 24h ticker: a DST
+// shift or a clock correction would otherwise drift the run off the wall-clock
+// time and never come back to it.
+func (m *Manager) StartDailyRefresh(ctx context.Context, hour, minute int) {
 	go func() {
 		_ = m.Refresh(ctx)
-		t := time.NewTicker(interval)
-		defer t.Stop()
 		for {
+			t := time.NewTimer(untilNext(time.Now(), hour, minute))
 			select {
 			case <-ctx.Done():
+				t.Stop()
 				return
 			case <-t.C:
 				_ = m.Refresh(ctx)
@@ -247,9 +311,26 @@ func (m *Manager) StartAutoRefresh(ctx context.Context, interval time.Duration) 
 	}()
 }
 
+// untilNext is the delay from now to the next hour:minute in now's location.
+func untilNext(now time.Time, hour, minute int) time.Duration {
+	next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next.Sub(now)
+}
+
 // syncStore brings the extracted copy of a store up to date and returns its
 // store root (the parent of the Apps/ folder). An unchanged store costs one
 // conditional GET that comes back 304 with no body — see fetch.
+//
+// When every download candidate fails, a previously extracted copy is returned
+// *together with* the error rather than instead of it: a box with no connectivity
+// keeps a usable catalog, while a caller that asked for a sync can still tell the
+// user it never reached the origin. Callers therefore branch on root == "" for
+// "nothing to show", not on err != nil.
+//
+// The caller must hold syncMu.
 func (m *Manager) syncStore(ctx context.Context, storeURL string) (string, error) {
 	workdir := m.workdir(storeURL)
 
@@ -264,7 +345,7 @@ func (m *Manager) syncStore(ctx context.Context, storeURL string) (string, error
 	}
 	// Every candidate failed: fall back to any previously extracted copy.
 	if root, ferr := findAppsRoot(workdir); ferr == nil {
-		return root, nil
+		return root, lastErr
 	}
 	return "", lastErr
 }
@@ -315,7 +396,7 @@ func (m *Manager) fetch(ctx context.Context, u, workdir string) (string, error) 
 		return "", fmt.Errorf("store %s: http %d", u, resp.StatusCode)
 	}
 
-	if err := extractStream(resp.Body, workdir); err != nil {
+	if err := m.extractStream(resp.Body, workdir); err != nil {
 		return "", err
 	}
 	writeValidators(workdir, validators{
@@ -327,7 +408,7 @@ func (m *Manager) fetch(ctx context.Context, u, workdir string) (string, error) 
 
 // extractStream spools r (a zip) to a temp file and extracts it into dest,
 // replacing any prior copy. The spool file is what keeps the zip out of the heap.
-func extractStream(r io.Reader, dest string) error {
+func (m *Manager) extractStream(r io.Reader, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
@@ -352,8 +433,35 @@ func extractStream(r io.Reader, dest string) error {
 	if err := extractZip(&zr.Reader, tmp); err != nil {
 		return err
 	}
-	_ = os.RemoveAll(dest)
-	return os.Rename(tmp, dest)
+	return m.swapIn(tmp, dest)
+}
+
+// swapIn replaces dest with tmp, moving the old copy aside instead of deleting it
+// first. Recursively deleting a store is thousands of unlinks, and for every one
+// of them dest does not exist — a reader resolving an app's compose path in that
+// window (a browse, an install) fails on a store that is perfectly fine. Here the
+// old copy is only unlinked once the new one is already in place, and the two
+// renames that stand in for it are taken under filesMu, so no reader observes the
+// gap between them. The slow delete happens after the lock is released.
+func (m *Manager) swapIn(tmp, dest string) error {
+	old := dest + ".old"
+	_ = os.RemoveAll(old)
+
+	m.filesMu.Lock()
+	err := os.Rename(dest, old)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		m.filesMu.Unlock()
+		return err
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Rename(old, dest) // put the previous copy back rather than leaving none
+		m.filesMu.Unlock()
+		return err
+	}
+	m.filesMu.Unlock()
+
+	_ = os.RemoveAll(old)
+	return nil
 }
 
 // validators are the HTTP cache validators of the store copy currently extracted
@@ -452,55 +560,6 @@ func (m *Manager) workdir(storeURL string) string {
 	}
 	sum := md5.Sum([]byte(strings.ToLower(u.Path)))
 	return filepath.Join(m.cacheDir, u.Host, hex.EncodeToString(sum[:]))
-}
-
-func headETag(ctx context.Context, u string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
-	if err != nil {
-		return "", err
-	}
-	c := &http.Client{Timeout: 10 * time.Second}
-	resp, err := c.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	return resp.Header.Get("ETag"), nil
-}
-
-// download fetches a zip and extracts it into dest (replacing any prior copy).
-func download(ctx context.Context, u, dest string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("store %s: http %d", u, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	zr, err := zip.NewReader(strings.NewReader(string(body)), int64(len(body)))
-	if err != nil {
-		return err
-	}
-
-	tmp := dest + ".tmp"
-	_ = os.RemoveAll(tmp)
-	if err := extractZip(zr, tmp); err != nil {
-		return err
-	}
-	_ = os.RemoveAll(dest)
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dest)
 }
 
 func extractZip(zr *zip.Reader, dest string) error {

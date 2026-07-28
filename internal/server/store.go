@@ -33,12 +33,34 @@ func (s *Server) handleStore(w http.ResponseWriter, _ *http.Request) {
 
 // --- App-store source management (add/remove custom stores) ---
 
+// sourcesResponse answers every source-list mutation. Warning is a *non-fatal*
+// report: the sources were applied and the catalog rebuilt from whatever answered,
+// but at least one store could not be fetched. It rides a 200 because the list in
+// the UI must still update — an outright failure gets a non-2xx and an "error"
+// instead (see handleRefreshStoreSource).
+type sourcesResponse struct {
+	Sources []string `json:"sources"`
+	Warning string   `json:"warning,omitempty"`
+}
+
+// storeSyncTimeout bounds one download+extract pass over every configured store.
+const storeSyncTimeout = 90 * time.Second
+
+// detachedStoreCtx is the context a store sync runs on. It keeps the request's
+// values but drops its cancellation: a refresh has already written to disk by the
+// time the user closes the store panel, and cancelling mid-extract leaves the
+// staging tree half-populated for the next pass to clean up. Installs detach for
+// the same reason. The timeout still applies, so nothing runs unbounded.
+func detachedStoreCtx(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), storeSyncTimeout)
+}
+
 func (s *Server) handleStoreSources(w http.ResponseWriter, _ *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]string{"sources": s.store.URLs()})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.URLs()})
 }
 
 func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
@@ -49,11 +71,11 @@ func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
 	urls := s.store.URLs()
 	for _, u := range urls {
 		if u == url {
-			s.applySources(w, r.Context(), urls) // already present
+			s.applySources(w, r, urls) // already present
 			return
 		}
 	}
-	s.applySources(w, r.Context(), append(urls, url))
+	s.applySources(w, r, append(urls, url))
 }
 
 func (s *Server) handleRemoveStoreSource(w http.ResponseWriter, r *http.Request) {
@@ -67,11 +89,16 @@ func (s *Server) handleRemoveStoreSource(w http.ResponseWriter, r *http.Request)
 			kept = append(kept, u)
 		}
 	}
-	s.applySources(w, r.Context(), kept)
+	s.applySources(w, r, kept)
 }
 
 // handleRefreshStoreSource force re-downloads a single store and rebuilds the
 // catalog (one reload per store, triggered from the source list).
+//
+// Unlike applySources this reports a failure as a failure: the user pressed ⟳ and
+// is owed an answer about whether the catalog they are looking at came from the
+// origin. A store that couldn't be fetched leaves its cached copy in place and
+// answers 502.
 func (s *Server) handleRefreshStoreSource(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
@@ -81,10 +108,13 @@ func (s *Server) handleRefreshStoreSource(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	rc, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	rc, cancel := detachedStoreCtx(r)
 	defer cancel()
-	_ = s.store.RefreshStore(rc, url)
-	writeJSON(w, http.StatusOK, map[string][]string{"sources": s.store.URLs()})
+	if err := s.store.RefreshStore(rc, url); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.URLs()})
 }
 
 func decodeURL(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -100,17 +130,27 @@ func decodeURL(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 // applySources updates the store URLs, persists them, refreshes the catalog, and
 // returns the new source list.
-func (s *Server) applySources(w http.ResponseWriter, ctx context.Context, urls []string) {
+//
+// The refresh error is reported as a warning rather than a failure: the source
+// list was changed and persisted whatever the network did, and removing a source
+// must not appear to fail because some *other* store is unreachable. It is still
+// reported — a freshly added URL that turns out to be a 404 used to look like it
+// had worked, leaving a permanently empty entry in the list with no explanation.
+func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []string) {
 	s.store.SetURLs(urls)
 	cur := s.settings.Get()
 	cur.StoreSources = urls
 	_ = s.settings.Set(cur)
 
-	rc, cancel := context.WithTimeout(ctx, 90*time.Second)
+	rc, cancel := detachedStoreCtx(r)
 	defer cancel()
-	_ = s.store.Refresh(rc)
 
-	writeJSON(w, http.StatusOK, map[string][]string{"sources": s.store.URLs()})
+	resp := sourcesResponse{}
+	if err := s.store.Refresh(rc); err != nil {
+		resp.Warning = err.Error()
+	}
+	resp.Sources = s.store.URLs()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleStoreApp returns one store app. The optional ?store=<zip url> pins the

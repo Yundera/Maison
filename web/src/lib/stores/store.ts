@@ -75,15 +75,27 @@ export function installApp(
   )
 }
 
-export function fetchStoreSources(): Promise<{ sources: string[] }> {
-  return api.get<{ sources: string[] }>('/api/store/sources')
+/** The source list after a change.
+ *
+ *  `warning` means the list *was* applied but at least one store could not be
+ *  fetched — a mistyped URL, an origin that is down. It is not a thrown error
+ *  because the change stuck and the list on screen must still update; callers
+ *  show it next to the list instead of replacing it. An outright failure (the ⟳
+ *  button) arrives as a rejected promise, the usual way. */
+export interface StoreSources {
+  sources: string[]
+  warning?: string
 }
-export function addStoreSource(url: string): Promise<{ sources: string[] }> {
-  return api.post<{ sources: string[] }>('/api/store/sources', { url })
+
+export function fetchStoreSources(): Promise<StoreSources> {
+  return api.get<StoreSources>('/api/store/sources')
 }
-export function removeStoreSource(url: string): Promise<{ sources: string[] }> {
-  return api.del<{ sources: string[] }>('/api/store/sources', { url })
+export function addStoreSource(url: string): Promise<StoreSources> {
+  return api.post<StoreSources>('/api/store/sources', { url })
 }
-export function refreshStoreSource(url: string): Promise<{ sources: string[] }> {
-  return api.post<{ sources: string[] }>('/api/store/sources/refresh', { url })
+export function removeStoreSource(url: string): Promise<StoreSources> {
+  return api.del<StoreSources>('/api/store/sources', { url })
+}
+export function refreshStoreSource(url: string): Promise<StoreSources> {
+  return api.post<StoreSources>('/api/store/sources/refresh', { url })
 }

@@ -15,7 +15,12 @@
   let url = $state('')
   let busy = $state(false)
   let reloading = $state('')
+  // One message line for the whole menu: add, remove and ⟳ all report here, so a
+  // reload that never reached the origin says so instead of just stopping the
+  // spinner. Cleared at the start of each action.
   let error = $state('')
+
+  const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
   async function load() {
     try {
@@ -45,12 +50,18 @@
     busy = true
     error = ''
     try {
-      sources = (await addStoreSource(url.trim())).sources
-      url = ''
-      adding = false
+      const res = await addStoreSource(url.trim())
+      sources = res.sources
+      // The source is saved either way; a warning means it couldn't be fetched,
+      // so keep the message up rather than closing the input on a silent no-op.
+      error = res.warning ?? ''
+      if (!res.warning) {
+        url = ''
+        adding = false
+      }
       onchanged()
     } catch (e) {
-      error = String(e)
+      error = message(e)
     } finally {
       busy = false
     }
@@ -58,9 +69,14 @@
 
   async function remove(u: string) {
     busy = true
+    error = ''
     try {
-      sources = (await removeStoreSource(u)).sources
+      const res = await removeStoreSource(u)
+      sources = res.sources
+      error = res.warning ?? ''
       onchanged()
+    } catch (e) {
+      error = message(e)
     } finally {
       busy = false
     }
@@ -68,9 +84,12 @@
 
   async function reload(u: string) {
     reloading = u
+    error = ''
     try {
       await refreshStoreSource(u)
       onchanged()
+    } catch (e) {
+      error = message(e)
     } finally {
       reloading = ''
     }
@@ -115,10 +134,12 @@
           />
           <button class="go" disabled={busy} onclick={add}>{busy ? '…' : 'Add'}</button>
         </div>
-        {#if error}<div class="err">{error}</div>{/if}
       {:else}
         <button class="add-source" onclick={() => (adding = true)}>+ Add source</button>
       {/if}
+
+      <!-- Outside the add form: a failed ⟳ or remove reports here too. -->
+      {#if error}<div class="err">{error}</div>{/if}
     </div>
   {/if}
 </div>

@@ -218,6 +218,18 @@ volume — the classic "permission denied on first start". `folders` fixes that
 declaratively: Maison creates each one and takes ownership of it *before* the
 stack comes up.
 
+**`folders` is the only mechanism.** Maison does not read `volumes:` and guess
+which bind sources are directories — a compose file says nothing about whether a
+source is a directory or a config file, and every heuristic for it (a trailing
+`/`, a dot in the last segment) is wrong in one direction or the other: a
+directory created where the app wanted a file, or a silently root-owned data dir.
+So a directory an app needs is a directory the app **declares**. Anything not
+declared is left to Docker, exactly as it would be outside Maison.
+
+That is a porting step for an app coming from a CasaOS store: its bind mounts
+work, but any directory that needs `PUID:PGID` ownership before first start has
+to be listed here.
+
 ```yaml
 x-compose-app:
   schema_version: 2

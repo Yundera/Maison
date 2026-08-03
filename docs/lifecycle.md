@@ -49,7 +49,7 @@ recreates a removed one, and re-applies a changed compose, all with the same cal
 | Step | What happens | On failure |
 |---|---|---|
 | **1. Resolve the spec** | Read `x-compose-app` (`folders`, `hooks`) from base + override, with `x-casaos` `pre-install-cmd` / `post-install-cmd` as the fallback for the install hooks. Later files win, key by key. | — |
-| **2. Ensure folders** | Create every declared folder; apply user/group/mode; walk the tree when `recursive`. Then create the bind-mount sources inferred from the compose files themselves. | **Fatal** for a *declared* folder (it is the author's contract). Logged for an *inferred* one. |
+| **2. Ensure folders** | Create every folder declared under `folders`; apply user/group/mode; walk the tree when `recursive`. Declared folders are the *only* directories Maison creates — it never infers them from `volumes:`. | **Fatal** — a declared folder is the author's contract. |
 | **3. `pre_up`** | Run the hook. | **Fatal** — a precondition that doesn't hold must not start the stack. |
 | **4. `docker compose up -d`** | Base + override, with the app's `.env` and interpolation variables. | **Fatal.** |
 | **5. `post_up`** | Run the hook. | **Logged and swallowed** — the stack is already running; tearing a healthy app back down over a failed after-the-fact tweak is worse than the failed tweak. |
@@ -149,7 +149,7 @@ leave an app whose only repair path is the config window that broke it), then
 same.
 
 So **saving a config re-runs the up sequence**, hooks and folders included. An
-override that adds a new bind mount gets its directory created on save, not on the
+override that adds a `folders` entry gets its directory created on save, not on the
 next restart.
 
 `SetTips` is the exception: tips never affect the running container, so saving them
@@ -239,7 +239,6 @@ Two mappings, easy to confuse, both in `internal/envinject`:
 | Step | Fails the operation? | Why |
 |---|---|---|
 | Declared `folders` entry (bad path, unknown user, unquoted mode) | **Yes** | It is the author's explicit contract, and starting without it gives the app an unwritable mount — a confusing "permission denied" instead of a clear error. |
-| Inferred bind directory | No (logged) | Maison guessed it from a volume; a guess should not block a valid start. |
 | `pre_install`, `pre_up` | **Yes** | Preconditions. |
 | `post_install`, `post_up` | No (logged) | The stack is already up. |
 | `docker compose up` | **Yes** | Obviously. |

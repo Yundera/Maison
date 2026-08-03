@@ -195,9 +195,11 @@ x-casaos:
 	}
 }
 
-// Prepare creates the bind-mount sources a compose file implies, even when the
-// app declares no folders at all — the pre-existing behaviour.
-func TestPrepareCreatesBindDirs(t *testing.T) {
+// Prepare creates declared folders and ONLY declared folders. A bind mount whose
+// source Maison was never told about is left to Docker — Maison does not inspect
+// `volumes:` and guess which sources are directories, because nothing in a compose
+// file says whether a bind source is a directory or a file.
+func TestPrepareCreatesDeclaredFoldersOnly(t *testing.T) {
 	cfg := testConfig(t)
 	dir := t.TempDir()
 	base := filepath.Join(dir, "docker-compose.yml")
@@ -207,15 +209,24 @@ services:
     image: app:1
     volumes:
       - /DATA/AppData/app/config:/config
+      - /DATA/AppData/app/Caddyfile:/etc/caddy/Caddyfile
+x-compose-app:
+  schema_version: 2
+  folders:
+    - /DATA/AppData/app/config
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files := []string{base}
-	if err := Prepare(cfg, "app", dir, files, Load(files)); err != nil {
+	if err := Prepare(cfg, "app", dir, Load([]string{base})); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.DataRoot, "AppData/app/config")); err != nil {
-		t.Fatalf("bind dir not created: %v", err)
+		t.Fatalf("declared folder not created: %v", err)
+	}
+	// The undeclared file-style bind must be left alone: creating a directory here
+	// is what breaks an app whose bind source is a config file.
+	if _, err := os.Stat(filepath.Join(cfg.DataRoot, "AppData/app/Caddyfile")); !os.IsNotExist(err) {
+		t.Fatalf("undeclared bind source was created (err=%v), want it left to Docker", err)
 	}
 }
 

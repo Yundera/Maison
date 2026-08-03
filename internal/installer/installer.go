@@ -277,7 +277,7 @@ func (in *Installer) Install(ctx context.Context, storeURL, id, fromBackup strin
 	// hook below routinely seeds config files into them. stackup.Up ensures them
 	// again at up time (idempotent), so an app started later still gets them.
 	spec := stackup.Load(files)
-	if err := stackup.Prepare(in.cfg, project, appDir, files, spec); err != nil {
+	if err := stackup.Prepare(in.cfg, project, appDir, spec); err != nil {
 		return err
 	}
 

@@ -10,7 +10,6 @@ package envinject
 import (
 	"bytes"
 	"os"
-	"path"
 	"sort"
 	"strings"
 
@@ -196,74 +195,6 @@ func Transform(raw []byte, cfg config.Config, mainService string) ([]byte, error
 	}
 
 	return yaml.Marshal(doc)
-}
-
-// VolumeDirs returns the CONTAINER-side directories that back an app's bind
-// mounts, so the installer can pre-create them (they then exist on the host via
-// Maison's own data mount, ready for the app's bind sources). File-style bind
-// sources (a '.' in the last segment) are skipped — Docker would otherwise
-// create a directory where a file is expected.
-func VolumeDirs(raw []byte, cfg config.Config) []string {
-	var doc map[string]any
-	if yaml.Unmarshal(raw, &doc) != nil {
-		return nil
-	}
-	services, _ := doc["services"].(map[string]any)
-
-	seen := map[string]bool{}
-	var dirs []string
-	add := func(src string) {
-		container := toContainerPath(src, cfg)
-		if container == "" || seen[container] {
-			return
-		}
-		seen[container] = true
-		dirs = append(dirs, container)
-	}
-
-	for _, s := range services {
-		svc, ok := s.(map[string]any)
-		if !ok {
-			continue
-		}
-		vols, ok := svc["volumes"].([]any)
-		if !ok {
-			continue
-		}
-		for _, v := range vols {
-			switch vol := v.(type) {
-			case string:
-				if i := strings.Index(vol, ":"); i > 0 {
-					add(vol[:i])
-				}
-			case map[string]any:
-				if src, ok := vol["source"].(string); ok {
-					add(src)
-				}
-			}
-		}
-	}
-	return dirs
-}
-
-// toContainerPath maps a compose bind source to the path Maison can create
-// inside its own data mount, or "" if it isn't a data-root bind directory.
-func toContainerPath(src string, cfg config.Config) string {
-	src = ContainerPath(src, cfg)
-	// Skip sources with unresolved variables we don't own (e.g. $AppID) — those
-	// are handled by compose interpolation / install hooks, not pre-creation.
-	if strings.Contains(src, "$") {
-		return ""
-	}
-	// Only manage absolute paths under our data root; skip named volumes and
-	// file-style binds.
-	if !strings.HasPrefix(src, cfg.DataRoot) {
-		return ""
-	}
-	if strings.Contains(path.Base(src), ".") {
-		return ""
-	}
-	return src
 }
 
 // ContainerPath maps a host-side data path (the form written into an app's

@@ -103,7 +103,7 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 	Normalize(cfg, project, dir) // after SyncRoutes: the vars Maison owns win over its seeds
 	spec := Load(files)
 
-	if err := Prepare(cfg, project, dir, files, spec); err != nil {
+	if err := Prepare(cfg, project, dir, spec); err != nil {
 		return err
 	}
 	if h := spec.Hooks.PreUp; h != "" {
@@ -123,27 +123,20 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 }
 
 // Prepare creates the directories the app needs before anything touches its
-// stack: the ones declared in x-compose-app `folders`, plus the bind-mount
-// sources derived from the compose files themselves (the implicit default, kept
-// for every app that declares no folders at all). It is idempotent, so the
-// installer can call it early — before the pre_install hook — and let Up call it
-// again at up time.
-func Prepare(cfg config.Config, project, dir string, files []string, spec Spec) error {
+// stack: exactly the ones declared in x-compose-app `folders`, and nothing else.
+//
+// Maison does not guess. A bind mount whose source is missing is Docker's to
+// create — root-owned, as always — and an app that needs it to exist with a
+// given owner says so under `folders`. There is no inference from the compose
+// file to fall back on, because any such inference has to decide whether a bind
+// source is a file or a directory with no information to decide it on, and gets
+// it wrong in both directions: a directory created where the app wanted a config
+// file, or a silently root-owned data dir. The declaration is the only contract.
+//
+// Prepare is idempotent, so the installer can call it early — before the
+// pre_install hook — and let Up call it again at up time.
+func Prepare(cfg config.Config, project, dir string, spec Spec) error {
 	envFile, _ := os.ReadFile(filepath.Join(dir, ".env"))
-
-	for _, path := range files {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		for _, d := range envinject.VolumeDirs(raw, cfg) {
-			// Best-effort: these are inferred, not declared, so a failure here is not
-			// the author's contract and must not block an otherwise valid start.
-			if err := ensure(cfg, xcomposeapp.Folder{Path: d}); err != nil {
-				log.Printf("%s: bind dir %s: %v", project, d, err)
-			}
-		}
-	}
 	return EnsureFolders(cfg, project, spec.Folders, envFile)
 }
 

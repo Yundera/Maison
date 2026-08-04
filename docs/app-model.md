@@ -156,32 +156,121 @@ with no health check has no dot.
 
 ---
 
-## Uninstall = archive by rename (never delete)
+## Backups live in `.backups/`
 
-Maison **never removes user data.** Uninstalling an app **renames** its folder to
-a dated archive name alongside it:
+Every archive of every app sits under one directory, one sub-directory per app:
+
+```
+/DATA/AppData/<app>/                          the live app
+/DATA/AppData/.backups/<app>/<stamp>/         a folder archive
+/DATA/AppData/.backups/<app>/<stamp>.zip      a compressed archive
+/DATA/AppData/.backups/<app>/.staging-<stamp>/ a snapshot still being taken
+```
+
+`<stamp>` is `YYYY-MM-DD_HHMMSS` — seconds included, so the name is the whole
+identity and two archives of one app can never collide. Anything in that directory
+that does not parse as a stamp (a staging folder, a `.partial` zip, a stray file)
+is **not an archive**: it is never listed and never restorable, which is what makes
+an interrupted backup inert rather than dangerous.
+
+Two properties of the location are load-bearing:
+
+- **The leading dot hides it.** `.backups` contains a `.`, so the existing "dot in a
+  name = hidden" rule (below) keeps it off the dashboard with no special case.
+- **It is inside `AppData`, so archiving is a rename.** Same filesystem means
+  `os.Rename`, which is instantaneous no matter how much data the folder holds.
+  Moving `.backups` to another volume would silently turn every uninstall into a
+  full copy.
+
+An archive carries the **whole app folder** — `docker-compose.yml`, the override,
+`.env` and the data — so it restores into a working app on its own, without the
+store.
+
+There is deliberately **no distinction between an archive made by an uninstall and
+one made on demand.** A backup is a backup, whatever created it; both are listed,
+restored and deleted the same way.
+
+---
+
+## Uninstall = archive (never delete)
+
+Maison **never removes user data.** Uninstalling an app **moves** its folder into
+the backups tree:
 
 ```
 /DATA/AppData/<app>
-      ↓ uninstall (2026-07-10)
-/DATA/AppData/<app>.2026-07-10.archive
+      ↓ uninstall
+/DATA/AppData/.backups/<app>/2026-07-10_153045
 ```
 
 - The stack is stopped and its containers removed first, then the directory is
-  renamed. The bytes on disk are untouched — only the name changes.
+  renamed. The bytes on disk are untouched — only the path changes.
 - **Zip is an option.** When enabled, the folder is compressed to
-  `<app>.2026-07-10.archive.zip` instead of a plain renamed directory. Default is a
-  plain rename (fast, no copy).
+  `<stamp>.zip` instead of a plain move. Default is a plain move (fast, no copy).
 - **It runs detached, with progress on the tile.** Confirming the dialog only
   *starts* the uninstall; the dialog closes immediately and the tile carries the
   same progress bar an install shows, in red (see `lifecycle.md`). A zipped
   archive of a large app is a multi-minute copy, and nothing waits on it.
-- To "reinstall", the operator renames the archive back to `<app>` (or unzips it) —
-  data returns exactly as it was.
+- The app vanishes from the grid — its folder is gone — but its data is one
+  restore away, from the store's install dialog or from Settings → Backups.
 
-Because the archive name **contains dots**, it is automatically hidden from the
-dashboard (next section) — an uninstalled app vanishes from the grid without any
-data being destroyed.
+---
+
+## Backup = archive without uninstalling
+
+The same archive, made while the app stays installed. It is the only operation that
+must stop a running app, and it is built to stop it for as little time as possible:
+
+```
+copy      app up      full mirror into .staging-<stamp>   (no downtime)
+stop      ─────────────────────────────────────────────── downtime starts
+sync      app down    only what changed during the copy
+start     ─────────────────────────────────────────────── downtime ends
+compress  app up      zip the snapshot, then delete it    (zip only)
+```
+
+Downtime is proportional to what the app **wrote during the first pass**, not to how
+big it is — a 40 GB app whose data is mostly at rest is down for seconds. The result
+is consistent either way: every byte in the snapshot was read either before the app
+touched it again, or while the app was down.
+
+A backup while the app is *already* stopped skips the stop and the restart entirely.
+
+Two guards, because a backup is the one feature that can hurt the box it protects:
+
+- **Free space is checked before any bytes move** — the app folder's measured size
+  plus headroom (×1.1 for a folder archive, ×2 for a zip, which needs the snapshot
+  and the zip on disk at once). Filling the data disk does not just fail the backup;
+  every other app starts failing writes.
+- **The restart is deferred**, so a failure anywhere after the stop still brings the
+  app back up. An app left down is worse than a missing backup.
+
+---
+
+## Restore = the swap
+
+Restoring over a live app **archives what is there first**:
+
+```
+1. stop the app (if it was running)
+2. rename AppData/<app>  →  .backups/<app>/<now>      ← instant, costs nothing
+3. put the chosen archive back as AppData/<app>
+4. start the app (if it was running)
+```
+
+Step 2 is what makes a mis-clicked restore undoable, and it is free: a rename inside
+the same tree. It also balances the books — a *folder* archive is consumed by step 3
+(renamed back), and step 2 has just created one in its place, so the archive count
+does not drop. A *zip* is extracted rather than moved, so it survives and can be
+restored again.
+
+Restoring an app with no live folder — an uninstalled one, reached from
+Settings → Backups — is the same path with steps 1, 2 and 4 having nothing to do.
+Once the folder lands, the app has a tile again.
+
+> **Scope.** Backups are on the same disk as the apps. They cover a bad update, a
+> broken config or a regretted uninstall — **not** a failed disk. They are a rollback
+> mechanism, not disaster recovery.
 
 ---
 
@@ -193,13 +282,13 @@ store app first asks the server for that app's archives
 straight away, one click as before. With some, it offers them:
 
 ```
-┌─────────────────────────────┐
-│ ▸ Fresh install             │
-│                             │
-│ RESTORE FROM BACKUP         │
-│ ▸ 2026-07-10        folder  │
-│ ▸ 2026-06-02  zip · 78.7 MB │
-└─────────────────────────────┘
+┌──────────────────────────────────┐
+│ ▸ Fresh install                  │
+│                                  │
+│ RESTORE FROM BACKUP              │
+│ ▸ 2026-07-10 15:30       folder  │
+│ ▸ 2026-06-02 09:00 zip · 78.7 MB │
+└──────────────────────────────────┘
 ```
 
 Picking one posts `{"from_backup": "<archive name>"}` to the install endpoint,
@@ -217,14 +306,16 @@ store's current version (the strict base is meant to be replaceable) but
 comes back with its old data and its old variables, on a fresh app definition.
 
 The project name is resolved **server-side** (`Installer.ProjectFor`): a store id
-is `Dufs`, but its compose project — and therefore its archive prefix — is `dufs`.
-The client cannot derive this, since the project name may come from the compose
-file's own `name:`.
+is `Dufs`, but its compose project — and therefore its backup directory — is
+`dufs`. The client cannot derive this, since the project name may come from the
+compose file's own `name:`.
 
-Restoring **refuses to overwrite a live app** (`AppData/<app>/` already present):
-uninstall it first, which archives today's state, and then restore. That keeps
-the two operations symmetric and means a restore can never destroy the data it is
-about to replace.
+This path **refuses to overwrite a live app** (`apps.RestoreBackup` errors when
+`AppData/<app>/` is already present), because an install-from-backup is meant to
+land on a clean slate. To put an archive back over an app that is still installed,
+use the restore in the app's **Backups** tab — which does the swap above, archiving
+the current state on the way. Same archives, two entry points, and neither can
+destroy the data it is about to replace.
 
 ---
 
@@ -234,10 +325,9 @@ about to replace.
 contains a `.` is **not displayed** as an app:
 
 ```
-AppData/jellyfin                     → shown  (tile "jellyfin")
-AppData/jellyfin.2026-07-10.archive  → hidden (uninstalled archive)
-AppData/jellyfin.2026-07-10.archive.zip → hidden
-AppData/.tmp-download                → hidden (scratch / hidden dir)
+AppData/jellyfin        → shown  (tile "jellyfin")
+AppData/.backups        → hidden (every archive of every app lives in here)
+AppData/.tmp-download   → hidden (scratch / hidden dir)
 ```
 
 This single rule does double duty:
@@ -260,8 +350,11 @@ name.
 | Variables | `.env` (prefilled on create) |
 | Running / stopped / busy / clickable | Live Docker state |
 | Health dot | Docker health check |
-| Uninstall | Rename to `<app>.<date>.archive` (optionally `.zip`) — data never deleted |
+| Uninstall | Move to `.backups/<app>/<stamp>` (optionally `.zip`) — data never deleted |
+| Backup | Two-pass copy into `.backups/<app>/<stamp>`; the app is down only for the delta pass |
+| Restore | Archive the current folder, then put the chosen one back — always reversible |
 | Install from backup | Restore an archive as `AppData/<app>/`, then install over it (keeps its `.env` + data) |
+| Where backups live | `AppData/.backups/<app>/<YYYY-MM-DD_HHMMSS>[.zip]` |
 | Hidden entries | Any name containing `.` |
 </content>
 </invoke>

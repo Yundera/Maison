@@ -256,7 +256,7 @@
     color: #29343d;
   }
   .muted {
-    color: var(--grey-600);
+    color: var(--text-subtle);
   }
   .error {
     color: var(--red);

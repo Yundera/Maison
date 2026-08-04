@@ -15,7 +15,9 @@
   --cyan: hsl(204, 86%, 53%);
   --primary: hsl(216, 90%, 54%);
 
-  /* CasaOS greys (text on dark glass) */
+  /* CasaOS greys. These are the raw ramp; prefer the semantic tokens below —
+     the ramp says which grey, the semantic name says what it is for, and only
+     the latter survives a theme change. */
   --grey-100: hsla(208, 16%, 96%, 1);
   --grey-200: hsla(208, 16%, 94%, 1);
   --grey-300: hsla(208, 16%, 91%, 1);
@@ -24,19 +26,60 @@
   --grey-800: hsla(208, 20%, 20%, 1);
   --grey-font: rgba(144, 149, 153, 1);
 
+  /* ── Semantic surface + text tokens (PANELS) ───────────────────────────────
+     Maison has exactly two visual contexts, and mixing them is what breaks:
+
+       DESKTOP — the dashboard. Wallpaper + dark frosted glass, light text.
+                 This is the CasaOS look and it is not governed by these
+                 tokens; see --glass-* below.
+       PANELS  — everything that is a page rather than the desktop: modals,
+                 the store, the settings page, dialogs. Light surfaces, dark
+                 text. That is what these tokens are.
+
+     Panel components must use these rather than literal colours. The rule that
+     was violated before this existed: a component hardcoded `#fff` text because
+     it happened to sit on a dark modal, and became invisible the moment it was
+     reused on a light page. Name the role, not the colour. */
+
+  /* Surfaces, lightest first. */
+  --surface: #fff; /* panels, modals, popovers, dialogs */
+  --surface-2: hsla(208, 16%, 96%, 1); /* headers, inset rows, code blocks */
+  --surface-3: hsla(208, 16%, 92%, 1); /* hover / pressed */
+  --surface-sunken: hsla(208, 18%, 97%, 1); /* editors, log panes */
+
+  /* Hairlines. */
+  --border: hsla(208, 16%, 88%, 1);
+  --border-strong: hsla(208, 16%, 78%, 1);
+
+  /* Text, most prominent first. */
+  --text: hsla(208, 24%, 18%, 1); /* headings, primary copy */
+  --text-muted: hsla(208, 14%, 44%, 1); /* secondary copy, hints */
+  --text-subtle: hsla(208, 12%, 58%, 1); /* metadata, placeholders */
+  --text-on-accent: #fff; /* on --primary / --red fills */
+
+  /* Scrim behind a modal. Still a dark veil — it exists to push the page back,
+     and a light veil over a light page pushes nothing back. */
+  --scrim: rgba(18, 24, 33, 0.32);
+
   /* Status dots */
   --status-running: #779e2a;
   --status-exited: #ff1616;
 
   /* Progress. An app shows ONE bar at a time and the colour says which
      operation it is — see appProgress() in lib/stores/apps.ts. The tile and the
-     store's install pill both read these, so the three states look the same
-     wherever they appear. */
+     store's install pill both read these, so the four states look the same
+     wherever they appear. Backup is amber: not destructive like an uninstall,
+     but the app is briefly down, so it should not read as routine either. */
   --progress-download: var(--primary);
   --progress-install: hsl(118, 60%, 48%);
   --progress-uninstall: var(--red);
+  --progress-backup: hsl(38, 92%, 50%);
 
-  /* Frosted glass (the single most load-bearing visual) */
+  /* Frosted glass (the single most load-bearing visual).
+     DELIBERATELY DARK, and not covered by the light-surface tokens above: the
+     dashboard is the CasaOS look the project commits to, glass over the user's
+     wallpaper with light text on it. The light tokens are for panels — modals,
+     the store, settings — everything that is a *page*, not the desktop. */
   --glass-color: rgba(53, 54, 58, 0.4);
   --glass-blur: blur(5px) saturate(180%);
   --glass-radius: 10px;

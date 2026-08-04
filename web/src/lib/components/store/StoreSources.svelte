@@ -159,7 +159,7 @@
     white-space: nowrap;
   }
   .caret {
-    color: var(--grey-600);
+    color: var(--text-subtle);
   }
   .menu {
     position: absolute;
@@ -175,7 +175,7 @@
   }
   .head {
     font-size: 0.72rem;
-    color: var(--grey-600);
+    color: var(--text-subtle);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     padding: 0.25rem 0.35rem 0.4rem;
@@ -200,7 +200,7 @@
   .reload {
     border: none;
     background: none;
-    color: var(--grey-600);
+    color: var(--text-subtle);
     font-size: 0.95rem;
     line-height: 1;
     cursor: pointer;

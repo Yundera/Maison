@@ -190,7 +190,7 @@ func (s *Server) handleStoreBackups(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	backups := apps.ListBackups(s.cfg.AppsDir(), project)
+	backups := apps.ListBackups(s.cfg.BackupsDir(), project)
 	if backups == nil {
 		backups = []apps.Backup{}
 	}

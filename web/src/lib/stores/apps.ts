@@ -46,6 +46,17 @@ export interface App {
   archive?: number
   /** Set when an uninstall failed; the tile shows the error until dismissed. */
   uninstall_error?: string
+  /** True while a backup or restore is in flight: the tile shows the same one
+   *  bar again, in its own colour. */
+  backing_up?: boolean
+  /** First (live) mirror pass, 0-100 — the long one, with the app still up. */
+  copy?: number
+  /** Second (stopped) mirror pass, 0-100 — the app's downtime. */
+  sync?: number
+  /** Snapshot compression, 0-100 (zip backups only). */
+  compress?: number
+  /** Set when a backup/restore failed; the tile shows it until dismissed. */
+  backup_error?: string
 }
 
 // Last-known app list, cached in localStorage so a page reload paints the grid
@@ -162,8 +173,8 @@ export async function dismissAppError(id: string): Promise<void> {
 
 /** Which operation a progress bar is showing. The kind picks the bar's colour
  *  (`--progress-*` in styles/tokens.css): downloading is blue, starting the
- *  stack is green, uninstalling is red. */
-export type ProgressKind = 'download' | 'install' | 'uninstall'
+ *  stack is green, uninstalling is red, backing up is amber. */
+export type ProgressKind = 'download' | 'install' | 'uninstall' | 'backup'
 
 export interface AppProgress {
   kind: ProgressKind
@@ -200,6 +211,16 @@ export function appProgress(a: App | undefined): AppProgress | null {
       pct: downloading ? (a.download ?? 0) : (a.start ?? 0),
       label: downloading ? 'downloading' : 'starting_up',
     }
+  }
+  if (a.backing_up) {
+    // A restore has no measured tracks — it is renames and (for a zip) an
+    // extract — so it reports its phase alone and the bar just sits full while
+    // the label says what is happening.
+    if (a.phase === 'restore') return { kind: 'backup', pct: 100, label: 'restoring' }
+    if ((a.copy ?? 0) < 100) return { kind: 'backup', pct: a.copy ?? 0, label: 'copying' }
+    if ((a.sync ?? 0) < 100) return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing' }
+    if (a.phase === 'start') return { kind: 'backup', pct: 100, label: 'starting_up' }
+    return { kind: 'backup', pct: a.compress ?? 100, label: 'compressing' }
   }
   return null
 }

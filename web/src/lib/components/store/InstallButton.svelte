@@ -288,6 +288,9 @@
   .fill.uninstall {
     background: var(--progress-uninstall);
   }
+  .fill.backup {
+    background: var(--progress-backup);
+  }
   .pct {
     font-variant-numeric: tabular-nums;
   }

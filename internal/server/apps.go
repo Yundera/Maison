@@ -136,8 +136,8 @@ func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
-// handleDismissApp clears a failed install/uninstall overlay for an app, so the
-// operator can get rid of the red "!" without retrying the operation.
+// handleDismissApp clears a failed install/uninstall/backup overlay for an app, so
+// the operator can get rid of the red "!" without retrying the operation.
 func (s *Server) handleDismissApp(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return
@@ -147,5 +147,6 @@ func (s *Server) handleDismissApp(w http.ResponseWriter, r *http.Request) {
 		s.installer.ClearInstall(id)
 	}
 	s.apps.ClearUninstall(id)
+	s.apps.ClearBackup(id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

@@ -20,6 +20,7 @@
   import { openStream } from '../live/stream'
   import { renderSize } from '../format'
   import OverrideForm from './OverrideForm.svelte'
+  import BackupsTab from './BackupsTab.svelte'
 
   let {
     id,
@@ -36,13 +37,32 @@
   } = $props()
 
   // Managed apps get the config-editing pages (incl. editable Tips, saved into
-  // the override); every app gets logs + stats.
-  type Tab = 'tips' | 'webui' | 'env' | 'compose' | 'override' | 'update' | 'logs' | 'stats'
-  const tabs = $derived<Tab[]>(
-    managed
-      ? ['tips', 'webui', 'env', 'compose', 'override', 'update', 'logs', 'stats']
-      : ['logs', 'stats'],
-  )
+  // the override) and Backups — which is a managed-only page because it archives
+  // and restores the app *folder*, and an unmanaged stack has none. Every app
+  // gets logs + stats.
+  type Tab =
+    | 'tips'
+    | 'webui'
+    | 'env'
+    | 'compose'
+    | 'override'
+    | 'update'
+    | 'backups'
+    | 'logs'
+    | 'stats'
+  const MANAGED_TABS: Tab[] = [
+    'tips',
+    'webui',
+    'env',
+    'compose',
+    'override',
+    'update',
+    'backups',
+    'logs',
+    'stats',
+  ]
+  const UNMANAGED_TABS: Tab[] = ['logs', 'stats']
+  const tabs = $derived<Tab[]>(managed ? MANAGED_TABS : UNMANAGED_TABS)
   const tabLabel: Record<Tab, string> = {
     tips: 'Tips',
     webui: 'Web UI',
@@ -50,6 +70,7 @@
     compose: 'Compose',
     override: 'Override',
     update: 'Update',
+    backups: 'Backups',
     logs: 'Logs',
     stats: 'Stats',
   }
@@ -58,9 +79,7 @@
   // default first tab.
   function firstTab(): Tab {
     const wanted = initialTab as Tab | undefined
-    const available: Tab[] = managed
-      ? ['tips', 'webui', 'env', 'compose', 'override', 'update', 'logs', 'stats']
-      : ['logs', 'stats']
+    const available = managed ? MANAGED_TABS : UNMANAGED_TABS
     if (wanted && available.includes(wanted)) return wanted
     return managed ? 'tips' : 'logs'
   }
@@ -597,6 +616,8 @@
             {applyingUpdate ? 'Updating…' : 'Update now'}
           </button>
         </div>
+      {:else if tab === 'backups'}
+        <BackupsTab {id} />
       {:else if tab === 'logs'}
         {@render servicePicker()}
         {#if !servicesLoaded}
@@ -666,18 +687,18 @@
     position: fixed;
     inset: 0;
     z-index: 95;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--scrim);
     display: grid;
     place-items: center;
   }
   .modal {
     width: min(94vw, 820px);
     height: min(88vh, 680px);
-    background: rgba(28, 30, 34, 0.92);
+    background: var(--surface);
     backdrop-filter: blur(14px);
     border-radius: 14px;
     padding: 1.1rem 1.35rem;
-    color: var(--grey-100);
+    color: var(--text);
     display: flex;
     flex-direction: column;
   }
@@ -693,25 +714,25 @@
   .close {
     background: none;
     border: none;
-    color: var(--grey-200);
+    color: var(--text-muted);
     font-size: 1.1rem;
   }
   .tabs {
     display: flex;
     gap: 0.25rem;
     margin: 0.75rem 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid var(--border);
   }
   .tabs button {
     background: none;
     border: none;
-    color: var(--grey-400);
+    color: var(--text-muted);
     padding: 0.5rem 0.9rem;
     border-bottom: 2px solid transparent;
     font-size: 0.9rem;
   }
   .tabs button.active {
-    color: var(--grey-100);
+    color: var(--text);
     border-bottom-color: var(--primary);
   }
   .content {
@@ -728,23 +749,23 @@
     gap: 0.15rem;
     padding: 0.15rem;
     margin-bottom: 0.6rem;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--surface-sunken);
     border-radius: 8px;
   }
   .views button {
     background: none;
     border: none;
-    color: var(--grey-400);
+    color: var(--text-muted);
     border-radius: 6px;
     padding: 0.3rem 0.8rem;
     font-size: 0.78rem;
   }
   .views button.active {
-    background: rgba(255, 255, 255, 0.12);
-    color: var(--grey-100);
+    background: var(--surface-3);
+    color: var(--text);
   }
   .hint {
-    color: var(--grey-400);
+    color: var(--text-muted);
     font-size: 0.8rem;
     margin: 0 0 0.5rem;
   }
@@ -752,7 +773,7 @@
     color: var(--primary);
   }
   code {
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--surface-2);
     padding: 0 0.25rem;
     border-radius: 4px;
   }
@@ -773,13 +794,13 @@
   }
   .form label span {
     font-size: 0.8rem;
-    color: var(--grey-400);
+    color: var(--text-muted);
   }
   .form input,
   .form select {
-    background: rgba(0, 0, 0, 0.35);
-    color: var(--grey-100);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.5rem 0.6rem;
     font-family: ui-monospace, monospace;
@@ -801,9 +822,9 @@
     gap: 0.5rem;
   }
   .env-row input {
-    background: rgba(0, 0, 0, 0.35);
-    color: var(--grey-100);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.45rem 0.6rem;
     font-family: ui-monospace, monospace;
@@ -816,21 +837,21 @@
   .env-row .remove {
     background: none;
     border: none;
-    color: var(--grey-400);
+    color: var(--text-muted);
     font-size: 0.85rem;
     padding: 0.25rem;
     border-radius: 6px;
   }
   .env-row .remove:hover {
     color: var(--red);
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--surface-2);
   }
   textarea {
     flex: 1;
     min-height: 8rem;
-    background: rgba(0, 0, 0, 0.35);
-    color: var(--grey-100);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.6rem;
     font-family: ui-monospace, monospace;
@@ -840,7 +861,7 @@
   .code {
     flex: 1;
     overflow: auto;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--surface-sunken);
     padding: 0.6rem;
     border-radius: 8px;
     font-size: 0.75rem;
@@ -848,7 +869,7 @@
     white-space: pre;
   }
   .code.readonly {
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
   }
   .actions {
     display: flex;
@@ -859,20 +880,20 @@
   }
   .msg {
     font-size: 0.8rem;
-    color: var(--grey-400);
+    color: var(--text-muted);
   }
   .primary {
     background: var(--primary);
-    color: #fff;
+    color: var(--text-on-accent);
     border: none;
     border-radius: 8px;
     padding: 0.5rem 1.1rem;
     font-size: 0.875rem;
   }
   .actions button:not(.primary) {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--grey-100);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.5rem 1.1rem;
     font-size: 0.875rem;
@@ -885,8 +906,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
-    background: rgba(0, 0, 0, 0.25);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.75rem 0.9rem;
     margin-bottom: 0.5rem;
@@ -898,7 +919,7 @@
     gap: 0.75rem;
   }
   .update-row .k {
-    color: var(--grey-400);
+    color: var(--text-muted);
     font-size: 0.8rem;
   }
   .update-row .v {
@@ -914,12 +935,12 @@
   }
   .picker label {
     font-size: 0.8rem;
-    color: var(--grey-400);
+    color: var(--text-muted);
   }
   .picker select {
-    background: rgba(0, 0, 0, 0.35);
-    color: var(--grey-100);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.35rem 0.6rem;
     font-size: 0.8rem;
@@ -927,7 +948,7 @@
   .logs {
     flex: 1;
     overflow: auto;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--surface-sunken);
     border-radius: 8px;
     padding: 0.6rem;
     font-family: ui-monospace, monospace;
@@ -952,7 +973,7 @@
     grid-template-columns: 4rem 1fr;
   }
   .stat .k {
-    color: var(--grey-400);
+    color: var(--text-muted);
     font-size: 0.85rem;
   }
   .stat .v {
@@ -979,12 +1000,12 @@
     border-color: var(--yellow);
   }
   .health-none {
-    color: var(--grey-400);
-    border-color: rgba(255, 255, 255, 0.2);
+    color: var(--text-muted);
+    border-color: var(--border);
   }
   .bar {
     height: 8px;
-    background: rgba(255, 255, 255, 0.15);
+    background: var(--surface-3);
     border-radius: 4px;
     overflow: hidden;
   }

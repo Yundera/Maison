@@ -70,7 +70,7 @@
     position: fixed;
     inset: 0;
     z-index: 110;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--scrim);
     display: grid;
     place-items: center;
   }
@@ -87,7 +87,7 @@
   }
   .body {
     margin: 0 0 0.9rem;
-    color: var(--grey-600);
+    color: var(--text-subtle);
     font-size: 0.9rem;
   }
   .check {
@@ -100,7 +100,7 @@
   .note {
     margin: 0.4rem 0 0;
     font-size: 0.78rem;
-    color: var(--grey-600);
+    color: var(--text-subtle);
   }
   code {
     background: hsla(208, 16%, 94%, 1);

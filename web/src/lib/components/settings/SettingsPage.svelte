@@ -9,18 +9,36 @@
   // instead of tearing them down and rebuilding on every visit.
   //
   // Adding a section: an entry in route.ts's SETTINGS_SECTIONS (that is the URL
-  // vocabulary), plus its label/icon/panel in the three switches below.
+  // vocabulary), plus one entry in SECTIONS below. It used to be three parallel
+  // switches — a label ternary, an icon if/else and a panel chain — which only
+  // worked while there were two sections and disagreed the moment there were more.
   import { SETTINGS_SECTIONS, openSettings, closeSettings, type SettingsSection } from '../../route'
   import { settingsSection } from '../../stores/ui'
   import { t } from '../../i18n'
   import DomainSection from './DomainSection.svelte'
   import AppEnvSection from './AppEnvSection.svelte'
+  import BackupsSection from './BackupsSection.svelte'
 
   // route.ts guarantees the store holds a real section (it normalises the URL), so
   // this cast only re-states what the router already checked.
   const current = $derived($settingsSection as SettingsSection)
 
-  const labelKey = (s: SettingsSection) => (s === 'domain' ? 'domains' : 'app_env')
+  // `icon` is an SVG path set drawn in a 24×24 box, so a new section is one line
+  // here rather than a branch in the markup.
+  const SECTIONS: Record<SettingsSection, { label: string; icon: string }> = {
+    domain: {
+      label: 'domains',
+      icon: 'M3 12h18M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18',
+    },
+    env: {
+      label: 'app_env',
+      icon: 'M7 9l3 3-3 3M13 15h4',
+    },
+    backups: {
+      label: 'backups',
+      icon: 'M4 8h16M8 12h8M10 16h4',
+    },
+  }
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') closeSettings()
@@ -40,19 +58,16 @@
       {#each SETTINGS_SECTIONS as s (s)}
         <button class="item" class:active={current === s} aria-current={current === s ? 'page' : undefined} onclick={() => openSettings(s)}>
           <span class="ico" aria-hidden="true">
-            {#if s === 'domain'}
-              <!-- globe -->
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7">
-                <circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
-              </svg>
-            {:else}
-              <!-- terminal -->
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-                <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3M13 15h4" />
-              </svg>
-            {/if}
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              {#if s === 'domain'}
+                <circle cx="12" cy="12" r="9" />
+              {:else}
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+              {/if}
+              <path d={SECTIONS[s].icon} />
+            </svg>
           </span>
-          <span>{$t(labelKey(s))}</span>
+          <span>{$t(SECTIONS[s].label)}</span>
         </button>
       {/each}
     </nav>
@@ -62,6 +77,8 @@
         <DomainSection />
       {:else if current === 'env'}
         <AppEnvSection />
+      {:else if current === 'backups'}
+        <BackupsSection />
       {/if}
     </main>
   </div>

@@ -278,7 +278,7 @@
 
 <style>
   .hint {
-    color: var(--grey-400);
+    color: var(--text-muted);
     font-size: 0.8rem;
     margin: 0 0 0.6rem;
   }
@@ -286,7 +286,7 @@
     color: var(--red);
   }
   code {
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--surface-2);
     padding: 0 0.25rem;
     border-radius: 4px;
   }
@@ -297,16 +297,16 @@
     margin-bottom: 0.6rem;
   }
   .services button {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--surface-2);
     border: 1px solid transparent;
-    color: var(--grey-400);
+    color: var(--text-muted);
     border-radius: 999px;
     padding: 0.25rem 0.75rem;
     font-size: 0.78rem;
     font-family: ui-monospace, monospace;
   }
   .services button.active {
-    color: var(--grey-100);
+    color: var(--text);
     border-color: var(--primary);
   }
   .fields {
@@ -325,7 +325,7 @@
   }
   .label {
     font-size: 0.8rem;
-    color: var(--grey-400);
+    color: var(--text-muted);
     padding-top: 0.55rem;
   }
   .col {
@@ -348,9 +348,9 @@
   }
   input,
   select {
-    background: rgba(0, 0, 0, 0.35);
-    color: var(--grey-100);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.45rem 0.6rem;
     font-family: ui-monospace, monospace;
@@ -358,7 +358,7 @@
     width: 100%;
   }
   input::placeholder {
-    color: var(--grey-500, rgba(255, 255, 255, 0.35));
+    color: var(--text-subtle);
   }
   /* Marks a row as the store's, so an edit to it visibly departs from the base. */
   .chip {
@@ -366,16 +366,16 @@
     font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--grey-400);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
     border-radius: 999px;
     padding: 0.05rem 0.4rem;
   }
   .add {
     align-self: flex-start;
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--grey-100);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.25rem 0.7rem;
     font-size: 0.75rem;
@@ -383,7 +383,7 @@
   .icon {
     background: none;
     border: none;
-    color: var(--grey-400);
+    color: var(--text-muted);
     font-size: 0.85rem;
     padding: 0.2rem;
   }
@@ -398,18 +398,18 @@
     align-self: flex-start;
     background: none;
     border: none;
-    color: var(--grey-100);
+    color: var(--text);
     font-size: 0.82rem;
     padding: 0.5rem 0 0.2rem;
   }
   .disclosure .sub {
-    color: var(--grey-400);
+    color: var(--text-muted);
     font-size: 0.75rem;
     margin-left: 0.4rem;
   }
   .raw {
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.5rem 0.6rem;
     font-size: 0.75rem;
@@ -419,7 +419,7 @@
   }
   .note {
     font-size: 0.72rem;
-    color: var(--grey-400);
+    color: var(--text-muted);
   }
   .actions {
     display: flex;
@@ -431,14 +431,14 @@
   .msg,
   .count {
     font-size: 0.8rem;
-    color: var(--grey-400);
+    color: var(--text-muted);
   }
   .msg {
     margin-right: auto;
   }
   .primary {
     background: var(--primary);
-    color: #fff;
+    color: var(--text-on-accent);
     border: none;
     border-radius: 8px;
     padding: 0.5rem 1.1rem;

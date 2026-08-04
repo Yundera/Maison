@@ -128,6 +128,19 @@ func (c Config) AppsDir() string {
 	return filepath.Join(c.DataRoot, "AppData")
 }
 
+// BackupsDir holds every app archive, one sub-directory per app
+// (${DATA_ROOT}/AppData/.backups/<app>/<stamp>). Archives land here whether they
+// came from an uninstall or from an on-demand backup.
+//
+// It sits inside AppData rather than beside it so that an archive is always on
+// the same filesystem as the app it came from — which is what keeps uninstall's
+// archive step, and restore's swap, an instantaneous rename instead of a copy.
+// The leading dot keeps it off the dashboard for free: a name containing a dot is
+// never a tile (see apps.Registry.managedDirs and docs/app-model.md).
+func (c Config) BackupsDir() string {
+	return filepath.Join(c.DataRoot, "AppData", ".backups")
+}
+
 // StateDir is where everything Maison owns lives: its settings, its store cache,
 // and the deployment's .env.app. It defaults to Maison's own app directory —
 // ${DataRoot}/AppData/maison — the same folder a deployment installs the dashboard's

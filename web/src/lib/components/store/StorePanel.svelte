@@ -196,7 +196,7 @@
     position: fixed;
     inset: 0;
     z-index: 90;
-    background: rgba(0, 0, 0, 0.45);
+    background: var(--scrim);
     display: grid;
     place-items: center;
   }
@@ -416,7 +416,7 @@
     color: hsl(0, 0%, 71%);
   }
   .muted {
-    color: var(--grey-600);
+    color: var(--text-subtle);
   }
   .error {
     color: var(--red);

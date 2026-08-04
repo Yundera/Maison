@@ -49,7 +49,7 @@
     position: fixed;
     inset: 0;
     z-index: 110;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--scrim);
     display: grid;
     place-items: center;
   }
@@ -69,7 +69,7 @@
   }
   .hint {
     margin: 0;
-    color: var(--grey-600);
+    color: var(--text-subtle);
     font-size: 0.9rem;
   }
   .tips {

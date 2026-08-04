@@ -62,7 +62,7 @@ The README is the overview. These three are **authoritative** and win on any con
 | Doc | What it specifies |
 |-----|-------------------|
 | [`docs/app-model.md`](./docs/app-model.md) | Where an app **lives** on disk and how its tile state is derived. Start here. |
-| [`docs/lifecycle.md`](./docs/lifecycle.md) | What install / start / update / save / uninstall actually **do**, in order, and their failure semantics. |
+| [`docs/lifecycle.md`](./docs/lifecycle.md) | What install / start / update / save / uninstall / backup / restore actually **do**, in order, and their failure semantics. |
 | [`docs/x-compose-app.md`](./docs/x-compose-app.md) | Maison's own compose extension: `folders`, `hooks`, and the resolved web-UI URL. |
 | [`docs/domains.md`](./docs/domains.md) | The **additional domains** apps are published on (`sslip.io` / `nip.io` / your own), and the Caddy routes Maison generates for them. |
 | [`docs/FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md) | Row-by-row scope table vs `casa-img`. |
@@ -391,8 +391,13 @@ networks:
   everything Maison owns is in one place. It holds no `docker-compose.yml` on a
   standalone install and therefore renders no tile; a deployment that installs the
   dashboard's own compose stack here gets a Maison tile, which is intended.
-- **Uninstall never deletes.** The app folder is **renamed** to `<app>.<date>.archive`
-  (or zipped, on request); the data stays put.
+- **Backups** live at `${DATA_ROOT}/AppData/.backups/<app>/<stamp>` — one archive per
+  app per moment, holding the whole app folder (compose + override + `.env` + data).
+  Make one from an app's **Backups** tab; browse and restore every archive on the box,
+  including those of uninstalled apps, from **Settings → Backups**. They are on the
+  data disk, so they are a rollback mechanism, not disaster recovery.
+- **Uninstall never deletes.** The app folder is **moved** into `.backups/` (or zipped,
+  on request); the data stays put and is one restore away.
 - **Health:** `GET /ping` → 200.
 - **TLS / public routing** is out of scope — front Maison with a reverse proxy
   (Caddy/Traefik/mesh-router), exactly as `casa-img` is fronted.

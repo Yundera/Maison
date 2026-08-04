@@ -14,14 +14,14 @@ import (
 // the container-removal step is then skipped, leaving the on-disk half of an
 // uninstall (which is the half that carries the data-safety contract) testable
 // without a daemon.
-func newTestRegistry(t *testing.T) (*Registry, string) {
+func newTestRegistry(t *testing.T) (r *Registry, appsDir, backupsDir string) {
 	t.Helper()
 	root := t.TempDir()
-	appsDir := filepath.Join(root, "AppData")
-	if err := os.MkdirAll(appsDir, 0o755); err != nil {
+	cfg := config.Config{DataRoot: root}
+	if err := os.MkdirAll(cfg.AppsDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return New(config.Config{DataRoot: root}, nil), appsDir
+	return New(cfg, nil), cfg.AppsDir(), cfg.BackupsDir()
 }
 
 // waitFor polls cond for up to a second — StartUninstall is detached, so the
@@ -39,7 +39,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 func TestStartUninstallArchivesAndClearsItsProgress(t *testing.T) {
-	r, appsDir := newTestRegistry(t)
+	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
 	if err := r.StartUninstall("jellyfin", false); err != nil {
@@ -56,13 +56,13 @@ func TestStartUninstallArchivesAndClearsItsProgress(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(appsDir, "jellyfin")); !os.IsNotExist(err) {
 		t.Errorf("app folder still present after uninstall")
 	}
-	if got := ListBackups(appsDir, "jellyfin"); len(got) != 1 {
+	if got := ListBackups(backupsDir, "jellyfin"); len(got) != 1 {
 		t.Fatalf("ListBackups = %+v; want the uninstall archive", got)
 	}
 }
 
 func TestStartUninstallZipReportsProgressOnBothTracks(t *testing.T) {
-	r, appsDir := newTestRegistry(t)
+	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
 	var mu sync.Mutex
@@ -82,7 +82,7 @@ func TestStartUninstallZipReportsProgressOnBothTracks(t *testing.T) {
 	}
 	waitFor(t, "the uninstall to finish", func() bool { return len(r.Uninstalls()) == 0 })
 
-	backups := ListBackups(appsDir, "jellyfin")
+	backups := ListBackups(backupsDir, "jellyfin")
 	if len(backups) != 1 || !backups[0].Zip {
 		t.Fatalf("ListBackups = %+v; want one zip archive", backups)
 	}

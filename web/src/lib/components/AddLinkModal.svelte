@@ -34,7 +34,7 @@
     z-index: 100;
     display: grid;
     place-items: center;
-    background: rgba(0, 0, 0, 0.45);
+    background: var(--scrim);
   }
   .dialog {
     width: min(92vw, 26rem);
@@ -55,7 +55,7 @@
     flex-direction: column;
     gap: 0.25rem;
     font-size: 0.8rem;
-    color: var(--grey-600);
+    color: var(--text-subtle);
   }
   input {
     padding: 0.5rem 0.6rem;

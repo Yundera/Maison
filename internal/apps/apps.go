@@ -76,6 +76,15 @@ type App struct {
 	Remove         float64 `json:"remove,omitempty"`
 	Archive        float64 `json:"archive,omitempty"`
 	UninstallError string  `json:"uninstall_error,omitempty"`
+	// Backup/restore progress, overlaid the same way again (see BackupState). The
+	// tile renders one bar in its own colour, stepping through Copy (the live
+	// pass), Sync (the stopped pass) and Compress, while BackingUp is true. Also
+	// never set by List() itself.
+	BackingUp   bool    `json:"backing_up,omitempty"`
+	Copy        float64 `json:"copy,omitempty"`
+	Sync        float64 `json:"sync,omitempty"`
+	Compress    float64 `json:"compress,omitempty"`
+	BackupError string  `json:"backup_error,omitempty"`
 }
 
 // Health verdicts, aggregated across a project's containers.
@@ -95,19 +104,26 @@ type Registry struct {
 	// live). Optional.
 	OnChange func()
 
-	// OnProgress, if set, is invoked as a tracked uninstall's progress advances.
-	// It is the fine-grained twin of OnChange — events are frequent (per zipped
-	// chunk), so the server is expected to throttle it. Optional.
+	// OnProgress, if set, is invoked as a tracked uninstall's or backup's progress
+	// advances. It is the fine-grained twin of OnChange — events are frequent (per
+	// copied chunk), so the server is expected to throttle it. Optional.
 	OnProgress func()
 
 	mu         sync.Mutex
 	busy       map[string]int             // app id -> in-flight operation count
 	uninstalls map[string]*UninstallState // app id -> live uninstall progress
+	backups    map[string]*BackupState    // app id -> live backup/restore progress
 }
 
 // New creates a Registry.
 func New(cfg config.Config, dx *dockerx.Client) *Registry {
-	return &Registry{cfg: cfg, dx: dx, busy: map[string]int{}, uninstalls: map[string]*UninstallState{}}
+	return &Registry{
+		cfg:        cfg,
+		dx:         dx,
+		busy:       map[string]int{},
+		uninstalls: map[string]*UninstallState{},
+		backups:    map[string]*BackupState{},
+	}
 }
 
 // enter/leave bracket an in-flight lifecycle operation on id. A counter (not a

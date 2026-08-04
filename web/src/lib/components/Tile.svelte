@@ -293,6 +293,9 @@
   .pfill.uninstall {
     background: var(--progress-uninstall);
   }
+  .pfill.backup {
+    background: var(--progress-backup);
+  }
   .failed {
     position: absolute;
     top: 0.5rem;

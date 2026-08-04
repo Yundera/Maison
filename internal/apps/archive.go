@@ -13,48 +13,93 @@ import (
 	"time"
 )
 
-// Backup is one uninstall archive found next to the apps it was archived from —
-// the read side of Uninstall (see docs/app-model.md). It is what lets the store
-// offer "install from backup" instead of a fresh install.
+// StampLayout is the time format every archive is named with. Seconds are part of
+// it so two archives of the same app on the same day cannot collide — which is
+// what lets the name be the whole identity, with no collision suffix.
+const StampLayout = "2006-01-02_150405"
+
+// Backup is one archive of an app, living under <backupsDir>/<app>/. Archives are
+// produced two ways — as the side effect of an uninstall, and on demand from the
+// app's Backups tab — and the two are indistinguishable on disk by design: a
+// backup is a backup, whatever created it.
 type Backup struct {
-	Name string `json:"name"` // on-disk base name, e.g. jellyfin.2026-07-10.archive.zip
-	Date string `json:"date"` // YYYY-MM-DD, parsed out of the name
-	Zip  bool   `json:"zip"`  // compressed archive rather than a plain renamed folder
-	Size int64  `json:"size"` // bytes; only known for zips (0 for folders, see below)
+	App   string `json:"app"`   // compose project the archive belongs to
+	Name  string `json:"name"`  // on-disk base name: "2026-07-10_153045" or that + ".zip"
+	Stamp string `json:"stamp"` // the name without its extension, YYYY-MM-DD_HHMMSS
+	Date  string `json:"date"`  // YYYY-MM-DD, the stamp's day — for grouping and display
+	Zip   bool   `json:"zip"`   // compressed archive rather than a plain folder
+	Size  int64  `json:"size"`  // bytes; see ListBackups on when it is measured
 }
 
-// backupRe matches the names Uninstall produces: <project>.<date>.archive, with
-// uniqueName's optional -HHMMSS collision suffix and an optional .zip.
-var backupRe = regexp.MustCompile(`^(.+)\.(\d{4}-\d{2}-\d{2})\.archive(?:-\d{6})?(\.zip)?$`)
+// AppBackups is one app's archives, as the global Backups page groups them.
+type AppBackups struct {
+	App string `json:"app"`
+	// Orphan marks an app that no longer exists at <appsDir>/<app> — uninstalled,
+	// or never installed on this box. Its archives have no tile to hang off, so the
+	// global page is the only place they can be reached from.
+	Orphan  bool     `json:"orphan"`
+	Backups []Backup `json:"backups"`
+	Total   int64    `json:"total"` // sum of Size across Backups
+}
+
+// stampRe matches an archive's on-disk base name. Anything else in a backup
+// directory (a half-written staging folder, a stray file) is not an archive and
+// is ignored rather than offered for restore.
+var stampRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}_\d{6})(\.zip)?$`)
+
+// projectRe matches a compose project name we are willing to touch on disk. It is
+// the traversal guard for every path built from a caller-supplied app name: no
+// separators, no dots (which the app model reserves for archives and hidden
+// dirs), so "..", "a/b" and ".backups" are all rejected.
+var projectRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
 // parseBackup reads an archive's on-disk name back into a Backup. ok is false for
-// any name that is not an archive of `project`.
-func parseBackup(name, project string) (Backup, bool) {
-	m := backupRe.FindStringSubmatch(name)
-	if m == nil || m[1] != project {
+// any name that is not an archive.
+func parseBackup(app, name string) (Backup, bool) {
+	m := stampRe.FindStringSubmatch(name)
+	if m == nil {
 		return Backup{}, false
 	}
-	if _, err := time.Parse("2006-01-02", m[2]); err != nil {
+	t, err := time.Parse(StampLayout, m[1])
+	if err != nil {
 		return Backup{}, false
 	}
-	return Backup{Name: name, Date: m[2], Zip: m[3] != ""}, true
+	return Backup{
+		App:   app,
+		Name:  name,
+		Stamp: m[1],
+		Date:  t.Format("2006-01-02"),
+		Zip:   m[2] != "",
+	}, true
 }
 
-// ListBackups returns every archive of `project` under appsDir, newest first.
+// AppBackupDir is where one app's archives live. It is created on demand by the
+// writers; readers tolerate it being absent.
+func AppBackupDir(backupsDir, project string) string {
+	return filepath.Join(backupsDir, project)
+}
+
+// ListBackups returns every archive of `project`, newest first.
 //
 // Size is only filled in for zips, where it is a single cheap stat. Folder
-// archives are left at 0 on purpose: measuring one means walking the whole tree,
-// and an archived app's tree is exactly where the bulk user data lives (a media
-// library can be terabytes) — far too expensive for a list the store panel hits
-// on every app click.
-func ListBackups(appsDir, project string) []Backup {
-	entries, err := os.ReadDir(appsDir)
+// archives are left at 0 here on purpose: measuring one means walking the whole
+// tree, and an archived app's tree is exactly where the bulk user data lives (a
+// media library can be terabytes) — far too expensive for the store's install
+// click, which only needs to know which archives exist.
+//
+// Wrap the result in Measure to get folder sizes; that is what the pages which
+// actually display sizes do.
+func ListBackups(backupsDir, project string) []Backup {
+	if !projectRe.MatchString(project) {
+		return nil
+	}
+	entries, err := os.ReadDir(AppBackupDir(backupsDir, project))
 	if err != nil {
 		return nil
 	}
 	var out []Backup
 	for _, e := range entries {
-		b, ok := parseBackup(e.Name(), project)
+		b, ok := parseBackup(project, e.Name())
 		if !ok {
 			continue
 		}
@@ -70,18 +115,99 @@ func ListBackups(appsDir, project string) []Backup {
 		}
 		out = append(out, b)
 	}
-	// Newest first. Same-day archives carry a -HHMMSS suffix, so the name itself
-	// orders them within a day; a plain (suffix-less) name is the day's first.
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Date != out[j].Date {
-			return out[i].Date > out[j].Date
-		}
-		return out[i].Name > out[j].Name
-	})
+	sortBackups(out)
 	return out
 }
 
-// RestoreBackup puts a backup back as the app's live folder, so a normal install
+// Measure fills in Size for the folder archives in list — one full tree walk
+// each, which is why it is a separate step rather than part of ListBackups.
+//
+// Call it where a size is worth waiting for (the pages that show archives and
+// what they cost), not on the store's install-click path, where the only
+// question is which archives exist.
+func Measure(backupsDir string, list []Backup) []Backup {
+	for i := range list {
+		if list[i].Zip {
+			continue // already a single cheap stat
+		}
+		list[i].Size = dirSize(filepath.Join(backupsDir, list[i].App, list[i].Name))
+	}
+	return list
+}
+
+// ListAll returns every app that has archives, newest-first within each, sorted by
+// app name, with folder archives measured — because it backs the global Backups
+// page, and a backup list whose sizes are all "—" cannot answer the question that
+// page exists to answer, which is what is eating the disk.
+//
+// appsDir is consulted only to mark orphans; pass "" to skip that.
+func ListAll(backupsDir, appsDir string) []AppBackups {
+	entries, err := os.ReadDir(backupsDir)
+	if err != nil {
+		return nil
+	}
+	var out []AppBackups
+	for _, e := range entries {
+		if !e.IsDir() || !projectRe.MatchString(e.Name()) {
+			continue
+		}
+		app := e.Name()
+		backups := Measure(backupsDir, ListBackups(backupsDir, app))
+		if len(backups) == 0 {
+			continue
+		}
+		var total int64
+		for i := range backups {
+			total += backups[i].Size
+		}
+		orphan := false
+		if appsDir != "" {
+			_, err := os.Stat(filepath.Join(appsDir, app))
+			orphan = err != nil
+		}
+		out = append(out, AppBackups{App: app, Orphan: orphan, Backups: backups, Total: total})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].App < out[j].App })
+	return out
+}
+
+// sortBackups orders newest first. The stamp is fixed-width and lexically
+// ordered, so comparing names is comparing times.
+func sortBackups(b []Backup) {
+	sort.Slice(b, func(i, j int) bool { return b[i].Stamp > b[j].Stamp })
+}
+
+// resolveBackup validates a (project, name) pair and returns the archive's path.
+// Every path this package builds from caller input goes through here, so a
+// crafted app or archive name cannot escape the backups directory.
+func resolveBackup(backupsDir, project, name string) (Backup, string, error) {
+	if !projectRe.MatchString(project) {
+		return Backup{}, "", fmt.Errorf("invalid app name: %s", project)
+	}
+	b, ok := parseBackup(project, name)
+	if !ok {
+		return Backup{}, "", fmt.Errorf("not a backup name: %s", name)
+	}
+	path := filepath.Join(AppBackupDir(backupsDir, project), name)
+	if _, err := os.Stat(path); err != nil {
+		return Backup{}, "", fmt.Errorf("backup not found: %s", name)
+	}
+	return b, path, nil
+}
+
+// DeleteBackup removes one archive. This is the only path that destroys data in
+// Maison, and it is deliberately narrow: the name must parse as an archive stamp,
+// so nothing else under the backups directory — least of all a live app folder,
+// which is not even in this tree — can be reached through it.
+func DeleteBackup(backupsDir, project, name string) error {
+	_, path, err := resolveBackup(backupsDir, project, name)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(path)
+}
+
+// RestoreBackup puts an archive back as the app's live folder, so a normal install
 // can then run over it (the installer never clobbers an existing .env, so the
 // user's variables come back with their data — see installer.Install).
 //
@@ -89,29 +215,25 @@ func ListBackups(appsDir, project string) []Backup {
 // bytes never move. A zip archive is extracted, which leaves the zip in place —
 // so a zipped backup survives being restored and can be restored again.
 //
-// It refuses to overwrite a live app: the caller must uninstall first.
-func RestoreBackup(appsDir, project, name string) error {
-	b, ok := parseBackup(name, project)
-	if !ok {
-		return fmt.Errorf("not a backup of %s: %s", project, name)
+// It refuses to overwrite a live app: the caller must uninstall first, or use
+// Registry.StartRestore, which archives the live folder and restores in one step.
+func RestoreBackup(backupsDir, appsDir, project, name string) error {
+	_, src, err := resolveBackup(backupsDir, project, name)
+	if err != nil {
+		return err
 	}
-	src := filepath.Join(appsDir, name)
 	dst := filepath.Join(appsDir, project)
-
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("%s is already installed — uninstall it before restoring a backup", project)
 	}
-	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("backup not found: %s", name)
-	}
-	if b.Zip {
+	if strings.HasSuffix(name, ".zip") {
 		return extractZip(src, dst)
 	}
 	return os.Rename(src, dst)
 }
 
 // extractZip unpacks an archive written by archiveDir into dst. archiveDir stores
-// paths under the app's original leaf folder (jellyfin/db/x.db), so the first
+// paths under the archived folder's leaf name (jellyfin/db/x.db), so the first
 // segment is stripped and everything lands directly in dst.
 func extractZip(srcZip, dst string) error {
 	zr, err := zip.OpenReader(srcZip)

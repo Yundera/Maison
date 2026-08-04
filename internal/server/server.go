@@ -120,8 +120,21 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/apps/{id}/logs", s.handleAppLogs)
 		r.Get("/apps/{id}/stats", s.handleAppStats)
 		r.Post("/apps/{id}/dismiss", s.handleDismissApp)
+		// Registered before the {action} catch-all below. chi resolves a static
+		// segment ahead of a parameter at the same depth, so these win — see
+		// TestBackupRoutesBeatTheActionCatchAll, which is what keeps that true.
+		r.Get("/apps/{id}/backups", s.handleAppBackups)
+		r.Get("/apps/{id}/backups/estimate", s.handleBackupEstimate)
+		r.Post("/apps/{id}/backup", s.handleStartBackup)
+		r.Post("/apps/{id}/restore", s.handleStartRestore)
 		r.Post("/apps/{id}/{action}", s.handleAppAction)
 		r.Delete("/apps/{id}", s.handleUninstallApp)
+
+		// The global backup surface, keyed by app name rather than by tile: it must
+		// keep working for an app that no longer has one.
+		r.Get("/backups", s.handleGlobalBackups)
+		r.Post("/backups/{app}/restore", s.handleRestoreOrphan)
+		r.Delete("/backups/{app}/{name}", s.handleDeleteBackup)
 
 		r.Get("/store", s.handleStore)
 		r.Get("/store/sources", s.handleStoreSources)
@@ -185,7 +198,8 @@ func (s *Server) listApps(ctx context.Context) []apps.App {
 	if s.installer != nil {
 		list = overlayInstalls(list, s.installer.Installs())
 	}
-	return overlayUninstalls(list, s.apps.Uninstalls())
+	list = overlayUninstalls(list, s.apps.Uninstalls())
+	return overlayBackups(list, s.apps.Backups())
 }
 
 // appsSnapshot returns the current app list for the live "apps" channel.
@@ -261,6 +275,33 @@ func overlayUninstalls(list []apps.App, uninstalls []apps.UninstallState) []apps
 		list[i].Archive = st.Archive
 		list[i].Phase = st.Phase
 		list[i].UninstallError = st.Error
+	}
+	return list
+}
+
+// overlayBackups stamps backup/restore progress onto matching app tiles. Like
+// uninstalls there is never a placeholder to append — a backup only ever runs on
+// an app whose folder is already there, and a restore archives that folder rather
+// than removing it, so the tile is present throughout.
+func overlayBackups(list []apps.App, backups []apps.BackupState) []apps.App {
+	if len(backups) == 0 {
+		return list
+	}
+	byID := make(map[string]int, len(list))
+	for i, a := range list {
+		byID[a.ID] = i
+	}
+	for _, st := range backups {
+		i, ok := byID[st.ID]
+		if !ok {
+			continue
+		}
+		list[i].BackingUp = st.Phase != apps.PhaseError
+		list[i].Copy = st.Copy
+		list[i].Sync = st.Sync
+		list[i].Compress = st.Compress
+		list[i].Phase = st.Phase
+		list[i].BackupError = st.Error
 	}
 	return list
 }

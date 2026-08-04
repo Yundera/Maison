@@ -159,8 +159,8 @@ writes the override and stops there. No Docker call at all.
 
 ## Uninstall
 
-Stop and remove the containers, then **rename** the app folder to
-`<app>.<date>.archive` (or zip it). Nothing is deleted, and no hooks run — Maison
+Stop and remove the containers, then **move** the app folder to
+`.backups/<app>/<stamp>` (or zip it). Nothing is deleted, and no hooks run — Maison
 has no `pre_uninstall` / `post_uninstall`, on purpose: a hook that fires while the
 app is being taken away is a hook that can fail and leave the operator unable to
 uninstall. The archive is the safety net instead. See `app-model.md` for the archive
@@ -189,8 +189,60 @@ and it only disappears at the last step.
 
 A failed uninstall **stays visible** as a red `!` on the tile, with the error as its
 tooltip, until it is retried or dismissed (`POST /api/apps/{id}/dismiss`, which also
-clears a failed install). Every failure path leaves the app folder in place, so
-there is always a tile for the error to land on.
+clears a failed install or backup). Every failure path leaves the app folder in
+place, so there is always a tile for the error to land on.
+
+---
+
+## Backup
+
+Archive the app folder **without** uninstalling. The only operation that stops a
+running app on purpose, so the sequence exists to keep that window short:
+
+```
+1. copy       full mirror of AppData/<app> into .backups/<app>/.staging-<stamp>
+              — the app is still up, so this costs no downtime
+2. stop       (skipped when the app was already stopped)
+3. sync       mirror again: only files whose size or mtime changed, plus a prune
+              of anything deleted — this is the entire downtime
+4. start      deferred, so it runs even if a later step fails
+5. compress   zip the snapshot and delete it (zip=true only); a folder backup
+              just renames .staging-<stamp> → <stamp>, which is the commit point
+```
+
+The mirror is plain Go (`apps.mirror`), not rsync: the runtime image carries no
+rsync, and the incremental test — same size *and* same mtime — is the same one
+rsync makes by default. Irregular files (sockets, fifos) are skipped rather than
+opened, so an app that leaves a socket in its folder is still backupable.
+
+`POST /api/apps/{id}/backup?zip=` **starts** it and returns `202 Accepted`. Only
+the up-front refusals are synchronous: an unknown app, or not enough free space
+(`400`, measured by `EstimateBackup` — the folder's size × 1.1 for a folder
+archive, × 2 for a zip). Progress rides the live app list through
+`apps.Registry.StartBackup` / `Backups` / `ClearBackup` and
+`server.overlayBackups`, on the same single tile bar as an install or an
+uninstall, in amber: **Copy**, then **Sync**, then **Compress**.
+
+Nothing is committed until the final rename, so a crash mid-backup leaves only a
+`.staging-…` folder or a `.partial` zip — neither of which parses as an archive,
+so neither is ever listed or restored.
+
+## Restore
+
+The mirror image, and reversible by construction:
+
+```
+1. stop       (if running)
+2. archive    rename AppData/<app> → .backups/<app>/<now>   ← instant, free
+3. restore    folder archive: renamed back (consumed)
+              zip archive:    extracted (survives, restorable again)
+4. start      deferred, as above
+```
+
+`POST /api/apps/{id}/restore {"name": …}` for a live app, or
+`POST /api/backups/{app}/restore` for one that has been uninstalled — the same
+detached path, which simply finds nothing to do at steps 1, 2 and 4. Step 2 is why
+a restore can never destroy the state it replaces.
 
 ---
 
@@ -243,6 +295,10 @@ Two mappings, easy to confuse, both in `internal/envinject`:
 | `post_install`, `post_up` | No (logged) | The stack is already up. |
 | `docker compose up` | **Yes** | Obviously. |
 | Ownership / mode (`chown`, `chmod`) on a folder | No (logged) | Not every filesystem supports it, and that should not block an otherwise healthy start. |
+| Free-space check before a backup | **Yes**, before anything is copied | Filling the data disk breaks every app on the box, not just this one. |
+| Either mirror pass of a backup | **Yes** | A snapshot that is missing files is not a backup, and silently keeping it would be worse than failing. |
+| Restarting the app after a backup or restore | No (logged) | The restart is deferred so it runs even when the operation failed — an app left down is a worse outcome than a missing backup. |
+| Compressing a backup | **Yes** | The zip is only renamed into place once it is whole, so a failure leaves a `.partial` that is never listed. |
 
 An install that fails leaves the app's folder **in place**, half-configured — which
 is correct: the folder is the tile, the failure is visible on it, and a retry is a

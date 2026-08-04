@@ -239,7 +239,7 @@ func (in *Installer) Install(ctx context.Context, storeURL, id, fromBackup strin
 	// store, while the restored .env and data are left exactly as they were.
 	if fromBackup != "" {
 		emit(Event{Phase: "prepare", Message: "Restoring backup " + fromBackup})
-		if err := apps.RestoreBackup(in.cfg.AppsDir(), project, fromBackup); err != nil {
+		if err := apps.RestoreBackup(in.cfg.BackupsDir(), in.cfg.AppsDir(), project, fromBackup); err != nil {
 			return fmt.Errorf("restore backup: %w", err)
 		}
 	}

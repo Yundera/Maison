@@ -129,10 +129,14 @@ func (r *Registry) progressed() {
 // Uninstall stops+removes the project's containers and archives its app
 // directory, emitting progress events (safe to pass a nil emit). Maison never
 // deletes user data: the whole ${DATA_ROOT}/AppData/<id> folder (compose +
-// override + .env + data) is renamed to <id>.<date>.archive, or, when zip is
-// set, compressed to <id>.<date>.archive.zip and the folder removed. Either way
-// the dotted name hides it from the dashboard. Returns the archive's base name
-// (empty when there was nothing on disk to archive, e.g. an unmanaged stack).
+// override + .env + data) is moved into ${DATA_ROOT}/AppData/.backups/<id>/ as
+// <stamp>, or, when zip is set, compressed to <stamp>.zip and the folder
+// removed. Returns the archive's base name (empty when there was nothing on disk
+// to archive, e.g. an unmanaged stack).
+//
+// The archive is an ordinary backup — the same thing Registry.Backup produces,
+// in the same place — so an uninstalled app's data stays reachable from the
+// global Backups page and can be restored from there or from the store.
 func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func(UninstallEvent)) (string, error) {
 	if emit == nil {
 		emit = func(UninstallEvent) {}
@@ -166,15 +170,19 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 		return "", nil
 	}
 
-	stamp := time.Now().Format("2006-01-02")
-	base := uniqueName(r.cfg.AppsDir(), id+"."+stamp+".archive")
+	base := time.Now().Format(StampLayout)
+	dir := AppBackupDir(r.cfg.BackupsDir(), id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create backup dir: %w", err)
+	}
 
 	// Track 2 — Archive. A rename is instantaneous, so its bar simply completes;
 	// a zip is metered by bytes, since it is the one step that can run for
-	// minutes on a large app.
+	// minutes on a large app. The backups directory is inside AppData, so the
+	// rename never crosses a filesystem and never degrades into a copy.
 	if zip {
 		zipName := base + ".zip"
-		zipPath := filepath.Join(r.cfg.AppsDir(), zipName)
+		zipPath := filepath.Join(dir, zipName)
 		emit(UninstallEvent{Phase: PhaseArchive, Message: "Compressing " + zipName, Remove: 100})
 		err := archiveDir(appDir, zipPath, func(copied, total int64) {
 			if total <= 0 {
@@ -198,19 +206,9 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 	}
 
 	emit(UninstallEvent{Phase: PhaseArchive, Message: "Archiving " + base, Remove: 100})
-	if err := os.Rename(appDir, filepath.Join(r.cfg.AppsDir(), base)); err != nil {
+	if err := os.Rename(appDir, filepath.Join(dir, base)); err != nil {
 		return "", fmt.Errorf("archive app: %w", err)
 	}
 	emit(UninstallEvent{Phase: PhaseDone, Message: "Uninstalled", Remove: 100, Archive: 100})
 	return base, nil
-}
-
-// uniqueName returns name, or name with a "-HHMMSS" suffix inserted before any
-// extension, if a same-day archive already exists in dir — so uninstalling the
-// same app twice in one day never clobbers the earlier archive.
-func uniqueName(dir, name string) string {
-	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-		return name
-	}
-	return name + "-" + time.Now().Format("150405")
 }

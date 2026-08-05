@@ -405,6 +405,30 @@ func (r Retention) args() []string {
 	}
 }
 
+// BackupUserData snapshots everything under the data root that is not an app.
+//
+// One pass, because there is nothing to stop and therefore nothing a second pass
+// would buy. The snapshot has no consistency guarantee — a file being written while
+// the engine reads it is captured mid-write — which is normal and accepted for
+// documents and media, and is exactly why apps get the stop treatment and this does
+// not. The corollary is that a database must never live here.
+func (p *Provider) BackupUserData(ctx context.Context, stamp string) (string, error) {
+	src := UserDataSource()
+	// Reapplied every run rather than only at setup: policies live in the repository,
+	// so they outlive a Maison reinstall — and a Maison bug can leave a stale one.
+	if err := p.EnsurePolicy(ctx, src, DefaultRetention()); err != nil {
+		return "", err
+	}
+	if err := p.SnapshotSource(ctx, src, stamp, 2, nil); err != nil {
+		return "", err
+	}
+	b, err := p.CommitSource(ctx, src, stamp, nil)
+	if err != nil {
+		return "", err
+	}
+	return b.Name, nil
+}
+
 // --- apps.Provider -----------------------------------------------------------
 
 func (p *Provider) Snapshot(ctx context.Context, app, stamp string, opts apps.SnapshotOpts, emit func(apps.Event)) error {
@@ -549,12 +573,46 @@ func (p *Provider) Materialize(ctx context.Context, app, stamp string, emit func
 	if id == "" {
 		return fmt.Errorf("backup not found: %s", stamp)
 	}
+	// Built from the validated stamp via AppBackupDir, exactly as a local archive's
+	// path is — the name never reaches a path unvalidated.
 	dst := filepath.Join(apps.AppBackupDir(p.cfg.BackupsDir(), app), stamp)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
 	_, err = p.run(ctx, emit, 0, "restore", id, dst, "--progress")
 	return err
+}
+
+// RestoreInPlace writes a backup straight over the app's folder.
+//
+// --delete-extra is what makes this a restore rather than a merge: without it, files
+// the app created after the backup would survive it, and the result would be a state
+// that never existed. Overwriting is kopia's default, so only the deletion has to be
+// asked for.
+func (p *Provider) RestoreInPlace(ctx context.Context, app, stamp, dst string, emit func(apps.Event)) error {
+	id, err := p.snapshotID(ctx, app, stamp)
+	if err != nil {
+		return err
+	}
+	_, err = p.run(ctx, emit, 0, "restore", id, dst, "--progress", "--delete-extra")
+	return err
+}
+
+// snapshotID resolves (app, stamp) to the engine's own identifier.
+//
+// The value handed to kopia is always one kopia itself returned, never the name the
+// caller supplied — so a crafted name cannot reach the command line.
+func (p *Provider) snapshotID(ctx context.Context, app, stamp string) (string, error) {
+	snaps, err := p.snapshots(ctx, app)
+	if err != nil {
+		return "", err
+	}
+	for _, sn := range snaps {
+		if sn.tag(tagStamp) == stamp && sn.tag(tagPass) != "1" {
+			return sn.ID, nil
+		}
+	}
+	return "", fmt.Errorf("backup not found: %s", stamp)
 }
 
 func (p *Provider) deleteByID(ctx context.Context, id string) error {

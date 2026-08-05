@@ -6,6 +6,7 @@ package apps
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
@@ -109,20 +111,21 @@ type Registry struct {
 	// copied chunk), so the server is expected to throttle it. Optional.
 	OnProgress func()
 
-	// Engine is the backup engine new backups are written to. Nil means the built-in
-	// local one — archives on the data disk — which needs no configuration and is
-	// always available, so a Registry built without one behaves exactly as Maison
-	// always has.
+	// Engines is the set of backup engines. Nil means the built-in local one alone —
+	// archives on the data disk — which needs no configuration and is always
+	// available, so a Registry built without it behaves exactly as Maison always has.
 	//
 	// It is an exported field set after construction, like OnChange, rather than a
-	// New parameter: an engine is an optional collaborator wired by the server, and
-	// making it a parameter would force every caller that has no opinion about
-	// backups to have one.
-	//
-	// Only *writes* follow this. Reading a backup dispatches on where that backup
-	// actually is, never on which engine is selected now — otherwise switching engine
-	// would strand everything the previous one wrote. See internal/backup.
-	Engine Provider
+	// New parameter: engines are an optional collaborator wired by the server, and
+	// making them a parameter would force every caller with no opinion about backups
+	// to have one.
+	Engines Engines
+
+	// StoppedPassTimeout bounds how long an app may be held down while it is backed
+	// up or restored. Zero uses defaultStoppedPassTimeout. It exists because the
+	// engine reads the app folder directly rather than a frozen copy, so a hung
+	// repository would otherwise extend an outage instead of failing a backup.
+	StoppedPassTimeout time.Duration
 
 	mu         sync.Mutex
 	busy       map[string]int             // app id -> in-flight operation count
@@ -550,6 +553,14 @@ func (r *Registry) composeFiles(dir string) []string {
 func (r *Registry) EnsureStarted(ctx context.Context, id string) error {
 	r.enter(id)
 	defer r.leave(id)
+	// An app whose in-place restore was cut short holds neither the state it had nor
+	// the one it was being given. Starting it there is worse than leaving it down: it
+	// would initialise over the gap — fresh database, default config — and that
+	// invented state would become the next night's backup. The refusal stands until
+	// the restore is retried or rolled back.
+	if r.RestoreInterrupted(id) {
+		return fmt.Errorf("%s was not started: an interrupted restore left its data incomplete", id)
+	}
 	if r.isManaged(id) {
 		dir := filepath.Join(r.cfg.AppsDir(), id)
 		return stackup.Up(ctx, r.cfg, id, dir, r.composeFiles(dir))

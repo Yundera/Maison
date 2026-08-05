@@ -105,6 +105,12 @@ func parseBackup(app, name string) (Backup, bool) {
 	}, true
 }
 
+// ValidProjectName reports whether name is a compose project Maison is willing to
+// touch on disk. It is exported so that callers enumerating app folders — the
+// nightly run, for one — use the same guard the on-disk paths do, instead of a
+// second filter that drifts from it.
+func ValidProjectName(name string) bool { return projectRe.MatchString(name) }
+
 // ParseBackupName validates a backup name and returns the Backup it describes, or
 // ok == false if the name is not one.
 //

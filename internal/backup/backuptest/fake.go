@@ -30,6 +30,7 @@ type Fake struct {
 	SnapshotErr  error
 	CommitErr    error
 	MaterialErr  error
+	RestoreErr   error
 	DeleteErr    error
 	SnapshotHang time.Duration // block this long in Snapshot, to exercise timeouts
 
@@ -129,6 +130,14 @@ func (f *Fake) List(ctx context.Context, app string) ([]apps.Backup, error) {
 func (f *Fake) Materialize(ctx context.Context, app, stamp string, emit func(apps.Event)) error {
 	f.record("materialize:" + app + "/" + stamp)
 	return f.MaterialErr
+}
+
+func (f *Fake) RestoreInPlace(ctx context.Context, app, stamp, dst string, emit func(apps.Event)) error {
+	f.record("restore-in-place:" + app + "/" + stamp)
+	if !f.Cap.InPlaceRestore {
+		return apps.ErrNotSupported
+	}
+	return f.RestoreErr
 }
 
 func (f *Fake) Delete(ctx context.Context, app, stamp string) error {

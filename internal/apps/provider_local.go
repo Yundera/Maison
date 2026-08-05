@@ -148,6 +148,14 @@ func (p *LocalProvider) Materialize(ctx context.Context, app, stamp string, emit
 	return err
 }
 
+// RestoreInPlace is not available here. A folder archive is restored by renaming it
+// over the app, which needs the replacement to exist beside the app first — so this
+// engine has no path that avoids a second copy. Caps().InPlaceRestore says so, and
+// callers fall back to refusing with an explanation.
+func (p *LocalProvider) RestoreInPlace(ctx context.Context, app, stamp, dst string, emit func(Event)) error {
+	return ErrNotSupported
+}
+
 func (p *LocalProvider) Delete(ctx context.Context, app, stamp string) error {
 	return DeleteBackup(p.cfg.BackupsDir(), app, stamp)
 }

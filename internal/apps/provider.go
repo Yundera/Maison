@@ -71,7 +71,33 @@ type Provider interface {
 	// responsible for having checked there is room.
 	Materialize(ctx context.Context, app, stamp string, emit func(Event)) error
 
+	// RestoreInPlace writes (app, stamp) directly over dst, without staging a second
+	// copy anywhere — the only way to restore an app too large to fit twice on its
+	// own disk. Files present in dst but absent from the backup must be removed, or
+	// the result is a merge rather than a restore.
+	//
+	// Engines that cannot do this return ErrNotSupported and Caps().InPlaceRestore is
+	// false. It is not atomic: an interruption leaves dst neither the old state nor
+	// the new one, which is why callers take an undo snapshot first.
+	RestoreInPlace(ctx context.Context, app, stamp, dst string, emit func(Event)) error
+
 	// Delete removes one backup from this engine.
+	Delete(ctx context.Context, app, stamp string) error
+}
+
+// Engines is the set of backup engines a deployment knows about. It is declared
+// here, and satisfied by internal/backup.Set, for the same reason Provider is: the
+// Registry needs to read across every engine, and cannot import the package that
+// assembles them without a cycle.
+//
+// The distinction the interface encodes is the one everything else depends on:
+// Writer is a *choice*, and only new backups follow it. List and Locate answer
+// "where is this backup", which must not depend on that choice — otherwise
+// switching engine strands everything the previous one wrote.
+type Engines interface {
+	Writer() Provider
+	List(ctx context.Context, app string) []Backup
+	Locate(ctx context.Context, app, stamp string) (Provider, Backup, error)
 	Delete(ctx context.Context, app, stamp string) error
 }
 

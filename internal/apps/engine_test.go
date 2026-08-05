@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backup/backuptest"
 	"github.com/yundera/maison/internal/config"
 )
@@ -46,7 +47,7 @@ func newRegistry(t *testing.T) (*apps.Registry, config.Config) {
 func TestBackupUsesTheConfiguredEngine(t *testing.T) {
 	r, _ := newRegistry(t)
 	fake := backuptest.NewRemote("kopia")
-	r.Engine = fake
+	r.Engines = backup.New(fake)
 
 	name, err := r.Backup(context.Background(), "jellyfin", false, nil)
 	if err != nil {
@@ -83,7 +84,7 @@ func TestBackupDiscardsIncompleteWork(t *testing.T) {
 			r, _ := newRegistry(t)
 			fake := backuptest.NewRemote("kopia")
 			tc.apply(fake)
-			r.Engine = fake
+			r.Engines = backup.New(fake)
 
 			if _, err := r.Backup(context.Background(), "jellyfin", false, nil); err == nil {
 				t.Fatal("Backup should have failed")
@@ -103,7 +104,7 @@ func TestBackupDiscardsIncompleteWork(t *testing.T) {
 func TestBackupKeepsWhatItCommitted(t *testing.T) {
 	r, _ := newRegistry(t)
 	fake := backuptest.NewRemote("kopia")
-	r.Engine = fake
+	r.Engines = backup.New(fake)
 
 	name, err := r.Backup(context.Background(), "jellyfin", false, nil)
 	if err != nil {

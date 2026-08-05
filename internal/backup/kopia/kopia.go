@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/engine"
 )
@@ -392,6 +393,26 @@ type Retention struct {
 // a week of dailies, a month of weeklies, a year of monthlies.
 func DefaultRetention() Retention {
 	return Retention{Latest: 2, Daily: 7, Weekly: 4, Monthly: 12, Annual: 0}
+}
+
+// EnsureRetention applies the operator's tiers to one app's source.
+//
+// Latest has a floor of 2 regardless of what is configured: a backup writes two
+// snapshots against the same source and deletes the first only after the second
+// succeeds, so keeping fewer than two would let retention evict the consistent
+// snapshot in favour of the torn one it was about to replace.
+func (p *Provider) EnsureRetention(ctx context.Context, app string, keep backupconfig.Keep) error {
+	latest := keep.Latest
+	if latest < 2 {
+		latest = 2
+	}
+	return p.EnsurePolicy(ctx, AppSource(app), Retention{
+		Latest:  latest,
+		Daily:   keep.Daily,
+		Weekly:  keep.Weekly,
+		Monthly: keep.Monthly,
+		Annual:  keep.Annual,
+	})
 }
 
 func (r Retention) args() []string {

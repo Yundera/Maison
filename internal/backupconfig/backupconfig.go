@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/yundera/maison/internal/notify"
 )
 
 // Config is everything the operator can decide about backups.
@@ -41,6 +43,10 @@ type Config struct {
 
 	// Keep is the tiered retention the engine is asked to apply.
 	Keep Keep `json:"keep"`
+
+	// SMTP is where failure alerts go. Empty means no alerting — which is a real
+	// choice a user can make, and the reason this is not validated into existence.
+	SMTP notify.SMTP `json:"smtp,omitempty"`
 
 	// KeepLocal is how many on-disk archives of an app to retain. It is separate
 	// from Keep because local archives cost real disk while remote ones cost a

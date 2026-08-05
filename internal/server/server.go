@@ -15,9 +15,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/appstore"
+	"github.com/yundera/maison/internal/backup"
+	"github.com/yundera/maison/internal/backupconfig"
+	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/installer"
@@ -37,6 +39,13 @@ type Server struct {
 	store     *appstore.Manager
 	installer *installer.Installer
 	settings  *usersettings.Store
+
+	// Backup engines, their persisted configuration, and the nightly schedule.
+	// All three are nil-tolerant: a box with no Docker still serves the settings
+	// page, it just cannot run an app backup from it.
+	engines     *backup.Set
+	backupConf  *backupconfig.Store
+	backupSched *backup.Scheduler
 }
 
 // New builds the root HTTP handler. A nil-Docker environment still serves the
@@ -76,6 +85,19 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		s.hub.AppsSnapshot = s.appsSnapshot
 		s.watchDocker()
 	}
+
+	// Backup engines. Built after the registry so the registry can be handed the set,
+	// and before the store so the schedule is running by the time anything else is.
+	s.backupConf = backupconfig.New(filepath.Join(cfg.StateDir(), "backup.json"))
+	s.engines = buildEngines(cfg, s.backupConf)
+	if s.apps != nil {
+		// Writes follow the selected engine; reads dispatch on where a backup actually
+		// is, which is what keeps older backups reachable after a switch.
+		s.apps.Engines = s.engines
+	}
+	s.backupSched = backup.NewScheduler(cfg, s.apps, s.engines, s.backupConf)
+	s.backupSched.OnChange = throttle(300*time.Millisecond, s.broadcastApps)
+	s.backupSched.Start(context.Background())
 
 	// App store + installer (independent of Docker connectivity for browsing).
 	// Persisted store sources (if any) take precedence over the env default.
@@ -132,6 +154,13 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 
 		// The global backup surface, keyed by app name rather than by tile: it must
 		// keep working for an app that no longer has one.
+		// Engine configuration and the schedule. A different prefix from /backups,
+		// which lists archives — and far from the /apps/{id}/{action} catch-all.
+		r.Get("/backup/status", s.handleBackupStatus)
+		r.Put("/backup/config", s.handlePutBackupConfig)
+		r.Post("/backup/run", s.handleRunBackup)
+		r.Post("/backup/email-key", s.handleEmailKey)
+
 		r.Get("/backups", s.handleGlobalBackups)
 		r.Post("/backups/{app}/restore", s.handleRestoreOrphan)
 		r.Delete("/backups/{app}/{name}", s.handleDeleteBackup)

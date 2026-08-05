@@ -4,17 +4,20 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/notify"
 )
 
 // Kind distinguishes the two things a run backs up. They are genuinely different —
@@ -52,7 +55,16 @@ type Result struct {
 
 // RunState is a snapshot of the current or last run, for the settings page.
 type RunState struct {
-	Running   bool      `json:"running"`
+	Running bool `json:"running"`
+
+	// Ran is false until a run has finished.
+	//
+	// It exists because `omitempty` does nothing for a time.Time — it is a struct,
+	// never "empty" — so the timestamps below serialise as year 0001 rather than
+	// being left out, and a client testing one for truthiness would cheerfully
+	// report a successful backup on a box that has never taken one.
+	Ran bool `json:"ran"`
+
 	Started   time.Time `json:"started,omitempty"`
 	Finished  time.Time `json:"finished,omitempty"`
 	Current   string    `json:"current,omitempty"`
@@ -76,10 +88,12 @@ type Scheduler struct {
 	// rebroadcast it.
 	OnChange func()
 
-	// Now and Backup exist so the sequencing can be tested without a clock or an
-	// engine. Nil means the real thing.
+	// Now, Backup and Notify exist so the sequencing — which target, in what order,
+	// what happens when one fails, and who gets told — can be tested without a clock,
+	// an engine, or an SMTP server. Nil means the real thing.
 	Now    func() time.Time
 	Backup func(ctx context.Context, t Target) (string, error)
+	Notify func(subject, body string) error
 
 	mu    sync.Mutex
 	state RunState
@@ -110,7 +124,9 @@ func (s *Scheduler) now() time.Time {
 func (s *Scheduler) State() RunState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state
+	st := s.state
+	st.Ran = !st.Finished.IsZero()
+	return st
 }
 
 // Reload tells a running schedule that the configured time has changed, so an edit
@@ -150,10 +166,30 @@ func (s *Scheduler) Targets() []Target {
 			out = append(out, Target{Kind: KindApp, App: n})
 		}
 	}
-	if s.store.Get().UserData {
+	// Only when the engine can actually do it. The local engine cannot and must not:
+	// its archives live under the very tree it would be copying, so it would be
+	// backing up its own output.
+	//
+	// Offered as a *target* it would fail on every run of a default install — local
+	// engine, user data on — which would report a failed backup and mail the user
+	// about it on a box where nothing is wrong. An engine that cannot do this has no
+	// such target; the settings page says why.
+	if s.store.Get().UserData && s.canBackUpUserData() {
 		out = append(out, Target{Kind: KindUserData})
 	}
 	return out
+}
+
+func (s *Scheduler) canBackUpUserData() bool {
+	if s.set == nil {
+		return false
+	}
+	w := s.set.Writer()
+	if w == nil {
+		return false
+	}
+	_, ok := w.(UserDataEngine)
+	return ok
 }
 
 // skip reports whether an app directory must be left out of a scheduled run.
@@ -208,6 +244,8 @@ func (s *Scheduler) RunAll(ctx context.Context) error {
 		s.record(Result{Target: t, Name: name, Err: errText(err)})
 	}
 
+	prev, hadPrev := s.readLastRun()
+
 	s.mu.Lock()
 	s.state.Running = false
 	s.state.Finished = s.now()
@@ -215,9 +253,12 @@ func (s *Scheduler) RunAll(ctx context.Context) error {
 	failures := s.state.Failures
 	s.mu.Unlock()
 	s.changed()
-	s.writeLastRun()
 
-	if failures > 0 {
+	failed := failures > 0
+	s.writeLastRun(failed)
+	s.notifyOutcome(prev, hadPrev, failed)
+
+	if failed {
 		return fmt.Errorf("%d of %d backup targets failed", failures, len(targets))
 	}
 	return nil
@@ -239,7 +280,21 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 	if s.apps == nil {
 		return "", fmt.Errorf("docker unavailable")
 	}
-	return s.apps.Backup(ctx, t.App, false, nil)
+	conf := s.store.Get()
+	// Reapplied before every backup rather than once at setup: the policy lives in
+	// the engine's repository, so it outlives a Maison reinstall — and a Maison bug
+	// can leave a stale one behind. It is idempotent and costs one call.
+	if re, ok := s.set.Writer().(RetentionEngine); ok {
+		if err := re.EnsureRetention(ctx, t.App, conf.Keep); err != nil {
+			log.Printf("backup: setting retention for %s: %v", t.App, err)
+		}
+	}
+	name, err := s.apps.Backup(ctx, t.App, false, nil)
+	if err != nil {
+		return "", err
+	}
+	s.pruneLocal(ctx, t.App, conf.KeepLocal)
+	return name, nil
 }
 
 // UserDataEngine is implemented by engines that can back up the user-data set.
@@ -247,6 +302,60 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 // would be copying.
 type UserDataEngine interface {
 	BackupUserData(ctx context.Context, stamp string) (string, error)
+}
+
+// RetentionEngine is implemented by engines that apply retention themselves.
+//
+// Delegating is not laziness: each app is one source accumulating snapshots over
+// time, which is precisely the shape a retention policy is designed for, and the
+// engine can expire a snapshot without transferring anything. Maison expresses the
+// intent; the engine decides what that means in its own repository.
+type RetentionEngine interface {
+	EnsureRetention(ctx context.Context, app string, keep backupconfig.Keep) error
+}
+
+// pruneLocal trims an app's on-disk archives to the configured count.
+//
+// Local archives are Maison's to manage — they cost real disk rather than a remote
+// quota, and no engine policy governs them.
+//
+// The floor is what makes this safe. Keeping zero local copies is only meaningful
+// when something else holds the backup, so at N=0 an archive is deleted only once
+// another engine has been asked and has actually listed it. "The upload command
+// exited 0" is not the same as "the backup is there", and this is the one place in
+// Maison where being wrong about that destroys the only copy.
+func (s *Scheduler) pruneLocal(ctx context.Context, app string, keep int) {
+	local := apps.ListBackups(s.cfg.BackupsDir(), app)
+	if len(local) <= keep {
+		return
+	}
+	for _, b := range local[keep:] {
+		if keep == 0 && !s.heldElsewhere(ctx, app, b.Name) {
+			continue
+		}
+		if err := apps.DeleteBackup(s.cfg.BackupsDir(), app, b.Name); err != nil {
+			log.Printf("backup: pruning local archive %s/%s: %v", app, b.Name, err)
+		}
+	}
+}
+
+// heldElsewhere asks every non-local engine whether it actually has this backup.
+func (s *Scheduler) heldElsewhere(ctx context.Context, app, name string) bool {
+	for _, p := range s.set.providers() {
+		if p.ID() == apps.EngineLocal {
+			continue
+		}
+		got, err := p.List(ctx, app)
+		if err != nil {
+			continue
+		}
+		for _, b := range got {
+			if b.Name == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) setCurrent(id string) {
@@ -347,21 +456,98 @@ func untilNext(now time.Time, hour, minute int) time.Duration {
 	return next.Sub(now)
 }
 
-func (s *Scheduler) missedARun(conf backupconfig.Config) bool {
-	b, err := os.ReadFile(s.lastRunPath)
-	if err != nil {
-		return false // never run: wait for the first scheduled window rather than firing at boot
-	}
-	last, err := time.Parse(time.RFC3339, string(b))
-	if err != nil {
-		return false
-	}
-	return s.now().Sub(last) > 24*time.Hour+time.Hour
+// lastRun is what survives a restart: when the schedule last ran, and whether it
+// was failing. The failure flag is persisted rather than kept in memory so that a
+// Maison restart does not re-announce a failure the operator has already been told
+// about — nor stay silent about a recovery it never saw the failure for.
+type lastRun struct {
+	At     time.Time `json:"at"`
+	Failed bool      `json:"failed"`
 }
 
-func (s *Scheduler) writeLastRun() {
+func (s *Scheduler) readLastRun() (lastRun, bool) {
+	b, err := os.ReadFile(s.lastRunPath)
+	if err != nil {
+		return lastRun{}, false
+	}
+	var lr lastRun
+	if json.Unmarshal(b, &lr) != nil {
+		return lastRun{}, false
+	}
+	return lr, true
+}
+
+func (s *Scheduler) missedARun(conf backupconfig.Config) bool {
+	lr, ok := s.readLastRun()
+	if !ok {
+		return false // never run: wait for the first window rather than firing at boot
+	}
+	return s.now().Sub(lr.At) > 24*time.Hour+time.Hour
+}
+
+func (s *Scheduler) writeLastRun(failed bool) {
 	_ = os.MkdirAll(s.cfg.StateDir(), 0o755)
-	if err := os.WriteFile(s.lastRunPath, []byte(s.now().Format(time.RFC3339)), 0o644); err != nil {
+	b, err := json.Marshal(lastRun{At: s.now(), Failed: failed})
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(s.lastRunPath, b, 0o644); err != nil {
 		log.Printf("backup: recording last run: %v", err)
 	}
+}
+
+// notifyOutcome mails the operator when the run's health *changes*.
+//
+// One mail on the transition into failure and one on recovery — not one per failed
+// run. A nightly message becomes noise, then a filter rule, and then the failure it
+// was reporting is invisible again, which is the exact outcome this exists to
+// prevent.
+//
+// A mail that cannot be sent is logged and swallowed: a broken SMTP configuration
+// must never turn a successful backup into a failed one.
+func (s *Scheduler) notifyOutcome(prev lastRun, hadPrev bool, failed bool) {
+	if hadPrev && prev.Failed == failed {
+		return
+	}
+	if !hadPrev && !failed {
+		return // first ever run, and it worked: nothing to announce
+	}
+	st := s.State()
+	subject, body := failureMail(s.cfg.AppDomain(), failed, st)
+	if err := s.notify(subject, body); err != nil {
+		log.Printf("backup: sending the %s notification: %v", map[bool]string{true: "failure", false: "recovery"}[failed], err)
+	}
+}
+
+func (s *Scheduler) notify(subject, body string) error {
+	if s.Notify != nil {
+		return s.Notify(subject, body)
+	}
+	return notify.Send(s.store.Get().SMTP, subject, body)
+}
+
+// failureMail writes what the operator actually needs: which targets failed, why,
+// and how many succeeded — so the mail itself answers "is anything backed up".
+func failureMail(domain string, failed bool, st RunState) (subject, body string) {
+	where := domain
+	if where == "" {
+		where = "your server"
+	}
+	if !failed {
+		return "Backups are working again on " + where,
+			fmt.Sprintf("The backup run that finished at %s completed with no failures.\n\n%d targets were backed up.\n",
+				st.Finished.Format(time.RFC1123), len(st.Results))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "The backup run that finished at %s did not complete.\n\n", st.Finished.Format(time.RFC1123))
+	fmt.Fprintf(&b, "%d of %d targets failed:\n\n", st.Failures, len(st.Results))
+	for _, r := range st.Results {
+		if r.Err != "" {
+			fmt.Fprintf(&b, "  %s\n    %s\n", r.Target.ID(), r.Err)
+		}
+	}
+	ok := len(st.Results) - st.Failures
+	fmt.Fprintf(&b, "\n%d target(s) were backed up successfully.\n", ok)
+	b.WriteString("\nThis message is sent once when backups start failing, and once when they recover.\n")
+	return "Backups are failing on " + where, b.String()
 }

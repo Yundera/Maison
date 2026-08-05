@@ -78,3 +78,34 @@ func TestGlobalBackupRoutesAreReachable(t *testing.T) {
 			rec.Code, rec.Body.String())
 	}
 }
+
+// The engine routes must work on a box with no Docker and no repository: an
+// unconfigured deployment has to render a settings page that explains itself, not a
+// 503. They also sit one character from /api/backups, so this pins that both
+// resolve to their own handler rather than one swallowing the other.
+func TestBackupEngineRoutesAreReachableWithoutDockerOrARepository(t *testing.T) {
+	h := New(config.Config{DataRoot: t.TempDir()}, fstest.MapFS{})
+
+	for _, tc := range []struct {
+		method, path string
+		body         string
+		wantStatus   int
+		wantBody     string
+	}{
+		{"GET", "/api/backup/status", "", http.StatusOK, `"active"`},
+		{"GET", "/api/backups", "", http.StatusOK, `"apps"`},
+		{"PUT", "/api/backup/config", `{"enabled":false,"hour":4,"minute":15}`, http.StatusOK, `"hour":4`},
+		{"PUT", "/api/backup/config", `{"engine":"nosuchengine"}`, http.StatusBadRequest, "unknown backup engine"},
+		{"POST", "/api/backup/email-key", "", http.StatusBadRequest, "no mail server configured"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.wantStatus {
+			t.Errorf("%s %s = %d, want %d (body %s)", tc.method, tc.path, rec.Code, tc.wantStatus, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), tc.wantBody) {
+			t.Errorf("%s %s body = %s, want it to contain %q", tc.method, tc.path, rec.Body.String(), tc.wantBody)
+		}
+	}
+}

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/backup/backuptest"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
 )
@@ -54,6 +56,7 @@ func TestTargetsSkipNonProjects(t *testing.T) {
 // where the terabytes are, so an interrupted run should have done the useful part.
 func TestUserDataIsBackedUpLast(t *testing.T) {
 	s, store := newScheduler(t, "jellyfin")
+	s.set = New(&userDataCapable{Fake: *backuptest.NewRemote("kopia")})
 	if err := store.Set(backupconfig.Config{UserData: true, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
 		t.Fatal(err)
 	}
@@ -218,5 +221,129 @@ func TestConfigClampsAnImpossibleSchedule(t *testing.T) {
 	got := store.Get()
 	if got.Hour != backupconfig.Defaults().Hour || got.Minute != backupconfig.Defaults().Minute {
 		t.Fatalf("schedule = %02d:%02d, want the defaults", got.Hour, got.Minute)
+	}
+}
+
+// Alerting fires on a *change* of health, not once a night. A nightly message
+// becomes noise, then a filter rule, and then the failure it reports is invisible
+// again — which is the outcome the alert exists to prevent.
+func TestNotifiesOnlyWhenHealthChanges(t *testing.T) {
+	s, store := newScheduler(t, "alpha")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	var fail bool
+	s.Backup = func(_ context.Context, _ Target) (string, error) {
+		if fail {
+			return "", errors.New("repository unreachable")
+		}
+		return "2026-01-01_000000", nil
+	}
+	var subjects []string
+	s.Notify = func(subject, _ string) error {
+		subjects = append(subjects, subject)
+		return nil
+	}
+
+	run := func() { _ = s.RunAll(context.Background()) }
+
+	run() // first run, healthy: nothing to announce
+	fail = true
+	run() // broke: one alert
+	run() // still broken: silence
+	run() // still broken: silence
+	fail = false
+	run() // recovered: one alert
+
+	if len(subjects) != 2 {
+		t.Fatalf("sent %d mails (%v), want exactly one failure and one recovery", len(subjects), subjects)
+	}
+	if !strings.Contains(subjects[0], "failing") {
+		t.Errorf("first mail = %q, want it to report the failure", subjects[0])
+	}
+	if !strings.Contains(subjects[1], "working again") {
+		t.Errorf("second mail = %q, want it to report the recovery", subjects[1])
+	}
+}
+
+// A broken mail configuration must never turn a successful backup into a failed one.
+func TestABrokenMailerDoesNotFailTheRun(t *testing.T) {
+	s, store := newScheduler(t, "alpha")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Backup = func(_ context.Context, _ Target) (string, error) { return "", errors.New("boom") }
+	s.Notify = func(string, string) error { return errors.New("smtp refused") }
+
+	// The run still reports its own failure, but the mailer's must not compound it.
+	if err := s.RunAll(context.Background()); err == nil || strings.Contains(err.Error(), "smtp") {
+		t.Fatalf("RunAll error = %v, want the backup failure, not the mail failure", err)
+	}
+}
+
+// The alert has to answer "is anything backed up", not just "something broke".
+func TestFailureMailNamesWhatFailedAndWhatDidNot(t *testing.T) {
+	st := RunState{
+		Finished: time.Date(2026, 3, 1, 3, 30, 0, 0, time.UTC),
+		Failures: 1,
+		Results: []Result{
+			{Target: Target{Kind: KindApp, App: "alpha"}},
+			{Target: Target{Kind: KindApp, App: "beta"}, Err: "repository unreachable"},
+		},
+	}
+	subject, body := failureMail("john.nsl.sh", true, st)
+	if !strings.Contains(subject, "john.nsl.sh") {
+		t.Errorf("subject %q does not say which box", subject)
+	}
+	for _, want := range []string{"app:beta", "repository unreachable", "1 target(s) were backed up successfully"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body is missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "app:alpha\n") {
+		t.Error("the body lists a target that did not fail")
+	}
+}
+
+// A box that has never backed up must not report a successful last run. Go
+// serialises a zero time as year 0001 instead of omitting it, so a client testing
+// the timestamp for truthiness would say "the last backup completed successfully"
+// on a box that has never taken one.
+func TestStateDoesNotClaimARunThatNeverHappened(t *testing.T) {
+	s, _ := newScheduler(t)
+	if s.State().Ran {
+		t.Fatal("a scheduler that has never run reported that it had")
+	}
+	s.Backup = func(context.Context, Target) (string, error) { return "2026-01-01_000000", nil }
+	if err := s.RunAll(context.Background()); err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if !s.State().Ran {
+		t.Fatal("a completed run was not reported as having happened")
+	}
+}
+
+// userDataCapable is an engine that can back up the user-data set, which the local
+// engine deliberately cannot.
+type userDataCapable struct{ backuptest.Fake }
+
+func (*userDataCapable) BackupUserData(context.Context, string) (string, error) {
+	return "2026-01-01_000000", nil
+}
+
+// A default install is the local engine with user data switched on. The local
+// engine cannot back up the tree its own archives live in, so that must not be
+// offered as a target — otherwise every default box reports a failed backup, and
+// mails its owner about it, when nothing is wrong.
+func TestUserDataIsNotATargetForAnEngineThatCannotDoIt(t *testing.T) {
+	s, store := newScheduler(t, "jellyfin")
+	s.set = New(apps.NewLocalProvider(config.Config{DataRoot: t.TempDir()}))
+	if err := store.Set(backupconfig.Config{UserData: true, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tg := range s.Targets() {
+		if tg.Kind == KindUserData {
+			t.Fatal("the local engine was offered the user-data target it cannot serve")
+		}
 	}
 }

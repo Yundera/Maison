@@ -105,6 +105,20 @@ func parseBackup(app, name string) (Backup, bool) {
 	}, true
 }
 
+// ParseBackupName validates a backup name and returns the Backup it describes, or
+// ok == false if the name is not one.
+//
+// It exists for engines implemented outside this package. A remote engine records
+// the stamp alongside its own snapshot, and that recorded value is untrusted on the
+// way back in — so every engine must re-validate it through *this* regex before it
+// becomes a Backup. That is what lets the traversal guard stay exactly as strict as
+// it is today while backups live somewhere other than on disk: the check moves to
+// the ingress of remote listing rather than being loosened to accommodate it.
+//
+// Callers outside this package must set Tier and Engine themselves; the defaults
+// here describe a local archive.
+func ParseBackupName(app, name string) (Backup, bool) { return parseBackup(app, name) }
+
 // AppBackupDir is where one app's archives live. It is created on demand by the
 // writers; readers tolerate it being absent.
 func AppBackupDir(backupsDir, project string) string {

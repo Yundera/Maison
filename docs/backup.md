@@ -335,14 +335,29 @@ into failure, one on recovery** — not one per failed run, which becomes noise 
 a filter rule. The sticky-error state already tracked per tile is the right trigger
 source.
 
-**2. "Send me my encryption key" — one mail, at setup, user-initiated.** This is the
+**2. Handing the user their encryption key — once, at setup, user-initiated.** This is the
 only reason a copy of the password exists anywhere but the box.
 
-The known, accepted risk: this puts a plaintext secret into an inbox, where it is
-indexed, retained indefinitely and backed up by the mail provider. It is a deliberate
-trade — an unrecoverable backup is the worse outcome — and the mitigations are that it
-is user-initiated, sent once, and labelled as something to store elsewhere and delete.
-**It must not be recurring or automatic.**
+> **This one cannot go through the PCS's `smtp` container.** Every PCS runs
+> `ghcr.io/yundera/mail-gateway`, which parses the message and forwards it over HTTPS to
+> `mesh-router-backend`, which relays via SendGrid. Mail sent that way traverses **Yundera
+> infrastructure in plaintext** — which contradicts the claim above that Yundera holds nothing
+> and cannot recover the key.
+
+So the two jobs use different transports:
+
+| Job | Transport |
+|---|---|
+| Failure alerts | The built-in `smtp` container. Zero config, already working, nothing secret in the body. |
+| **The key** | **Display in the UI once, with a download.** No mail by default. Optionally, user-supplied SMTP credentials — direct from the PCS, bypassing the relay. |
+
+Display-and-download is not a workaround, it is the better default: it preserves the security
+property exactly, removes a dependency, and avoids parking a plaintext secret in an inbox where it
+is indexed and retained indefinitely. Whatever the user does with it afterwards is their choice
+to make with full knowledge.
+
+Whichever is chosen, it is **once, user-initiated, and clearly labelled as unrecoverable**. It must
+never be recurring or automatic.
 
 ---
 

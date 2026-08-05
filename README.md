@@ -57,7 +57,7 @@ container's named volume.
 
 ## Documentation
 
-The README is the overview. These three are **authoritative** and win on any conflict:
+The README is the overview. These are **authoritative** and win on any conflict:
 
 | Doc | What it specifies |
 |-----|-------------------|
@@ -66,6 +66,7 @@ The README is the overview. These three are **authoritative** and win on any con
 | [`docs/x-compose-app.md`](./docs/x-compose-app.md) | Maison's own compose extension: `folders`, `hooks`, and the resolved web-UI URL. |
 | [`docs/domains.md`](./docs/domains.md) | The **additional domains** apps are published on (`sslip.io` / `nip.io` / your own), and the Caddy routes Maison generates for them. |
 | [`docs/FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md) | Row-by-row scope table vs `casa-img`. |
+| [`docs/backup.md`](./docs/backup.md) | **Design, not yet implemented.** Offsite backup and disaster recovery: the two backup sets, the pluggable engine, scheduling, retention, encryption, and recovery mode. |
 
 > **Reference implementation:** the full CasaOS bundle Maison slims down lives at
 > `D:\workspace\yundera\yundera-root\packages\casa-img` (container path

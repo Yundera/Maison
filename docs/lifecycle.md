@@ -11,6 +11,10 @@ Its two companions:
 - [`x-compose-app.md`](./x-compose-app.md) — the **declaration** of `folders` and
   `hooks`. This document is what Maison does with them.
 
+[`backup.md`](./backup.md) is the **design** for offsite backup and disaster recovery
+— not yet implemented. It builds on the stop and restart sequences below rather than
+replacing them; the local archive behaviour documented here is what exists today.
+
 ---
 
 ## The one rule

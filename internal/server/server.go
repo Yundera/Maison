@@ -111,6 +111,23 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// catalog now.
 	s.store.StartDailyRefresh(context.Background(), 3, 0)
 	s.installer = installer.New(cfg, s.store, s.dx)
+	if s.apps != nil {
+		// An update rewrites the app's compose and brings the stack back up — the one
+		// destructive change Maison makes on the user's behalf — so it takes a rollback
+		// point first and puts the app back if the stack fails to start.
+		//
+		// Deliberately the local engine, whatever the user's chosen one is: rolling back
+		// has to be a rename. Restoring from a repository is a download, and by the time
+		// it finished the app would have been broken for minutes. These archives are
+		// ordinary local ones, so the nightly run's keep-N prunes them like any other.
+		local := apps.NewLocalProvider(cfg)
+		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string) (string, error) {
+			return s.apps.BackupWith(ctx, local, project, false, nil)
+		}
+		s.installer.RollBack = func(ctx context.Context, project, name string) error {
+			return s.apps.Restore(ctx, project, name, nil)
+		}
+	}
 	// Rebroadcast the app list as install progress advances so the tile's
 	// Download/Start bars move live. Pull events are frequent, so throttle.
 	s.installer.OnUpdate = throttle(300*time.Millisecond, s.broadcastApps)

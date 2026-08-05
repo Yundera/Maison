@@ -65,6 +65,18 @@ type Installer struct {
 	// advance live). The server is expected to throttle it. Optional.
 	OnUpdate func()
 
+	// BackupBeforeUpdate takes a rollback point before an update is applied and
+	// returns the backup's name. RollBack restores one.
+	//
+	// They are func fields rather than a *apps.Registry because the Installer holds
+	// no registry and should keep holding none — it needs two operations, not a
+	// collaborator. The server wires both, and wires them to the **local** engine
+	// specifically: a rollback has to be a rename, and restoring from a repository is
+	// a download. Nil on either disables the rollback point, which is the correct
+	// behaviour on a box with no Docker.
+	BackupBeforeUpdate func(ctx context.Context, project string) (string, error)
+	RollBack           func(ctx context.Context, project, name string) error
+
 	mu       sync.Mutex
 	installs map[string]*InstallState // project name -> live progress
 }

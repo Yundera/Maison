@@ -268,9 +268,15 @@ Restoring an app with no live folder — an uninstalled one, reached from
 Settings → Backups — is the same path with steps 1, 2 and 4 having nothing to do.
 Once the folder lands, the app has a tile again.
 
-> **Scope.** Backups are on the same disk as the apps. They cover a bad update, a
-> broken config or a regretted uninstall — **not** a failed disk. They are a rollback
-> mechanism, not disaster recovery.
+> **Scope.** Archives under `.backups/` are on the same disk as the apps. They cover
+> a bad update, a broken config or a regretted uninstall — **not** a failed disk.
+> On their own they are a rollback mechanism, not disaster recovery.
+>
+> Surviving the loss of the disk needs a **remote engine** (Settings → Cloud backup),
+> which sends apps *and* the user-data set to a repository off the box. Both tiers
+> coexist: a backup is listed once, with a badge saying where it actually is, and a
+> restore comes from whichever tier holds it — preferring the local one, because
+> that restore is a rename. See [`backup.md`](./backup.md).
 
 ---
 

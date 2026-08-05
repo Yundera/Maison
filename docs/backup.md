@@ -1,11 +1,18 @@
 # Backup and recovery
 
-> **Status: design.** None of this is implemented. Maison today archives an app
-> folder locally on uninstall or on demand, and that is all — there is no remote,
-> no schedule, no retention, no restore-from-remote. This document is authoritative
-> for the *intended* design and its failure semantics, and becomes a description of
-> behaviour as the pieces land. Sections that describe code that already exists say
-> so explicitly.
+> **Status: mostly implemented.** The engine seam, the `local` and `kopia` engines,
+> the two-pass app backup, the user-data set, all three restore paths, the nightly
+> schedule, retention and failure notifications are in the tree and tested.
+>
+> **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)),
+> and the host-side `ensure-backup-config.sh` that renders storage credentials onto
+> the box — until that exists, a repository is connected by hand, which is also how
+> this is developed and tested.
+>
+> Two things changed during implementation and are corrected in place below: there is
+> **no local staging copy** on the remote path (§[Why there is no local staging
+> copy](#why-there-is-no-local-staging-copy)), and restoring an app too large to hold
+> two copies of writes **in place**, which is not atomic (§[Restore](#restore)).
 
 Its companions:
 
@@ -365,22 +372,47 @@ never be recurring or automatic.
 
 ### One app
 
-`RestoreBackup` (`archive.go`) archives the live folder and swaps the chosen archive
-into place. **One step goes in front of it: if the archive is not on disk, ask the
-provider to materialise it to `.backups/<app>/<stamp>` first.** The existing path then
-runs unmodified.
+Three paths, chosen by **where the backup is** and whether there is room — never by
+which engine is currently selected, which is the same rule that governs listing.
 
-Because this is the single choke point, install-from-backup gets remote restore for
-free.
+```
+on disk           rename the live folder aside, rename the archive in.
+                  Instant, atomic, and the displaced state becomes an archive of
+                  its own, so the restore is itself undoable.
+remote, room      the engine materialises it to .backups/<app>/<stamp>, then
+                  exactly the above. RestoreBackup runs unmodified.
+remote, no room   the engine writes over the live folder. ~1x space. NOT atomic.
+```
+
+`EstimateRestore` chooses between the last two — the restore-side sibling of the
+backup guard, and for the same reason: materialising needs room for a full second
+copy, which is exactly what an app large enough to need this does not have.
+
+**The in-place path is the one that gives something up.** It is not atomic: an
+interruption leaves the folder holding neither the old state nor the new one, and
+because there is no local copy the only way back is a remote snapshot — so the
+restore is reversible only while the repository is reachable. That is the trade for
+being able to restore an app too large to fit twice on its own disk, and it is why
+three guards are mandatory rather than best-effort:
+
+1. **An undo snapshot is taken first, and if it fails the restore is refused.** The
+   app is already stopped, so it is consistent; it is incremental, so it costs about
+   the delta. An unrecoverable overwrite is worse than a restore that did not happen.
+2. **A `.restoring` marker**, written *outside* the folder being replaced — a restore
+   that deletes files absent from the backup would otherwise delete the marker too.
+   Its name cannot parse as a stamp, so no lister mistakes it for an archive.
+3. **The marker gates `EnsureStarted`.** An app whose restore was cut short stays
+   down. Starting it would initialise over the gap — fresh database, default config —
+   and that invented state would become the next night's backup.
 
 Two knock-on changes:
 
-- `ListBackups` / `ListAll` become a union of local archives and remote-only entries,
-  deduped by `(app, stamp)`, with a tier badge per row. Remote listing is a subprocess
-  call and **must be cached** — the global backups page is already the expensive read.
-- The free-space estimate gains a **restore-side sibling**. Materialising a
-  remote-only backup needs full local space, so the guard that today only protects
-  backup now matters on restore too.
+- `ListBackups` / `ListAll` become a union of local and remote-only entries, deduped
+  by `(app, stamp)`, with a tier badge per row. Remote listing is a subprocess call
+  and **must be cached** — the global backups page is already the expensive read.
+- Install-from-backup still goes through `RestoreBackup`, so it inherits the first
+  two paths unchanged. It does **not** get the in-place path, and does not need it:
+  a fresh install has no live folder to write over.
 
 ### Disaster recovery
 

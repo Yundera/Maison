@@ -135,9 +135,28 @@ install time (`store` + `store-app-id`).
 1. fetch the store's current compose for store-app-id
 2. apply the same transform used at install → byte-comparable with what's on disk
 3. equal? → nothing to do, report "up to date"
-4. overwrite docker-compose.yml (the strict base only)
-5. stackup.Up  → folders (including any the new version introduces) → pre_up → up → post_up
+4. back up the app  ← the rollback point, taken before anything is written
+5. overwrite docker-compose.yml (the strict base only)
+6. stackup.Up  → folders (including any the new version introduces) → pre_up → up → post_up
+7. Up failed? → restore the rollback point and report both failures
 ```
+
+Step 4 is **always the local engine**, whatever engine is configured for scheduled
+backups. A rollback happens in the seconds after an update broke something, so it
+has to be a rename; restoring from a repository is a download, and the app would be
+broken for the duration. These are ordinary local archives, so the nightly run's
+keep-N prunes them like any other — there is no separate retention for them.
+
+If the rollback point cannot be taken — almost always because the app is too large
+to hold a second copy of — **the update still proceeds**, and the response carries a
+`warning` saying it cannot be undone. Refusing to update on those grounds would pin
+the largest apps on old versions, including for security fixes, which is the worse
+failure.
+
+Step 7 restores the whole folder, so it takes the old compose with it: the app
+returns to the state the rollback point captured rather than to a new compose running
+against old data. A rolled-back update still reports as a **failure** — the app is
+running the old version, and rendering that as success would be a lie.
 
 The override and `.env` are never touched — that is the entire point of keeping the
 base byte-identical to the store. `pre_install` / `post_install` do **not** re-run;
@@ -200,53 +219,122 @@ place, so there is always a tile for the error to land on.
 
 ## Backup
 
-Archive the app folder **without** uninstalling. The only operation that stops a
+Back up the app folder **without** uninstalling. The only operation that stops a
 running app on purpose, so the sequence exists to keep that window short:
 
 ```
-1. copy       full mirror of AppData/<app> into .backups/<app>/.staging-<stamp>
-              — the app is still up, so this costs no downtime
+1. pass 1     the engine captures AppData/<app> while the app is still up
+              — costs no downtime, and warms the engine's incremental state
 2. stop       (skipped when the app was already stopped)
-3. sync       mirror again: only files whose size or mtime changed, plus a prune
-              of anything deleted — this is the entire downtime
-4. start      deferred, so it runs even if a later step fails
-5. compress   zip the snapshot and delete it (zip=true only); a folder backup
-              just renames .staging-<stamp> → <stamp>, which is the commit point
+3. pass 2     the engine captures it again: only what changed during pass 1.
+              This is the entire downtime, and it is bounded by a timeout
+4. commit     the engine makes the backup real — this is the commit point
+5. start      deferred, so it runs even if a later step fails
 ```
 
-The mirror is plain Go (`apps.mirror`), not rsync: the runtime image carries no
-rsync, and the incremental test — same size *and* same mtime — is the same one
-rsync makes by default. Irregular files (sockets, fifos) are skipped rather than
-opened, so an app that leaves a socket in its folder is still backupable.
+The two passes are the registry's, not the engine's — along with the per-app lock,
+the deferred restart, and the tracked progress. **An engine owns exactly one thing:
+getting bytes to durable storage and back** (`internal/apps.Provider`). That
+boundary is why no engine can lengthen an app's downtime by restructuring the
+sequence, or produce an inconsistent snapshot by choosing when to read.
 
-`POST /api/apps/{id}/backup?zip=` **starts** it and returns `202 Accepted`. Only
-the up-front refusals are synchronous: an unknown app, or not enough free space
-(`400`, measured by `EstimateBackup` — the folder's size × 1.1 for a folder
-archive, × 2 for a zip). Progress rides the live app list through
+What each pass *does* depends on the engine:
+
+| | `local` (built in, always available) | `kopia` (and any later remote engine) |
+|---|---|---|
+| A pass | mirrors into `.backups/<app>/.staging-<stamp>` | snapshots `AppData/<app>` straight into the repository |
+| Commit | renames staging → `<stamp>`, or zips it | drops the torn pass-1 snapshot |
+| Needs free disk | yes, a full second copy | **no** |
+| Survives losing the box | no — same disk as the app | yes |
+
+The local mirror is plain Go (`apps.mirror`), not rsync: the runtime image carries
+no rsync, and the incremental test — same size *and* same mtime — is the one rsync
+makes by default. Irregular files (sockets, fifos) are skipped rather than opened,
+so an app that leaves a socket in its folder is still backupable.
+
+**The no-staging shape is what makes a large app backupable at all.** A 300 GB app
+on a 400 GB disk needs 330 GB free for the local engine's copy, so
+`Estimate.Enough` is false and the backup is refused — that is current behaviour,
+not a hypothetical. An engine that streams to a repository has no such requirement,
+and `EstimateBackup` skips the guard entirely for one (`Estimate.Streamed`).
+
+What it costs: **downtime is no longer engine-independent.** A hung repository would
+extend an outage rather than merely failing a backup. Two things bound that — the
+restart is deferred, so a failure anywhere after the stop still brings the app up,
+and the stopped window has a timeout (`Registry.StoppedPassTimeout`, 15 minutes by
+default) after which the engine's container is killed *and removed*. Killing the
+`docker` client alone would leave the engine running and still holding the app's
+files, which is why `internal/engine` removes the container by name.
+
+`POST /api/apps/{id}/backup?zip=` **starts** it and returns `202 Accepted`. Only the
+up-front refusals are synchronous: an unknown app, or — for an engine that needs
+local space — not enough of it. Progress rides the live app list through
 `apps.Registry.StartBackup` / `Backups` / `ClearBackup` and
-`server.overlayBackups`, on the same single tile bar as an install or an
-uninstall, in amber: **Copy**, then **Sync**, then **Compress**.
+`server.overlayBackups`, on the same single tile bar as an install or an uninstall,
+in amber: **Copy**, then **Sync**, then **Compress**.
 
-Nothing is committed until the final rename, so a crash mid-backup leaves only a
-`.staging-…` folder or a `.partial` zip — neither of which parses as an archive,
-so neither is ever listed or restored.
+Nothing is listable until the commit, so a crash mid-backup leaves only a
+`.staging-…` folder, a `.partial` zip, or a snapshot tagged as the throwaway first
+pass — none of which is ever offered for restore.
 
 ## Restore
 
-The mirror image, and reversible by construction:
+Which of three paths a restore takes depends on **where the backup is** and whether
+there is room — never on which engine is currently selected. That last part is the
+rule that keeps a user's older backups reachable after they switch engines.
 
 ```
-1. stop       (if running)
-2. archive    rename AppData/<app> → .backups/<app>/<now>   ← instant, free
-3. restore    folder archive: renamed back (consumed)
-              zip archive:    extracted (survives, restorable again)
-4. start      deferred, as above
+on disk           1. stop (if running)
+                  2. archive   rename AppData/<app> → .backups/<app>/<now>  ← instant, free
+                  3. restore   folder archive renamed back; zip extracted
+                  4. start     deferred
+remote, room      0. fetch     the engine downloads it to .backups/<app>/<stamp>
+                  … then exactly the above
+remote, no room   1. stop
+                  2. undo      the engine snapshots the current state — and if that
+                               fails the restore is REFUSED
+                  3. restore   written over the live folder, deleting files the
+                               backup does not have
+                  4. start     deferred, and refused while the marker below exists
 ```
+
+The first two are atomic at their commit point and reversible by a rename. **The
+third is neither.** An interruption leaves the folder holding neither the old state
+nor the new one, and the only way back is a remote snapshot — so a restore is
+reversible only while the repository is reachable. That is the price of restoring an
+app too large to hold two copies of, and it is why the undo snapshot is mandatory
+rather than best-effort.
+
+While an in-place restore is running, `.backups/<app>/.restoring` exists. It lives
+*outside* the folder being written (a delete-extra restore would remove it from
+inside) and its name cannot parse as a stamp, so no lister mistakes it for an
+archive. **It gates `EnsureStarted`:** an app whose restore was cut short is not
+started, because it would initialise over the gap — fresh database, default config —
+and that invented state would become the next backup.
 
 `POST /api/apps/{id}/restore {"name": …}` for a live app, or
 `POST /api/backups/{app}/restore` for one that has been uninstalled — the same
-detached path, which simply finds nothing to do at steps 1, 2 and 4. Step 2 is why
-a restore can never destroy the state it replaces.
+detached path, which simply finds nothing to do at the stop, archive and start steps.
+
+## Scheduled backups
+
+A nightly run (`internal/backup.Scheduler`) backs up every app and, if the engine
+can, the user-data set — everything under the data root that is **not** `AppData`.
+It is Maison's own scheduler and cannot be delegated to the engine's at any price: a
+consistent app snapshot needs containers stopped, which no backup tool can do.
+
+Four properties that are not obvious from "run it daily":
+
+- **Strictly sequential.** The per-app lock protects one app; nothing else would
+  stop a run taking six down at once.
+- **Skip, don't queue.** A run still going at the next window is skipped — waiting
+  behind itself only compounds the delay.
+- **Jitter.** A fleet all firing at 03:30 is a thundering herd against one bucket.
+  The offset is derived from the data path, so it is stable per box.
+- **Two apps are never targets:** Maison's own state directory (stopping it kills
+  the process running the backup) and anything in `PROTECTED_APPS`. Platform state
+  is therefore not covered by the schedule — a deliberate gap, because covering it
+  properly means backing it up *without* stopping it.
 
 ---
 
@@ -299,10 +387,16 @@ Two mappings, easy to confuse, both in `internal/envinject`:
 | `post_install`, `post_up` | No (logged) | The stack is already up. |
 | `docker compose up` | **Yes** | Obviously. |
 | Ownership / mode (`chown`, `chmod`) on a folder | No (logged) | Not every filesystem supports it, and that should not block an otherwise healthy start. |
-| Free-space check before a backup | **Yes**, before anything is copied | Filling the data disk breaks every app on the box, not just this one. |
-| Either mirror pass of a backup | **Yes** | A snapshot that is missing files is not a backup, and silently keeping it would be worse than failing. |
+| Free-space check before a backup | **Yes**, before anything is copied | Filling the data disk breaks every app on the box, not just this one. Skipped entirely for an engine that streams to a repository — it needs no room. |
+| Either pass of a backup | **Yes** | A backup that is missing files is not a backup, and silently keeping it would be worse than failing. |
+| The stopped pass exceeding its timeout | **Yes**, and the engine's container is killed *and removed* | Otherwise a hung repository is an outage rather than a failed backup — and killing only the `docker` client would leave the engine running, still holding the app's files, while Maison restarts the app and reports success. |
+| Committing a backup | **Yes** | Nothing is listable before the commit, so a failure leaves a `.staging-…`, a `.partial`, or a snapshot tagged as the throwaway first pass — none of which is ever offered for restore. |
+| Dropping the throwaway first-pass snapshot | No (logged) | The real backup already exists; refusing to commit it because a cleanup failed is the worse outcome. The orphan is invisible to listing and is swept later. |
 | Restarting the app after a backup or restore | No (logged) | The restart is deferred so it runs even when the operation failed — an app left down is a worse outcome than a missing backup. |
-| Compressing a backup | **Yes** | The zip is only renamed into place once it is whole, so a failure leaves a `.partial` that is never listed. |
+| Restarting an app whose in-place restore was interrupted | **Yes**, it stays down | It holds neither the old state nor the new one. Starting it would initialise over the gap and that invented state would become the next backup. |
+| The undo snapshot before an in-place restore | **Yes**, the restore is refused | An in-place restore is not atomic and has no local undo. An unrecoverable overwrite is worse than a restore that did not happen. |
+| One target of a scheduled run | No | The other targets still run. A broken app must not cost the user every other backup that night; the failures are collected into one summary. |
+| Sending a failure notification | No (logged) | A broken SMTP configuration must never turn a successful backup into a failed one. |
 
 An install that fails leaves the app's folder **in place**, half-configured — which
 is correct: the folder is the tile, the failure is visible on it, and a retry is a

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -58,34 +59,73 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 	return st, nil
 }
 
+// UpdateResult is what an update did.
+type UpdateResult struct {
+	// Applied is false when the app was already current.
+	Applied bool `json:"applied"`
+	// Backup names the rollback point taken before the update, empty when none was.
+	Backup string `json:"backup,omitempty"`
+	// RolledBack is true when the update failed and the app was put back.
+	RolledBack bool `json:"rolled_back,omitempty"`
+	// Warning explains a rollback point that could not be taken, or a rollback that
+	// itself failed. It is not an error — the update still happened — but it is the
+	// thing the operator most needs to see.
+	Warning string `json:"warning,omitempty"`
+}
+
 // ApplyUpdate pulls the store's current docker-compose.yml, and — if it differs
-// from the installed copy — overwrites the strict base and brings the stack back
-// up (base + override) with `docker compose up -d`. The user's override and .env
-// are untouched. Returns true when an update was actually applied, false when the
-// app was already current.
-func (in *Installer) ApplyUpdate(ctx context.Context, project string) (bool, error) {
+// from the installed copy — takes a rollback point, overwrites the strict base and
+// brings the stack back up (base + override) with `docker compose up -d`. The user's
+// override and .env are untouched.
+//
+// An update is the most common way an app breaks, and it is the one destructive
+// change Maison makes on the user's behalf, so it takes a backup first and puts the
+// app back if bringing it up fails.
+func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateResult, error) {
+	var res UpdateResult
 	dir := filepath.Join(in.cfg.AppsDir(), project)
 	composePath := filepath.Join(dir, "docker-compose.yml")
 	current, err := os.ReadFile(composePath)
 	if err != nil {
-		return false, err
+		return res, err
 	}
 
 	storeURL, storeAppID := in.readUpdateRef(project)
 	if storeAppID == "" {
-		return false, fmt.Errorf("no update reference recorded for %q", project)
+		return res, fmt.Errorf("no update reference recorded for %q", project)
 	}
 
 	newBase, err := in.storeCompose(ctx, storeURL, storeAppID)
 	if err != nil {
-		return false, err
+		return res, err
 	}
 	if bytes.Equal(current, newBase) {
-		return false, nil // already up to date — nothing to do
+		return res, nil // already up to date — nothing to do
+	}
+
+	// The rollback point, before anything is written.
+	//
+	// It is deliberately *not* taken with whatever backup engine is configured: a
+	// rollback has to be fast, and restoring from a repository is a download. The
+	// server wires this to the local engine specifically, so putting the app back is
+	// a rename.
+	if in.BackupBeforeUpdate != nil {
+		name, err := in.BackupBeforeUpdate(ctx, project)
+		switch {
+		case err != nil:
+			// Not fatal. The commonest reason is that the app is too large to hold a
+			// second copy of, and refusing to update on those grounds would leave the
+			// app stuck on an old version — including for a security fix. Proceed, and
+			// say plainly that there is no way back.
+			res.Warning = "no rollback point could be taken, so this update cannot be undone: " + err.Error()
+			log.Printf("update %s: %s", project, res.Warning)
+		default:
+			res.Backup = name
+		}
 	}
 
 	if err := os.WriteFile(composePath, newBase, 0o644); err != nil {
-		return false, err
+		return res, err
 	}
 
 	// stackup.Up creates any folder the updated compose newly introduces — declared
@@ -96,9 +136,34 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (bool, err
 		files = append(files, override)
 	}
 	if err := stackup.Up(ctx, in.cfg, project, dir, files); err != nil {
-		return false, err
+		return in.rollBack(ctx, project, res, err)
 	}
-	return true, nil
+	res.Applied = true
+	return res, nil
+}
+
+// rollBack puts the app back after a failed update.
+//
+// The restore replaces the whole folder, so it takes the old compose with it — the
+// app returns to exactly the state the rollback point captured, not to a new compose
+// running against old data.
+//
+// A failed rollback is reported alongside the failure that caused it rather than
+// replacing it: the operator needs to know both that the update failed *and* that
+// the app is now in neither state.
+func (in *Installer) rollBack(ctx context.Context, project string, res UpdateResult, cause error) (UpdateResult, error) {
+	if in.RollBack == nil || res.Backup == "" {
+		return res, fmt.Errorf("update failed and could not be undone: %w", cause)
+	}
+	// Deliberately not the request's context: it may already be cancelled by the
+	// failure, and abandoning a rollback half-done is the worst available outcome.
+	if err := in.RollBack(context.WithoutCancel(ctx), project, res.Backup); err != nil {
+		res.Warning = "the update failed AND rolling back failed: " + err.Error()
+		log.Printf("update %s: %s", project, res.Warning)
+		return res, fmt.Errorf("update failed and the rollback failed too (%v): %w", err, cause)
+	}
+	res.RolledBack = true
+	return res, fmt.Errorf("update failed and was rolled back: %w", cause)
 }
 
 // storeCompose fetches app storeAppID from storeURL and applies the same PCS

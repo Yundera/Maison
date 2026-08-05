@@ -250,6 +250,16 @@ func (r *Registry) ClearBackup(id string) {
 // The restart is deferred, so a failure anywhere after the stop still brings the
 // app back up. Leaving an app down is a worse outcome than a missing backup.
 func (r *Registry) Backup(ctx context.Context, id string, zip bool, emit func(BackupEvent)) (string, error) {
+	return r.BackupWith(ctx, r.engine(), id, zip, emit)
+}
+
+// BackupWith runs a backup through a named engine rather than the configured one.
+//
+// It exists for the update path, which needs a rollback point it can restore by
+// *rename*: an update is undone in the seconds after it broke something, and a
+// download is not that. Everything else should call Backup and let the user's choice
+// of engine stand.
+func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bool, emit func(BackupEvent)) (string, error) {
 	if emit == nil {
 		emit = func(BackupEvent) {}
 	}
@@ -264,7 +274,6 @@ func (r *Registry) Backup(ctx context.Context, id string, zip bool, emit func(Ba
 	r.enter(id)
 	defer r.leave(id)
 
-	p := r.engine()
 	opts := SnapshotOpts{Zip: zip}
 	stamp := time.Now().Format(StampLayout)
 

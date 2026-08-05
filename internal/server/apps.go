@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/installer"
 )
 
 func (s *Server) requireApps(w http.ResponseWriter) bool {
@@ -92,14 +93,22 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	var updated bool
+	var res installer.UpdateResult
 	err := s.apps.WithBusy(id, func() error {
 		var e error
-		updated, e = s.installer.ApplyUpdate(ctx, id)
+		res, e = s.installer.ApplyUpdate(ctx, id)
 		return e
 	})
+	updated := res.Applied
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		// A failed update that was rolled back leaves the app exactly as it was, so
+		// the tile has to be rebroadcast either way — the restore changed it back.
+		s.broadcastApps()
+		out := map[string]any{"error": err.Error(), "rolled_back": res.RolledBack}
+		if res.Warning != "" {
+			out["warning"] = res.Warning
+		}
+		writeJSON(w, http.StatusInternalServerError, out)
 		return
 	}
 	s.broadcastApps()

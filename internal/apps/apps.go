@@ -109,6 +109,21 @@ type Registry struct {
 	// copied chunk), so the server is expected to throttle it. Optional.
 	OnProgress func()
 
+	// Engine is the backup engine new backups are written to. Nil means the built-in
+	// local one — archives on the data disk — which needs no configuration and is
+	// always available, so a Registry built without one behaves exactly as Maison
+	// always has.
+	//
+	// It is an exported field set after construction, like OnChange, rather than a
+	// New parameter: an engine is an optional collaborator wired by the server, and
+	// making it a parameter would force every caller that has no opinion about
+	// backups to have one.
+	//
+	// Only *writes* follow this. Reading a backup dispatches on where that backup
+	// actually is, never on which engine is selected now — otherwise switching engine
+	// would strand everything the previous one wrote. See internal/backup.
+	Engine Provider
+
 	mu         sync.Mutex
 	busy       map[string]int             // app id -> in-flight operation count
 	uninstalls map[string]*UninstallState // app id -> live uninstall progress

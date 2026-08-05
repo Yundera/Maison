@@ -249,29 +249,28 @@ func (r *Registry) Backup(ctx context.Context, id string, zip bool, emit func(Ba
 	r.enter(id)
 	defer r.leave(id)
 
+	p := r.engine()
+	opts := SnapshotOpts{Zip: zip}
 	stamp := time.Now().Format(StampLayout)
-	dir := AppBackupDir(r.cfg.BackupsDir(), id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create backup dir: %w", err)
-	}
-	// The staging name carries a dot, so a snapshot interrupted by a crash is never
-	// mistaken for a finished archive (stampRe rejects it) — it is inert until the
-	// final rename, which is this operation's commit point.
-	staging := filepath.Join(dir, ".staging-"+stamp)
-	if err := os.RemoveAll(staging); err != nil {
-		return "", fmt.Errorf("clear staging: %w", err)
-	}
+
+	// Nothing the engine stages is durable until Commit, so an interrupted backup
+	// discards it rather than leaving something a later List might offer for restore.
+	// Registered before the stop below, so it runs *after* the restart: bringing the
+	// app back up always takes precedence over cleaning up.
 	committed := false
 	defer func() {
 		if !committed {
-			_ = os.RemoveAll(staging)
+			if err := p.Abort(context.WithoutCancel(ctx), id, stamp); err != nil {
+				log.Printf("backup %s: discard incomplete backup: %v", id, err)
+			}
 		}
 	}()
 
 	// Pass 1 — the app is still serving. This is the long one.
 	emit(BackupEvent{Phase: PhaseCopy, Message: "Copying " + id})
-	if err := mirror(appDir, staging, func(copied, total int64) {
-		emit(BackupEvent{Phase: PhaseCopy, Message: "Copying " + id, Copy: pct(copied, total)})
+	opts.Pass = 1
+	if err := p.Snapshot(ctx, id, stamp, opts, func(ev Event) {
+		emit(BackupEvent{Phase: PhaseCopy, Message: ev.Message, Copy: ev.Pct})
 	}); err != nil {
 		return "", fmt.Errorf("copy app folder: %w", err)
 	}
@@ -295,46 +294,44 @@ func (r *Registry) Backup(ctx context.Context, id string, zip bool, emit func(Ba
 
 	// Pass 2 — the app is down, so whatever this copies is the last word.
 	emit(BackupEvent{Phase: PhaseSync, Message: "Syncing changes", Copy: 100})
-	if err := mirror(appDir, staging, func(copied, total int64) {
-		emit(BackupEvent{Phase: PhaseSync, Message: "Syncing changes", Copy: 100, Sync: pct(copied, total)})
+	opts.Pass = 2
+	if err := p.Snapshot(ctx, id, stamp, opts, func(ev Event) {
+		emit(BackupEvent{Phase: PhaseSync, Message: ev.Message, Copy: 100, Sync: ev.Pct})
 	}); err != nil {
 		return "", fmt.Errorf("sync app folder: %w", err)
 	}
 	emit(BackupEvent{Phase: PhaseSync, Message: "Synced", Copy: 100, Sync: 100})
 
-	if !zip {
-		if err := os.Rename(staging, filepath.Join(dir, stamp)); err != nil {
-			return "", fmt.Errorf("finalise backup: %w", err)
-		}
-		committed = true
-		emit(BackupEvent{Phase: PhaseDone, Message: "Backed up", Copy: 100, Sync: 100, Compress: 100})
-		return stamp, nil
-	}
-
-	// Compressing happens after the deferred restart is queued but before it runs,
-	// so the app is still down for it. That is deliberate: the alternative — start,
-	// then zip — races the app writing into the folder we are not reading anyway,
-	// and buys nothing, because the zip reads the *snapshot*, not the app folder.
-	name := stamp + ".zip"
-	tmp := filepath.Join(dir, "."+name+".partial")
-	emit(BackupEvent{Phase: PhaseCompress, Message: "Compressing " + name, Copy: 100, Sync: 100})
-	if err := archiveDir(staging, tmp, func(copied, total int64) {
+	// The commit runs after the deferred restart is queued but before it runs, so the
+	// app is still down for it. That is deliberate for the engine whose commit does
+	// real work — zipping the snapshot: the alternative, start then zip, races the app
+	// writing into a folder we are not reading anyway, and buys nothing, because the
+	// zip reads the staged copy rather than the app folder.
+	b, err := p.Commit(ctx, id, stamp, opts, func(ev Event) {
 		emit(BackupEvent{
-			Phase: PhaseCompress, Message: "Compressing " + name,
-			Copy: 100, Sync: 100, Compress: pct(copied, total),
+			Phase: PhaseCompress, Message: ev.Message,
+			Copy: 100, Sync: 100, Compress: ev.Pct,
 		})
-	}); err != nil {
-		_ = os.Remove(tmp)
-		return "", fmt.Errorf("compress backup: %w", err)
-	}
-	// Rename last: a zip only becomes a backup once it is whole, so an interrupted
-	// compress can never be restored as if it had finished.
-	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
-		_ = os.Remove(tmp)
+	})
+	if err != nil {
 		return "", fmt.Errorf("finalise backup: %w", err)
 	}
+	committed = true
 	emit(BackupEvent{Phase: PhaseDone, Message: "Backed up", Copy: 100, Sync: 100, Compress: 100})
-	return name, nil
+	return b.Name, nil
+}
+
+// engine is the backup engine new backups are written to.
+//
+// A nil Engine means the built-in local one, which keeps every caller that predates
+// the engine seam — and every test constructing a Registry directly — working
+// unchanged. It is built per call rather than cached because it holds nothing but
+// the config it was handed.
+func (r *Registry) engine() Provider {
+	if r.Engine != nil {
+		return r.Engine
+	}
+	return NewLocalProvider(r.cfg)
 }
 
 // Restore puts an archive back as the app's live folder, in place, without going

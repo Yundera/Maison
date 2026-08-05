@@ -203,6 +203,27 @@ lost with it.
 If pass-1 churn is high (an Immich mid-import), pass 1 can be repeated until the delta
 stops shrinking before stopping the app. Not needed for a first version.
 
+### Per-app exclusions
+
+`AppData/<app>` is the source, but not all of it is worth storing. Apps keep large **regenerable**
+caches inside their own directory — thumbnails, transcodes, search indexes, model downloads — and
+without a way to skip them, every one ships nightly and is billed as if it mattered. On a media app
+the cache can rival the real data.
+
+The declaration belongs in **`x-compose-app`**, next to `folders` and `hooks`: the app author knows
+which of their directories are derived, and it travels with the app instead of living in a list
+Maison has to maintain per store app. A user-level override is worth having for apps whose authors
+have not declared anything.
+
+Two rules keep this from becoming a footgun:
+
+- **Exclusions are a store-app declaration, not a heuristic.** Never infer "this looks like a
+  cache" from a directory name — a wrong guess silently omits real data from a backup, which is the
+  worst failure this system can have.
+- **What was excluded must be visible at restore time.** A restored app missing its cache should
+  rebuild it; a restored app missing something the author wrongly marked derived is a bug report,
+  and the restore UI showing "these paths were excluded" is what makes that diagnosable.
+
 ### Identity is unchanged
 
 `<stamp>` — `YYYY-MM-DD_HHMMSS` — stays the canonical name of a backup. `stampRe`
@@ -229,6 +250,30 @@ Three requirements beyond a ticker:
 | **Serialise across apps** | The per-app `enter`/`leave` lock protects one app. Nothing stops a nightly run from taking six apps down at once. |
 | **Catch up, do not pile up** | A PCS that was off at 03:00 backs up when it returns; a run that overruns its window is skipped, not queued behind itself. |
 | **Jitter per box** | A fixed 03:00 fleet-wide is a self-inflicted thundering herd against one bucket. The `deviceId` issued to the PCS is a ready-made stable seed. |
+
+### The first run is a different problem from the nightly one
+
+Jitter spreads the recurring 03:00 load across minutes. **The first backup a box ever takes needs
+spreading across days.**
+
+Configuration reaches the fleet through `ensure-template-sync`, so every PCS becomes
+backup-capable at roughly the same moment. Each then seeds its *entire* `/DATA` on its next
+scheduled run. Two hundred boxes holding even 100 GB each is tens of terabytes converging on one
+bucket in a single window — and the users are concentrated in a handful of timezones, so "03:00
+local" barely spreads it.
+
+**Maison owns this**, because Maison owns the trigger. Nothing upstream can stagger it. Derive a
+per-box offset over a multi-day window from a stable seed (the `deviceId` works), and hold the
+first run until that offset elapses. Subsequent runs fall back to normal nightly jitter.
+
+This matters most on the day the feature ships to existing boxes, which is exactly when it is
+least convenient to discover.
+
+### Upload throttling
+
+A backup that saturates a home uplink is a support ticket, and the user will blame the PCS rather
+than the backup. Expose a bandwidth cap and set a conservative default; the engines take a flag for
+this (`--upload-limit-mb` in kopia's case). It belongs in the same settings surface as the schedule.
 
 ---
 

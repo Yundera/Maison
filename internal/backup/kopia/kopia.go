@@ -1,0 +1,610 @@
+// Package kopia implements the kopia backup engine.
+//
+// Kopia runs as a throwaway container (internal/engine); Maison ships no binary and
+// installs none on the host. Maison also never fetches storage credentials: a
+// self-check script on the host renders them into
+// ${DATA_ROOT}/AppDataShared/backup/kopia/ and connects the repository, and this
+// package only reads what it finds there. An absent or unusable configuration is the
+// normal "not configured" state of a box whose host side has not run — it degrades,
+// it does not error.
+//
+// See docs/backup.md, which is authoritative for the design.
+package kopia
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/engine"
+)
+
+// DefaultImage is the pinned engine image. Never a floating tag: an engine that
+// changes under a live repository turns a format surprise into a 3am failure.
+const DefaultImage = "kopia/kopia:0.23.1"
+
+// ID is this engine's permanent identifier. It is recorded on every backup it
+// writes and is how those backups are found again after the user switches engines,
+// so it can never change.
+const ID = "kopia"
+
+// Tag keys Maison stamps on every snapshot.
+//
+// They are how (app, stamp) — the identity the API and the frontend use — survives
+// into a repository that has no notion of either. Note the asymmetry: tags are
+// *written* as "key:value" but come *back* from --json under a "tag:" prefix, so a
+// filter built from the read spelling silently matches nothing.
+const (
+	tagApp   = "maison-app"
+	tagStamp = "maison-stamp"
+	tagPass  = "maison-pass"
+
+	jsonTagPrefix = "tag:"
+)
+
+// userDataApp is the reserved tag value for the user-data set, which is not an app
+// and has no compose project.
+//
+// A leading underscore is unrepresentable in a real app name (projectRe requires an
+// alphanumeric first character), so this cannot collide with one — the guard makes
+// the reservation for us rather than us having to police it.
+const userDataApp = "_userdata"
+
+// progressPct pulls the percentage out of kopia's progress line, which looks like
+//
+//	| 1 hashing, 0 hashed (100.8 MB), 2 cached (16 B), uploaded 95.6 MB, estimated 125.8 MB (80.1%) 0s left
+//
+// A line that does not match is reported as a message with no percentage rather than
+// treated as an error: progress is decoration, and a kopia release that restyles it
+// must not be able to fail a backup.
+var progressPct = regexp.MustCompile(`\(([0-9]+(?:\.[0-9]+)?)%\)`)
+
+// Provider is the kopia engine.
+type Provider struct {
+	cfg    config.Config
+	runner *engine.Runner
+	image  string
+
+	mu       sync.Mutex
+	cached   Status
+	cachedAt time.Time
+}
+
+// Status is what Maison knows about the repository.
+type Status struct {
+	Connected bool   `json:"connected"`
+	Type      string `json:"type,omitempty"`   // "filesystem", "s3", "b2", …
+	Host      string `json:"host,omitempty"`   // the identity snapshots are filed under
+	User      string `json:"user,omitempty"`   // together with Host, what snapshots are keyed by
+	Detail    string `json:"detail,omitempty"` // why it is not connected, for the UI
+}
+
+// New builds the engine. It performs no I/O: a Provider is constructed on every
+// boot, including on boxes that have no repository.
+func New(cfg config.Config) *Provider {
+	return &Provider{cfg: cfg, runner: engine.New(cfg), image: DefaultImage}
+}
+
+// WithImage overrides the pinned image, so a deployment can move engine version
+// without a Maison release.
+func (p *Provider) WithImage(ref string) *Provider {
+	if ref != "" {
+		p.image = ref
+	}
+	return p
+}
+
+func (p *Provider) ID() string { return ID }
+
+func (p *Provider) Caps() apps.Caps {
+	return apps.Caps{
+		Offsite: true,
+		// Restoring is a download, never a rename.
+		InstantRestore: false,
+		// Snapshots stream straight to the repository, so a backup needs no free disk
+		// proportional to the app. That is what lets an app occupying most of its disk
+		// be backed up at all.
+		NeedsLocalSpace: false,
+		// And what lets it be restored again: kopia writes over the live folder.
+		InPlaceRestore: true,
+		// Retention is kopia's own policy engine; Maison configures the tiers rather
+		// than deleting snapshots itself.
+		Retention: true,
+	}
+}
+
+// dir is where the host-side script leaves this engine's configuration. The path is
+// container-side, and the engine container mounts the data root at the same place,
+// so the same string is valid on both sides.
+func (p *Provider) dir() string { return p.cfg.BackupEngineDir(ID) }
+
+func (p *Provider) configFile() string   { return filepath.Join(p.dir(), "repository.config") }
+func (p *Provider) passwordFile() string { return filepath.Join(p.dir(), "repository.password") }
+
+// repoConfig is the part of kopia's own config file Maison reads. The identity
+// fields are written there by `repository connect --override-hostname/--username`,
+// which is why Maison never has to pass a hostname of its own — and must not, since
+// two sides computing it independently is how a repository ends up split into two
+// lineages that never see each other.
+type repoConfig struct {
+	Hostname string `json:"hostname"`
+	Username string `json:"username"`
+	Storage  struct {
+		Type string `json:"type"`
+	} `json:"storage"`
+}
+
+func (p *Provider) readConfig() (repoConfig, error) {
+	var rc repoConfig
+	b, err := os.ReadFile(p.configFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return rc, apps.ErrNotConfigured
+		}
+		return rc, err
+	}
+	if err := json.Unmarshal(b, &rc); err != nil {
+		return rc, fmt.Errorf("kopia: unreadable repository config: %w", err)
+	}
+	return rc, nil
+}
+
+func (p *Provider) password() (string, error) {
+	b, err := os.ReadFile(p.passwordFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", apps.ErrNotConfigured
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// Status reports whether the repository is usable, cached briefly because both the
+// settings page and every app's Backups tab ask, and answering costs a container
+// start.
+func (p *Provider) Status(ctx context.Context) Status {
+	p.mu.Lock()
+	if time.Since(p.cachedAt) < 30*time.Second {
+		defer p.mu.Unlock()
+		return p.cached
+	}
+	p.mu.Unlock()
+
+	st := p.probe(ctx)
+
+	p.mu.Lock()
+	p.cached, p.cachedAt = st, time.Now()
+	p.mu.Unlock()
+	return st
+}
+
+func (p *Provider) probe(ctx context.Context) Status {
+	rc, err := p.readConfig()
+	if err != nil {
+		return Status{Detail: notConfiguredDetail(err)}
+	}
+	out, err := p.run(ctx, nil, 2*time.Minute, "repository", "status", "--json")
+	if err != nil {
+		return Status{Detail: err.Error(), Host: rc.Hostname, User: rc.Username, Type: rc.Storage.Type}
+	}
+	_ = out
+	return Status{Connected: true, Type: rc.Storage.Type, Host: rc.Hostname, User: rc.Username}
+}
+
+func notConfiguredDetail(err error) string {
+	if errors.Is(err, apps.ErrNotConfigured) {
+		return "no repository configured on this box"
+	}
+	return err.Error()
+}
+
+// Prepare makes the engine ready to run — currently, makes sure the image is
+// present. It is called when the engine is selected and at boot, so that a first
+// pull happens while someone is watching rather than silently delaying the first
+// scheduled backup.
+func (p *Provider) Prepare(ctx context.Context, emit func(apps.Event)) error {
+	if _, err := p.readConfig(); err != nil {
+		return err
+	}
+	// `docker run` would pull anyway; doing it here is what moves the wait somewhere
+	// visible. Errors are returned rather than swallowed for the same reason.
+	if _, err := p.runner.Run(ctx, engine.Spec{
+		Image:    p.image,
+		Name:     "maison-engine-prepare",
+		Hostname: "maison-prepare",
+		Network:  engine.NetworkDefault,
+		Args:     []string{"--version"},
+		Timeout:  10 * time.Minute,
+	}, func(line string) { emitLine(emit, line) }); err != nil {
+		return fmt.Errorf("kopia: engine image unavailable: %w", err)
+	}
+	return nil
+}
+
+// run invokes kopia. Every invocation carries --config-file and the password through
+// the environment; nothing else is global.
+func (p *Provider) run(ctx context.Context, emit func(apps.Event), timeout time.Duration, args ...string) ([]byte, error) {
+	rc, err := p.readConfig()
+	if err != nil {
+		return nil, err
+	}
+	pw, err := p.password()
+	if err != nil {
+		return nil, err
+	}
+	// A filesystem repository needs no networking at all, which also keeps the tests
+	// hermetic. Anything else reaches a bucket over the default bridge — never a
+	// network Maison's peers are on.
+	net := engine.NetworkDefault
+	if rc.Storage.Type == "filesystem" || rc.Storage.Type == "" {
+		net = engine.NetworkNone
+	}
+	return p.runner.Run(ctx, engine.Spec{
+		Image:    p.image,
+		Name:     containerName(args),
+		Hostname: p.hostname(rc),
+		User:     p.cfg.PUID + ":" + p.cfg.PGID,
+		Network:  net,
+		Mounts:   []engine.Mount{p.runner.DataMount(false)},
+		Secrets:  map[string]string{"KOPIA_PASSWORD": pw},
+		Args:     append(args, "--config-file="+p.configFile()),
+		Timeout:  timeout,
+	}, func(line string) { emitLine(emit, line) })
+}
+
+// hostname is the identity snapshots are filed under.
+//
+// It comes from the repository config, written there by the host-side connect. The
+// fallback exists only for a hand-written dev config: it is derived from the data
+// path so it is stable for a given box, and it is obviously synthetic so that a real
+// deployment missing its pin is recognisable rather than silently divergent.
+func (p *Provider) hostname(rc repoConfig) string {
+	if rc.Hostname != "" {
+		return rc.Hostname
+	}
+	return "maison-unpinned"
+}
+
+// containerName keeps a run findable after its client dies. Docker names allow only
+// [a-zA-Z0-9][a-zA-Z0-9_.-]*, so the verb is sanitised rather than trusted.
+func containerName(args []string) string {
+	verb := "run"
+	if len(args) > 0 {
+		verb = args[0]
+	}
+	if len(args) > 1 {
+		verb += "-" + args[1]
+	}
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, verb)
+	return "maison-kopia-" + safe + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func emitLine(emit func(apps.Event), line string) {
+	if emit == nil {
+		return
+	}
+	ev := apps.Event{Pct: apps.PctUnknown, Message: line}
+	if m := progressPct.FindStringSubmatch(line); m != nil {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			ev.Pct = v
+		}
+	}
+	emit(ev)
+}
+
+// --- sources -----------------------------------------------------------------
+
+// Source is one thing kopia snapshots. Apps and user data are genuinely different —
+// an app has a compose project and containers to stop, user data has neither — and
+// modelling user data as a pseudo-app would push a name through guards written for
+// project names.
+type Source struct {
+	App string // compose project, or userDataApp for the user-data set
+}
+
+// AppSource is the source for one app.
+func AppSource(app string) Source { return Source{App: app} }
+
+// UserDataSource is the source for everything under the data root that is not an
+// app: Documents, Downloads, Media, and whatever else the user drops there.
+func UserDataSource() Source { return Source{App: userDataApp} }
+
+func (s Source) isUserData() bool { return s.App == userDataApp }
+
+func (p *Provider) sourcePath(s Source) string {
+	if s.isUserData() {
+		return p.cfg.DataRoot
+	}
+	return filepath.Join(p.cfg.AppsDir(), s.App)
+}
+
+// EnsurePolicy configures retention and exclusions for a source. It is idempotent
+// and cheap, and is reapplied on every run rather than only at setup: kopia policies
+// live in the repository, so they survive a Maison reinstall — and a Maison bug can
+// leave a stale one behind.
+func (p *Provider) EnsurePolicy(ctx context.Context, s Source, keep Retention) error {
+	path := p.sourcePath(s)
+	if _, err := p.run(ctx, nil, 5*time.Minute, append([]string{"policy", "set", path}, keep.args()...)...); err != nil {
+		return err
+	}
+	if !s.isUserData() {
+		return nil
+	}
+
+	// Exclusions are reset and re-added in TWO invocations, and they must stay that
+	// way: kopia applies --clear-ignore *after* --add-ignore regardless of the order
+	// they appear on the command line, so combining them yields a source with no
+	// ignore rules at all. Verified against kopia 0.23.1 — and it fails silently, the
+	// backup simply succeeds while carrying everything the rules were meant to keep
+	// out. TestUserDataExclusionsAreAnchoredCorrectly is what catches a regression.
+	if _, err := p.run(ctx, nil, 5*time.Minute, "policy", "set", path, "--clear-ignore"); err != nil {
+		return err
+	}
+
+	// The app tree has its own per-app sources; backing it up here too would store
+	// everything twice.
+	//
+	// AppDataShared is deliberately *not* excluded: on a box running two engines each
+	// engine's backup then carries the other's configuration, so recovering either
+	// returns the rest. The password riding along is harmless — reading it requires
+	// the password already — it is merely useless.
+	//
+	// Cache and logs are matched by pattern rather than by a fixed list, so the next
+	// engine someone adds does not silently ship its multi-gigabyte cache offsite
+	// every night for data that is rebuilt on demand.
+	_, err := p.run(ctx, nil, 5*time.Minute, "policy", "set", path,
+		"--add-ignore", "/AppData/",
+		"--add-ignore", "**/cache/",
+		"--add-ignore", "**/logs/",
+	)
+	return err
+}
+
+// Retention is the tiered (GFS) policy. Because each source accumulates snapshots
+// over time, this maps directly onto kopia's own policy engine instead of having to
+// be reimplemented — a direct dividend of every backup of one app sharing a source
+// path.
+type Retention struct {
+	Latest, Daily, Weekly, Monthly, Annual int
+}
+
+// DefaultRetention is the shape consumer backup tools have taught users to expect:
+// a week of dailies, a month of weeklies, a year of monthlies.
+func DefaultRetention() Retention {
+	return Retention{Latest: 2, Daily: 7, Weekly: 4, Monthly: 12, Annual: 0}
+}
+
+func (r Retention) args() []string {
+	return []string{
+		"--keep-latest", strconv.Itoa(r.Latest),
+		"--keep-hourly", "0",
+		"--keep-daily", strconv.Itoa(r.Daily),
+		"--keep-weekly", strconv.Itoa(r.Weekly),
+		"--keep-monthly", strconv.Itoa(r.Monthly),
+		"--keep-annual", strconv.Itoa(r.Annual),
+	}
+}
+
+// --- apps.Provider -----------------------------------------------------------
+
+func (p *Provider) Snapshot(ctx context.Context, app, stamp string, opts apps.SnapshotOpts, emit func(apps.Event)) error {
+	return p.SnapshotSource(ctx, AppSource(app), stamp, opts.Pass, emit)
+}
+
+// SnapshotSource captures one source. Both passes of a backup write the same
+// (app, stamp) and differ only in their pass tag, so the pass-1 snapshot — taken
+// while the app was still writing and therefore possibly torn — can be told apart
+// from the consistent one and removed.
+func (p *Provider) SnapshotSource(ctx context.Context, s Source, stamp string, pass int, emit func(apps.Event)) error {
+	if _, ok := apps.ParseBackupName(s.App, stamp); !ok {
+		return fmt.Errorf("kopia: not a backup stamp: %s", stamp)
+	}
+	if pass < 1 {
+		pass = 1
+	}
+	_, err := p.run(ctx, emit, 0,
+		"snapshot", "create", p.sourcePath(s),
+		"--progress",
+		"--tags", tagApp+":"+s.App,
+		"--tags", tagStamp+":"+stamp,
+		"--tags", tagPass+":"+strconv.Itoa(pass),
+	)
+	return err
+}
+
+// Commit drops the torn first-pass snapshot, leaving the consistent one as the
+// backup.
+//
+// Content is shared between the two, so removing the manifest frees nothing and
+// loses nothing — the point is that a user browsing snapshots can never restore the
+// inconsistent one. A failure here is logged rather than returned: the real backup
+// exists, and refusing to commit it because a cleanup failed would be the worse
+// outcome. The stale pass-1 snapshot is invisible to List and is swept later.
+func (p *Provider) Commit(ctx context.Context, app, stamp string, opts apps.SnapshotOpts, emit func(apps.Event)) (apps.Backup, error) {
+	return p.CommitSource(ctx, AppSource(app), stamp, emit)
+}
+
+func (p *Provider) CommitSource(ctx context.Context, s Source, stamp string, emit func(apps.Event)) (apps.Backup, error) {
+	snaps, err := p.snapshots(ctx, s.App)
+	if err != nil {
+		return apps.Backup{}, err
+	}
+	var committed *snapshot
+	for i := range snaps {
+		sn := &snaps[i]
+		if sn.tag(tagStamp) != stamp {
+			continue
+		}
+		switch sn.tag(tagPass) {
+		case "1":
+			if err := p.deleteByID(ctx, sn.ID); err != nil {
+				log.Printf("kopia: dropping first-pass snapshot %s: %v", sn.ID, err)
+			}
+		default:
+			committed = sn
+		}
+	}
+	if committed == nil {
+		return apps.Backup{}, fmt.Errorf("kopia: no snapshot to commit for %s/%s", s.App, stamp)
+	}
+	b, ok := committed.backup(s.App)
+	if !ok {
+		return apps.Backup{}, fmt.Errorf("kopia: committed snapshot %s has an unusable stamp", committed.ID)
+	}
+	return b, nil
+}
+
+// Abort removes every snapshot carrying this stamp, so an interrupted backup leaves
+// nothing a later List could offer for restore.
+func (p *Provider) Abort(ctx context.Context, app, stamp string) error {
+	return p.AbortSource(ctx, AppSource(app), stamp)
+}
+
+func (p *Provider) AbortSource(ctx context.Context, s Source, stamp string) error {
+	snaps, err := p.snapshots(ctx, s.App)
+	if err != nil {
+		if errors.Is(err, apps.ErrNotConfigured) {
+			return nil // nothing was written, so nothing to undo
+		}
+		return err
+	}
+	var errs []error
+	for _, sn := range snaps {
+		if sn.tag(tagStamp) == stamp {
+			if err := p.deleteByID(ctx, sn.ID); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (p *Provider) List(ctx context.Context, app string) ([]apps.Backup, error) {
+	return p.ListSource(ctx, AppSource(app))
+}
+
+// ListSource returns the committed backups of one source, newest first.
+//
+// Every stamp is re-validated through apps.ParseBackupName before it becomes a
+// Backup. That value came back from a repository and is untrusted; validating it
+// here is what lets the traversal guard elsewhere stay exactly as strict as it is
+// while backups live somewhere other than on disk. A snapshot whose stamp does not
+// parse is dropped rather than surfaced.
+func (p *Provider) ListSource(ctx context.Context, s Source) ([]apps.Backup, error) {
+	snaps, err := p.snapshots(ctx, s.App)
+	if err != nil {
+		return nil, err
+	}
+	var out []apps.Backup
+	for _, sn := range snaps {
+		if sn.tag(tagPass) == "1" {
+			continue // torn, never restorable
+		}
+		if b, ok := sn.backup(s.App); ok {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Stamp > out[j].Stamp })
+	return out, nil
+}
+
+func (p *Provider) Delete(ctx context.Context, app, stamp string) error {
+	return p.AbortSource(ctx, AppSource(app), stamp)
+}
+
+// Materialize downloads a backup to .backups/<app>/<stamp> so the ordinary restore
+// path can swap it in. It needs room for a full copy of the app; the caller is
+// responsible for having checked.
+func (p *Provider) Materialize(ctx context.Context, app, stamp string, emit func(apps.Event)) error {
+	snaps, err := p.snapshots(ctx, app)
+	if err != nil {
+		return err
+	}
+	id := ""
+	for _, sn := range snaps {
+		if sn.tag(tagStamp) == stamp && sn.tag(tagPass) != "1" {
+			id = sn.ID
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("backup not found: %s", stamp)
+	}
+	dst := filepath.Join(apps.AppBackupDir(p.cfg.BackupsDir(), app), stamp)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	_, err = p.run(ctx, emit, 0, "restore", id, dst, "--progress")
+	return err
+}
+
+func (p *Provider) deleteByID(ctx context.Context, id string) error {
+	_, err := p.run(ctx, nil, 10*time.Minute, "snapshot", "delete", id, "--delete")
+	return err
+}
+
+// --- snapshot listing --------------------------------------------------------
+
+type snapshot struct {
+	ID     string `json:"id"`
+	Source struct {
+		Host     string `json:"host"`
+		UserName string `json:"userName"`
+		Path     string `json:"path"`
+	} `json:"source"`
+	StartTime time.Time `json:"startTime"`
+	RootEntry struct {
+		Summ struct {
+			Size int64 `json:"size"`
+		} `json:"summ"`
+	} `json:"rootEntry"`
+	Tags map[string]string `json:"tags"`
+}
+
+// tag reads one of Maison's tags. The JSON spelling carries a "tag:" prefix that the
+// command-line spelling does not, which is exactly the sort of asymmetry that makes
+// a filter silently match nothing.
+func (s snapshot) tag(key string) string { return s.Tags[jsonTagPrefix+key] }
+
+func (s snapshot) backup(app string) (apps.Backup, bool) {
+	b, ok := apps.ParseBackupName(app, s.tag(tagStamp))
+	if !ok {
+		return apps.Backup{}, false
+	}
+	b.Tier = apps.TierRemote
+	b.Engine = ID
+	b.Size = s.RootEntry.Summ.Size
+	return b, true
+}
+
+func (p *Provider) snapshots(ctx context.Context, app string) ([]snapshot, error) {
+	out, err := p.run(ctx, nil, 5*time.Minute,
+		"snapshot", "list", "--all", "--json", "--tags", tagApp+":"+app)
+	if err != nil {
+		return nil, err
+	}
+	var snaps []snapshot
+	if err := json.Unmarshal(out, &snaps); err != nil {
+		return nil, fmt.Errorf("kopia: unreadable snapshot list: %w", err)
+	}
+	return snaps, nil
+}

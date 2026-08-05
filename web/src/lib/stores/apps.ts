@@ -213,14 +213,24 @@ export function appProgress(a: App | undefined): AppProgress | null {
     }
   }
   if (a.backing_up) {
-    // A restore has no measured tracks — it is renames and (for a zip) an
-    // extract — so it reports its phase alone and the bar just sits full while
-    // the label says what is happening.
+    // Keyed on the phase, not on the counters. Keying on counters meant "none of
+    // the tracks is still running" had to fall through to *some* label, and the
+    // one it fell through to was `compressing` — which only actually happens for a
+    // zip backup. A folder backup therefore reported "Compressing" for the whole
+    // window between sync reaching 100 and the operation ending.
+    //
+    // Restore and start have no measured track — a restore is renames and (for a
+    // zip) an extract — so they sit at a full bar while the label says what is
+    // happening.
     if (a.phase === 'restore') return { kind: 'backup', pct: 100, label: 'restoring' }
-    if ((a.copy ?? 0) < 100) return { kind: 'backup', pct: a.copy ?? 0, label: 'copying' }
-    if ((a.sync ?? 0) < 100) return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing' }
     if (a.phase === 'start') return { kind: 'backup', pct: 100, label: 'starting_up' }
-    return { kind: 'backup', pct: a.compress ?? 100, label: 'compressing' }
+    if (a.phase === 'compress') return { kind: 'backup', pct: a.compress ?? 0, label: 'compressing' }
+    if (a.phase === 'sync') return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing' }
+    if (a.phase === 'copy') return { kind: 'backup', pct: a.copy ?? 0, label: 'copying' }
+    // Unknown or absent phase: read the counters rather than guess a label, so a
+    // phase added on the server renders as an honest bar instead of the wrong step.
+    if ((a.copy ?? 0) < 100) return { kind: 'backup', pct: a.copy ?? 0, label: 'copying' }
+    return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing' }
   }
   return null
 }

@@ -12,6 +12,12 @@ export interface Backup {
   date: string // YYYY-MM-DD, the stamp's day
   zip: boolean // compressed archive rather than a plain folder
   size: number // bytes; see below on when this is measured
+  /** Where it actually is: on the data disk, in a backup engine's repository, or
+   *  both. Restore and delete follow this, not whichever engine is selected now —
+   *  so switching engines never orphans what the previous one wrote. */
+  tier: 'local' | 'remote' | 'both'
+  /** Which engine holds it ("local", "kopia", …). */
+  engine?: string
 }
 
 /** One app's archives, as the global Backups page groups them. */

@@ -29,7 +29,33 @@ type Backup struct {
 	Date  string `json:"date"`  // YYYY-MM-DD, the stamp's day — for grouping and display
 	Zip   bool   `json:"zip"`   // compressed archive rather than a plain folder
 	Size  int64  `json:"size"`  // bytes; see ListBackups on when it is measured
+
+	// Tier is where this backup actually is: "local" for an archive on disk under
+	// .backups/, "remote" for one that exists only in a backup engine's repository,
+	// "both" when the same (app, stamp) is in each.
+	//
+	// Restore and delete dispatch on this, never on which engine is currently
+	// selected — otherwise switching engines would orphan everything the previous
+	// one wrote. See docs/backup.md.
+	Tier string `json:"tier"`
+
+	// Engine that holds it ("local", "kopia", …). Permanent once shipped: it is how
+	// an existing backup finds its way home after the user switches engines.
+	Engine string `json:"engine,omitempty"`
 }
+
+// Backup tiers. A backup is identified by (App, Stamp) regardless of tier — the
+// stamp is the identity, and an engine's own snapshot id is an internal detail.
+const (
+	TierLocal  = "local"
+	TierRemote = "remote"
+	TierBoth   = "both"
+)
+
+// EngineLocal is the built-in engine: archives on the data disk under .backups/.
+// It needs no configuration and is always present, which is what makes it the
+// default and the fallback.
+const EngineLocal = "local"
 
 // AppBackups is one app's archives, as the global Backups page groups them.
 type AppBackups struct {
@@ -64,12 +90,18 @@ func parseBackup(app, name string) (Backup, bool) {
 	if err != nil {
 		return Backup{}, false
 	}
+	// Tier and Engine default to local because every caller here is reading an
+	// on-disk archive. Remote listing reuses this function purely for its *name
+	// validation* — a snapshot whose recorded stamp does not parse is dropped rather
+	// than surfaced — and overwrites both fields afterwards.
 	return Backup{
-		App:   app,
-		Name:  name,
-		Stamp: m[1],
-		Date:  t.Format("2006-01-02"),
-		Zip:   m[2] != "",
+		App:    app,
+		Name:   name,
+		Stamp:  m[1],
+		Date:   t.Format("2006-01-02"),
+		Zip:    m[2] != "",
+		Tier:   TierLocal,
+		Engine: EngineLocal,
 	}, true
 }
 

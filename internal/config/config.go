@@ -32,6 +32,12 @@ type Config struct {
 	// dashboard's own folder is not also an app folder.
 	StateDirPath string
 
+	// SharedDirPath overrides where cross-tool state lives (see SharedDir). Empty
+	// means the default, ${DataRoot}/AppDataShared. Set SHARED_DIR to move it —
+	// which is how a test or a local `go run` points the backup engines at a scratch
+	// tree instead of the real one.
+	SharedDirPath string
+
 	PUID string
 	PGID string
 	TZ   string
@@ -90,13 +96,14 @@ func (c Config) AppNet() string { return c.appEnv()["APP_NET"] }
 func FromEnv() Config {
 	dataRoot := envOr("DATA_ROOT", "/DATA")
 	c := Config{
-		Addr:         envOr("HTTP_ADDR", ":8080"),
-		DataRoot:     dataRoot,
-		DataHostPath: envOr("DATA_HOST_PATH", dataRoot),
-		StateDirPath: os.Getenv("STATE_DIR"),
-		PUID:         envOr("PUID", "1000"),
-		PGID:         envOr("PGID", "1000"),
-		TZ:           os.Getenv("TZ"),
+		Addr:          envOr("HTTP_ADDR", ":8080"),
+		DataRoot:      dataRoot,
+		DataHostPath:  envOr("DATA_HOST_PATH", dataRoot),
+		StateDirPath:  os.Getenv("STATE_DIR"),
+		SharedDirPath: os.Getenv("SHARED_DIR"),
+		PUID:          envOr("PUID", "1000"),
+		PGID:          envOr("PGID", "1000"),
+		TZ:            os.Getenv("TZ"),
 		StoreURLs: splitList(envOr("APPSTORE_URL",
 			"https://github.com/Yundera/AppStore/archive/refs/heads/main.zip")),
 		ProtectedApps: splitList(os.Getenv("PROTECTED_APPS")),
@@ -139,6 +146,40 @@ func (c Config) AppsDir() string {
 // never a tile (see apps.Registry.managedDirs and docs/app-model.md).
 func (c Config) BackupsDir() string {
 	return filepath.Join(c.DataRoot, "AppData", ".backups")
+}
+
+// SharedDir holds state that belongs to the deployment rather than to any one app:
+// ${DataRoot}/AppDataShared. It sits *beside* AppData, not inside it, so the app
+// model never mistakes it for an app folder (managedDirs only reads AppData) and an
+// app's backup never sweeps it up.
+//
+// It is deliberately inside the user-data backup set, so a box running two backup
+// engines has each engine's backup carrying the other's configuration — see
+// docs/backup.md. The engines' caches and logs are excluded by pattern, at the
+// engine's own policy level rather than here.
+//
+// SHARED_DIR overrides it, exactly as STATE_DIR overrides StateDir. That override is
+// what lets a test or a local `go run` point the backup engines at a scratch tree.
+func (c Config) SharedDir() string {
+	if c.SharedDirPath != "" {
+		return c.SharedDirPath
+	}
+	return filepath.Join(c.DataRoot, "AppDataShared")
+}
+
+// BackupEngineDir is where one backup engine keeps its repository config, its
+// password, its cache and its logs: ${SharedDir}/backup/<engine>.
+//
+// One directory per engine rather than one shared directory, because the engine is
+// a user-flippable choice and a box that has switched must still be able to read
+// what the previous engine wrote — listing and restore dispatch on where a backup
+// actually is, never on which engine is currently selected.
+//
+// Maison does not create or write this directory: a self-check script on the host
+// renders the credentials into it, and Maison only reads. An absent directory is the
+// normal "not configured" state, not an error.
+func (c Config) BackupEngineDir(engine string) string {
+	return filepath.Join(c.SharedDir(), "backup", engine)
 }
 
 // StateDir is where everything Maison owns lives: its settings, its store cache,

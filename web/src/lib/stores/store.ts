@@ -35,14 +35,21 @@ export function fetchStoreApp(id: string, store?: string): Promise<StoreApp> {
   return api.get<StoreApp>(`/api/store/app/${encodeURIComponent(id)}${storeQuery(store)}`)
 }
 
-/** One uninstall archive of an app, still on disk under AppData. Maison never
- *  deletes app data — uninstall renames the folder to `<app>.<date>.archive` — so
- *  a previously removed app can be reinstalled on top of its old data. */
+/** One archive of an app, as offered when installing over existing data. Maison
+ *  never deletes app data — uninstall moves the folder into
+ *  `.backups/<app>/<stamp>` — so a previously removed app can be reinstalled on
+ *  top of it.
+ *
+ *  Deliberately narrower than the `Backup` in stores/backups.ts: this list comes
+ *  from the store's install-click path, which skips the per-archive tree walk that
+ *  sizing a folder archive costs. */
 export interface Backup {
-  name: string // on-disk base name, e.g. jellyfin.2026-07-10.archive.zip
+  name: string // on-disk base name, e.g. 2026-07-10_153045 or that + .zip
   date: string // YYYY-MM-DD
   zip: boolean // compressed archive rather than a plain renamed folder
   size: number // bytes; only known for zips (0 for folders)
+  tier: 'local' | 'remote' | 'both' // where it is; see stores/backups.ts
+  engine?: string // which engine holds it
 }
 
 /** The backups of a store app. The server resolves the compose project name (it

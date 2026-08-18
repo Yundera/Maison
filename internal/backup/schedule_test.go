@@ -149,13 +149,17 @@ func TestConcurrentRunIsSkippedNotQueued(t *testing.T) {
 		return "2026-01-01_000000", nil
 	}
 
-	go func() { _ = s.RunAll(context.Background()) }()
+	done := make(chan struct{})
+	go func() { _ = s.RunAll(context.Background()); close(done) }()
 	<-started
 
 	if err := s.RunAll(context.Background()); err == nil {
 		t.Error("a second concurrent run was accepted; it must be skipped")
 	}
 	close(release)
+	// Wait for it: the run writes its last-run file on the way out, and returning first
+	// races that write against t.TempDir()'s cleanup of the tree it writes into.
+	<-done
 }
 
 // The state a run reports is what the settings page renders, so it has to name what
@@ -374,5 +378,30 @@ func TestUserDataIsNotATargetForAnEngineThatCannotDoIt(t *testing.T) {
 		if tg.Kind == KindUserData {
 			t.Fatal("the local engine was offered the user-data target it cannot serve")
 		}
+	}
+}
+
+// The other half of the same rule: a scheduled run must not snapshot the user-data set
+// while a restore is rewriting it. Apps are unaffected — they are a different set, and
+// a user-data restore does not touch them.
+func TestUserDataBackupIsSkippedDuringARestore(t *testing.T) {
+	s, store := newScheduler(t, "jellyfin")
+	s.set = New(&userDataCapable{Fake: *backuptest.NewRemote("kopia")})
+	s.RestoreInProgress = func() bool { return true }
+	if err := store.Set(backupconfig.Config{UserData: true, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.backupOne(context.Background(), Target{Kind: KindUserData})
+	if err == nil {
+		t.Fatal("the user-data set was backed up while a restore was rewriting it")
+	}
+	if !strings.Contains(err.Error(), "restore") {
+		t.Errorf("error = %q; want it to name the restore as the reason", err)
+	}
+
+	// And the app half is untouched by that rule.
+	if _, err := s.backupOne(context.Background(), Target{Kind: KindApp, App: "jellyfin"}); err != nil {
+		t.Errorf("an app backup was blocked by a user-data restore: %v", err)
 	}
 }

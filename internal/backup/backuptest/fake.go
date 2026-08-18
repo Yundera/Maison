@@ -36,6 +36,11 @@ type Fake struct {
 
 	mu    sync.Mutex
 	store map[string][]apps.Backup // app -> committed backups
+	// ListAllCalls counts bulk listings. It is a counter rather than a Calls entry
+	// because what matters about it is *how many*: for a remote engine each one is a
+	// subprocess against the repository, so the global page must cost one regardless of
+	// how many apps it shows.
+	ListAllCalls int
 	// Calls records every operation in order, as "verb:app/stamp" (Snapshot carries
 	// its pass, e.g. "snapshot:jellyfin/2026-01-01_000000#2"). Asserting on this is
 	// how a test pins a sequence without reaching into the engine's state.
@@ -125,6 +130,27 @@ func (f *Fake) List(ctx context.Context, app string) ([]apps.Backup, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]apps.Backup(nil), f.store[app]...), nil
+}
+
+// ListAll returns everything this fake holds, grouped by app. It honours ListErr too:
+// a test that makes listing fail is testing a broken engine, and a broken engine
+// cannot answer this either.
+func (f *Fake) ListAll(ctx context.Context) (map[string][]apps.Backup, error) {
+	f.mu.Lock()
+	f.ListAllCalls++
+	f.mu.Unlock()
+	if f.ListErr != nil {
+		return nil, f.ListErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string][]apps.Backup{}
+	for app, list := range f.store {
+		if len(list) > 0 {
+			out[app] = append([]apps.Backup(nil), list...)
+		}
+	}
+	return out, nil
 }
 
 func (f *Fake) Materialize(ctx context.Context, app, stamp string, emit func(apps.Event)) error {

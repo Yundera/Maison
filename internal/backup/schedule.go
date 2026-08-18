@@ -88,6 +88,13 @@ type Scheduler struct {
 	// rebroadcast it.
 	OnChange func()
 
+	// RestoreInProgress reports a user-data restore in flight. A hook rather than a
+	// *UserData field because the dependency is one-way and informational: the scheduler
+	// needs to know whether to skip its user-data target, not to drive a restore.
+	//
+	// Nil means "never", which is only right in a test.
+	RestoreInProgress func() bool
+
 	// Now, Backup and Notify exist so the sequencing — which target, in what order,
 	// what happens when one fails, and who gets told — can be tested without a clock,
 	// an engine, or an SMTP server. Nil means the real thing.
@@ -269,6 +276,13 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 		return s.Backup(ctx, t)
 	}
 	if t.Kind == KindUserData {
+		// A restore is rewriting the very tree this would snapshot. Backing it up now
+		// would capture a half-restored state that never existed — and that snapshot
+		// counts against retention, so it can push out the good one the user is in the
+		// middle of restoring from. Skipping one night is the cheap side of this trade.
+		if s.RestoreInProgress != nil && s.RestoreInProgress() {
+			return "", fmt.Errorf("skipped: a restore of the user-data set is in progress")
+		}
 		// User data has no containers and no compose project, so it does not go
 		// through the app registry at all.
 		src, ok := s.set.Writer().(UserDataEngine)

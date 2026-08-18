@@ -117,32 +117,6 @@ func TestMeasureSizesFolderArchivesAndLeavesZipsAlone(t *testing.T) {
 	}
 }
 
-func TestListAllMeasuresFoldersAndMarksOrphans(t *testing.T) {
-	root := t.TempDir()
-	appsDir := filepath.Join(root, "AppData")
-	backupsDir := filepath.Join(appsDir, ".backups")
-	seedApp(t, filepath.Join(appsDir, "jellyfin")) // installed
-	// sonarr has archives but no app folder: uninstalled, and reachable only here.
-	seedApp(t, filepath.Join(backupsDir, "sonarr", "2026-07-10_153045"))
-	seedApp(t, filepath.Join(backupsDir, "jellyfin", "2026-07-11_120000"))
-
-	got := ListAll(backupsDir, appsDir)
-	if len(got) != 2 {
-		t.Fatalf("ListAll = %+v; want jellyfin and sonarr", got)
-	}
-	if got[0].App != "jellyfin" || got[0].Orphan {
-		t.Errorf("jellyfin = %+v; want Orphan=false", got[0])
-	}
-	if got[1].App != "sonarr" || !got[1].Orphan {
-		t.Errorf("sonarr = %+v; want Orphan=true", got[1])
-	}
-	// Unlike ListBackups, folder archives are measured here — the page exists to
-	// show what is eating the disk.
-	if got[0].Total == 0 || got[0].Backups[0].Size == 0 {
-		t.Errorf("folder archive left unmeasured: %+v", got[0])
-	}
-}
-
 func TestRestoreBackupFolderIsARename(t *testing.T) {
 	root := t.TempDir()
 	appsDir := filepath.Join(root, "AppData")

@@ -182,45 +182,16 @@ func Measure(backupsDir string, list []Backup) []Backup {
 		if list[i].Zip {
 			continue // already a single cheap stat
 		}
+		// A backup that exists only in a remote engine has no folder here to walk, and
+		// the engine already reported its size. Walking anyway would find nothing and
+		// overwrite that size with 0 — reading, on the page, as a backup that contains
+		// nothing.
+		if list[i].Tier == TierRemote {
+			continue
+		}
 		list[i].Size = dirSize(filepath.Join(backupsDir, list[i].App, list[i].Name))
 	}
 	return list
-}
-
-// ListAll returns every app that has archives, newest-first within each, sorted by
-// app name, with folder archives measured — because it backs the global Backups
-// page, and a backup list whose sizes are all "—" cannot answer the question that
-// page exists to answer, which is what is eating the disk.
-//
-// appsDir is consulted only to mark orphans; pass "" to skip that.
-func ListAll(backupsDir, appsDir string) []AppBackups {
-	entries, err := os.ReadDir(backupsDir)
-	if err != nil {
-		return nil
-	}
-	var out []AppBackups
-	for _, e := range entries {
-		if !e.IsDir() || !projectRe.MatchString(e.Name()) {
-			continue
-		}
-		app := e.Name()
-		backups := Measure(backupsDir, ListBackups(backupsDir, app))
-		if len(backups) == 0 {
-			continue
-		}
-		var total int64
-		for i := range backups {
-			total += backups[i].Size
-		}
-		orphan := false
-		if appsDir != "" {
-			_, err := os.Stat(filepath.Join(appsDir, app))
-			orphan = err != nil
-		}
-		out = append(out, AppBackups{App: app, Orphan: orphan, Backups: backups, Total: total})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].App < out[j].App })
-	return out
 }
 
 // sortBackups orders newest first. The stamp is fixed-width and lexically

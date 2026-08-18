@@ -65,6 +65,25 @@ type Provider interface {
 	// nothing, not an error: the global page asks every engine about every app.
 	List(ctx context.Context, app string) ([]Backup, error)
 
+	// ListAll returns every backup this engine holds, grouped by app, each group newest
+	// first with Tier and Engine set. It backs the global page.
+	//
+	// It is one call rather than "which apps do you have" followed by a List per app
+	// because for a remote engine each call is a subprocess against the repository, and
+	// the per-app shape would make the page cost one of those per installed app. A
+	// repository can answer this in a single query; the interface should let it.
+	//
+	// It cannot be derived from what is installed. The case that matters is a rebuilt
+	// box — nothing installed, nothing on the data disk, a repository freshly
+	// reconnected — where the repository is the only thing that still knows the apps
+	// existed. Enumerating installed apps would return nothing at exactly the moment
+	// the list matters most.
+	//
+	// App names that are not valid compose projects must be dropped rather than
+	// returned: they feed path construction downstream, and a repository is untrusted
+	// input.
+	ListAll(ctx context.Context) (map[string][]Backup, error)
+
 	// Materialize places (app, stamp) on local disk at .backups/<app>/<stamp> so the
 	// ordinary restore path can swap it in. For an engine whose backups are already
 	// there it is a no-op; for a remote one it is a download, and the caller is
@@ -99,6 +118,23 @@ type Engines interface {
 	List(ctx context.Context, app string) []Backup
 	Locate(ctx context.Context, app, stamp string) (Provider, Backup, error)
 	Delete(ctx context.Context, app, stamp string) error
+}
+
+// UserDataRestoreOpts says what to put back from the user-data set, and where.
+//
+// It lives here, with Provider and Backup, because both the engine that implements the
+// restore and the coordinator that guards it need the vocabulary and neither can import
+// the other.
+type UserDataRestoreOpts struct {
+	// Dest is where the files land. Empty means **in place**, over the data root: the
+	// destructive mode. Any other value is a directory the snapshot is written into,
+	// which touches nothing the user already has.
+	Dest string
+
+	// Entries limits the restore to these top-level names ("Documents", "Media"). Empty
+	// means everything the snapshot holds. An engine must match them against the
+	// snapshot's own listing and refuse anything else, so a caller cannot name a path.
+	Entries []string
 }
 
 // Caps describes an engine's abilities. Zero values are the conservative answer,

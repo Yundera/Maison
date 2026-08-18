@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -106,29 +108,39 @@ func (s *Set) SetWriter(id string) error {
 // engine — an archive kept locally *and* pushed to a repository — and it is one
 // backup, shown once, with Tier reporting that it is in both.
 //
-// An engine that is not configured contributes nothing and is not an error: that is
-// the normal state of a remote engine on a box whose host-side setup has not run,
-// and it must not stop the local engine's archives from being listed. Any other
-// engine error is logged and skipped for the same reason — a broken repository
-// should degrade the page, not empty it.
+// An engine that cannot answer is skipped rather than fatal — see logRead.
 func (s *Set) List(ctx context.Context, app string) []apps.Backup {
+	// Guarded here, not just in each engine: the name arrives from a URL and reaches a
+	// subprocess argument in a remote engine. Nothing to list is the honest answer for
+	// a name no app can have.
+	if !apps.ValidProjectName(app) {
+		return nil
+	}
 	merged := map[string]apps.Backup{}
 	for _, p := range s.providers() {
 		got, err := p.List(ctx, app)
 		if err != nil {
-			if !errors.Is(err, apps.ErrNotConfigured) {
-				log.Printf("backup: list %s from engine %s: %v", app, p.ID(), err)
-			}
+			logRead(err, "list "+app, p)
 			continue
 		}
-		for _, b := range got {
-			if prev, dup := merged[b.Name]; dup {
-				merged[b.Name] = mergeTiers(prev, b)
-				continue
-			}
-			merged[b.Name] = b
-		}
+		mergeInto(merged, got)
 	}
+	return sortedBackups(merged)
+}
+
+// mergeInto folds one engine's answer into the union, deduping on the backup name.
+func mergeInto(merged map[string]apps.Backup, got []apps.Backup) {
+	for _, b := range got {
+		if prev, dup := merged[b.Name]; dup {
+			merged[b.Name] = mergeTiers(prev, b)
+			continue
+		}
+		merged[b.Name] = b
+	}
+}
+
+// sortedBackups flattens the union, newest first.
+func sortedBackups(merged map[string]apps.Backup) []apps.Backup {
 	out := make([]apps.Backup, 0, len(merged))
 	for _, b := range merged {
 		out = append(out, b)
@@ -141,6 +153,74 @@ func (s *Set) List(ctx context.Context, app string) []apps.Backup {
 		}
 		return out[i].Name < out[j].Name
 	})
+	return out
+}
+
+// logRead reports an engine that could not answer a read.
+//
+// An engine that is not configured contributes nothing and is not an error: that is
+// the normal state of a remote engine on a box whose host-side setup has not run, and
+// it must not stop the local engine's archives from being listed. Any other error is
+// logged and skipped for the same reason — a broken repository should degrade the
+// page, not empty it.
+func logRead(err error, what string, p apps.Provider) {
+	if !errors.Is(err, apps.ErrNotConfigured) {
+		log.Printf("backup: %s from engine %s: %v", what, p.ID(), err)
+	}
+}
+
+// ListAll is the global Backups view: every app with backups in any engine, grouped,
+// newest first within each group, with local folder archives measured and totals
+// summed.
+//
+// It asks each engine once — not once per app — because for a remote engine every
+// call is a subprocess against the repository, and this page lists every app at once.
+// That is the whole reason Provider.ListAll exists in the bulk shape it does.
+//
+// It is the engine-aware replacement for the old apps.ListAll, which could only ever
+// see the data disk. The difference shows up in the case the page exists for — an app
+// that is gone from this box — because after a rebuild the only thing that still knows
+// the app existed is the repository.
+//
+// appsDir is consulted only to mark orphans; pass "" to skip that. backupsDir is
+// needed to measure folder archives, which Measure leaves to the callers that
+// actually display a size.
+func (s *Set) ListAll(ctx context.Context, backupsDir, appsDir string) []apps.AppBackups {
+	// app -> backup name -> backup, so the same (app, stamp) held by two engines merges
+	// into one row exactly as it does in List.
+	merged := map[string]map[string]apps.Backup{}
+	for _, p := range s.providers() {
+		got, err := p.ListAll(ctx)
+		if err != nil {
+			logRead(err, "list all", p)
+			continue
+		}
+		for app, list := range got {
+			if merged[app] == nil {
+				merged[app] = map[string]apps.Backup{}
+			}
+			mergeInto(merged[app], list)
+		}
+	}
+
+	out := make([]apps.AppBackups, 0, len(merged))
+	for app, byName := range merged {
+		list := apps.Measure(backupsDir, sortedBackups(byName))
+		if len(list) == 0 {
+			continue
+		}
+		var total int64
+		for i := range list {
+			total += list[i].Size
+		}
+		orphan := false
+		if appsDir != "" {
+			_, err := os.Stat(filepath.Join(appsDir, app))
+			orphan = err != nil
+		}
+		out = append(out, apps.AppBackups{App: app, Orphan: orphan, Backups: list, Total: total})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].App < out[j].App })
 	return out
 }
 
@@ -175,6 +255,9 @@ func mergeTiers(a, b apps.Backup) apps.Backup {
 // Among engines that have it, the one offering an instant restore wins: a local
 // archive is a rename, so preferring it turns a download into no work at all.
 func (s *Set) Locate(ctx context.Context, app, stamp string) (apps.Provider, apps.Backup, error) {
+	if err := validName(app, stamp); err != nil {
+		return nil, apps.Backup{}, err
+	}
 	var (
 		best   apps.Provider
 		bestB  apps.Backup
@@ -208,6 +291,9 @@ func (s *Set) Locate(ctx context.Context, app, stamp string) (apps.Provider, app
 // not stop the remaining engines — leaving a copy behind because a different engine
 // errored would make the row reappear with no explanation.
 func (s *Set) Delete(ctx context.Context, app, stamp string) error {
+	if err := validName(app, stamp); err != nil {
+		return err
+	}
 	found := false
 	var errs []error
 	for _, p := range s.providers() {
@@ -229,6 +315,25 @@ func (s *Set) Delete(ctx context.Context, app, stamp string) error {
 		return fmt.Errorf("backup not found: %s", stamp)
 	}
 	return errors.Join(errs...)
+}
+
+// validName rejects an app or backup name that is not one, before any engine is
+// asked about it.
+//
+// The set is the single door every read and delete goes through, so this is where the
+// traversal guard belongs: an engine must not be handed a name that could become a
+// path, and "notes" must come back as a malformed request rather than as a backup
+// that happens not to exist — the second invites a retry, the first says what is
+// wrong. Each provider still validates for itself; this is the check that does not
+// depend on every future engine remembering to.
+func validName(app, stamp string) error {
+	if !apps.ValidProjectName(app) {
+		return fmt.Errorf("invalid app name: %s", app)
+	}
+	if _, ok := apps.ParseBackupName(app, stamp); !ok {
+		return fmt.Errorf("not a backup name: %s", stamp)
+	}
+	return nil
 }
 
 // providers returns a snapshot of the registered engines in registration order, so

@@ -157,8 +157,16 @@ func (r *Registry) StartBackup(id string, zip bool) error {
 // rename within the same directory tree — costs nothing and takes no time. So a
 // restore is reversible, and a folder archive being consumed by the restore is
 // balanced by the archive the restore just made of what was there.
-func (r *Registry) StartRestore(id, name string) error {
-	if _, _, err := resolveBackup(r.cfg.BackupsDir(), id, name); err != nil {
+// ctx bounds the up-front lookup only, not the restore: for a remote engine that
+// lookup is a subprocess against the repository, so a caller that goes away should not
+// leave it running. Nothing has been touched at that point, so refusing is safe. The
+// restore itself is deliberately detached below.
+func (r *Registry) StartRestore(ctx context.Context, id, name string) error {
+	// Resolve through the engines, not the data disk. Checking .backups/ here would
+	// reject a backup that exists only in a repository — the restore path below
+	// handles it perfectly well via locate() — so the check has to ask the same
+	// question the restore will: does any engine have this backup.
+	if _, _, err := r.locate(ctx, id, name); err != nil {
 		return err
 	}
 

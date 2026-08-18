@@ -397,18 +397,26 @@ networks:
   everything Maison owns is in one place. It holds no `docker-compose.yml` on a
   standalone install and therefore renders no tile; a deployment that installs the
   dashboard's own compose stack here gets a Maison tile, which is intended.
-- **Backups** live at `${DATA_ROOT}/AppData/.backups/<app>/<stamp>` — one archive per
-  app per moment, holding the whole app folder (compose + override + `.env` + data).
-  Make one from an app's **Backups** tab; browse and restore every archive on the box,
-  including those of uninstalled apps, from **Settings → Backups**. These are on the
-  data disk, so on their own they are a rollback mechanism, not disaster recovery.
-- **Cloud backup** (**Settings → Cloud backup**) adds a remote engine — kopia today —
-  that sends apps *and* your Documents / Downloads / Media to a repository off the
-  box, nightly, with tiered retention. It streams straight to the repository rather
-  than staging a copy, so an app occupying most of its own disk can still be backed
-  up. The engine runs as a container; Maison ships no binary and installs nothing on
-  the host. Credentials are rendered onto the box out of band — Maison only reads
-  them. See [`docs/backup.md`](docs/backup.md).
+- **Backups** are one feature with one **engine** setting, on one page
+  (**Settings → Backups**): the engine and schedule at the top, every backup below.
+  Make one from an app's **Backups** tab, or let the nightly run do it; browse and
+  restore every backup on the box — including those of uninstalled apps — from that
+  page. Each row says where it is, and a restore comes from wherever it actually is
+  rather than from whichever engine is selected today, so switching engines never
+  strands what the previous one wrote.
+  - **`local`** (default) writes archives to `${DATA_ROOT}/AppData/.backups/<app>/<stamp>`,
+    one per app per moment, holding the whole app folder (compose + override + `.env`
+    + data). On the data disk, so on its own it is a rollback mechanism, not disaster
+    recovery.
+  - **A remote engine** — kopia today — sends apps *and* your files (everything at the
+    data root except `AppData/`) to a repository off the box, nightly, with tiered
+    retention. Your files get their own card on the Backups page, and restore either into
+    a new folder — the safe way to get a few files back — or over the live tree, which
+    takes an undo snapshot first and never touches app data. It streams
+    straight to the repository rather than staging a copy, so an app occupying most of
+    its own disk can still be backed up. The engine runs as a container; Maison ships
+    no binary and installs nothing on the host. Credentials are rendered onto the box
+    out of band — Maison only reads them. See [`docs/backup.md`](docs/backup.md).
 - **Uninstall never deletes.** The app folder is **moved** into `.backups/` (or zipped,
   on request); the data stays put and is one restore away.
 - **Health:** `GET /ping` → 200.

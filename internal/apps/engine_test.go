@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
@@ -148,3 +149,59 @@ func TestBackupWithoutAnEngineUsesTheLocalOne(t *testing.T) {
 // deferred restart is registered before the abort defer specifically so that
 // bringing the app back up takes precedence over cleanup; that ordering is asserted
 // by reading the code, not by a test, until dockerx grows a seam of its own.
+
+// StartRestore is what the UI calls, and it used to gate on the data disk: an app's
+// archive had to exist under .backups/ before the restore was allowed to start. On a
+// box configured for a remote engine that rejected every backup it had — the restore
+// path underneath dispatches on where a backup actually is and would have handled it
+// fine, but nothing could reach it. The precondition has to ask the engines the same
+// question the restore will.
+func TestStartRestoreAcceptsABackupThatOnlyExistsRemotely(t *testing.T) {
+	r, _ := newRegistry(t)
+	fake := backuptest.NewRemote("kopia")
+	fake.Seed("jellyfin", "2026-01-01_120000")
+	r.Engines = backup.New(fake)
+
+	if err := r.StartRestore(context.Background(), "jellyfin", "2026-01-01_120000"); err != nil {
+		t.Fatalf("StartRestore on a remote-only backup: %v", err)
+	}
+	// StartRestore detaches: the restore outlives the call, and it writes into the tree
+	// t.TempDir() is about to delete. Joining it is not politeness, it is the difference
+	// between a deterministic test and one that fails when the machine is busy.
+	waitRestore(t, r, "jellyfin")
+}
+
+// waitRestore blocks until a detached backup or restore of `id` has settled. A finished
+// one is removed from the tracked set; a failed one stays behind with PhaseError.
+func waitRestore(t *testing.T, r *apps.Registry, id string) apps.BackupState {
+	t.Helper()
+	for i := 0; i < 400; i++ {
+		found := false
+		var st apps.BackupState
+		for _, s := range r.Backups() {
+			if s.ID == id {
+				found, st = true, s
+			}
+		}
+		if !found || st.Phase == apps.PhaseError {
+			return st
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the restore never finished")
+	return apps.BackupState{}
+}
+
+// The mirror image: the precondition still has to refuse. A restore is destructive —
+// the live folder is archived and replaced — so "no engine has this" must fail before
+// anything is touched, not halfway through.
+func TestStartRestoreRefusesWhatNoEngineHas(t *testing.T) {
+	r, _ := newRegistry(t)
+	r.Engines = backup.New(backuptest.NewRemote("kopia"))
+
+	for _, name := range []string{"2026-01-01_120000", "notes"} {
+		if err := r.StartRestore(context.Background(), "jellyfin", name); err == nil {
+			t.Errorf("StartRestore(%q) succeeded; no engine holds it", name)
+		}
+	}
+}

@@ -284,8 +284,9 @@ Once the folder lands, the app has a tile again.
 > a bad update, a broken config or a regretted uninstall — **not** a failed disk.
 > On their own they are a rollback mechanism, not disaster recovery.
 >
-> Surviving the loss of the disk needs a **remote engine** (Settings → Cloud backup),
-> which sends apps *and* the user-data set to a repository off the box. Both tiers
+> Surviving the loss of the disk needs a **remote engine** — the engine is a setting on
+> Settings → Backups — which sends apps *and* the user-data set to a repository off the
+> box. Both tiers
 > coexist: a backup is listed once, with a badge saying where it actually is, and a
 > restore comes from whichever tier holds it — preferring the local one, because
 > that restore is a rename. See [`backup.md`](./backup.md).

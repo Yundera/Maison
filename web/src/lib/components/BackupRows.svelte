@@ -31,6 +31,10 @@
     pending = { name: b.name, action }
   }
 
+  // The tiers the server can report. Kept here as data so the guard in the markup is
+  // one list rather than a chain of comparisons.
+  const TIERS = ['local', 'remote', 'both']
+
   function confirm(b: Backup) {
     const action = pending?.action
     pending = null
@@ -41,12 +45,24 @@
 
 <ul class="rows">
   {#each backups as b (b.name)}
+    <!-- Guarded rather than interpolated straight into the key: t() falls back to the
+         key it was given, so an engine that forgot to set a tier would put the string
+         "backup_tier_" on screen. Nothing is a better label than that. -->
+    {@const where = TIERS.includes(b.tier) ? $t(`backup_tier_${b.tier}`) : ''}
     <li class="row" class:asking={pending?.name === b.name}>
       <span class="when">{renderStamp(b.stamp)}</span>
       <!-- Both surfaces that use this component fetch measured lists, so the size
-           is always real — including 0 B, which is itself worth showing. -->
+           is always real — including 0 B, which is itself worth showing.
+
+           Where it is comes last and is always shown, including for the ordinary
+           local case: a backup's whole value is whether it survives losing this
+           server, and a row that only says "folder · 2 GB" cannot answer that. It
+           is the tier, not the engine name, because "kopia" is an implementation
+           detail and "offsite" is the property the user is buying. -->
       <span class="meta">
-        {b.zip ? $t('backup_zip') : $t('backup_folder')} · {renderSize(b.size)}
+        {b.zip ? $t('backup_zip') : $t('backup_folder')} · {renderSize(b.size)}{#if where}
+          · <span class="where" title={b.engine ?? ''}>{where}</span>
+        {/if}
       </span>
 
       {#if pending?.name === b.name}
@@ -101,6 +117,9 @@
     color: var(--text-muted);
     flex: 1;
     min-width: 8rem;
+  }
+  .where {
+    white-space: nowrap;
   }
   .warn {
     color: var(--red);

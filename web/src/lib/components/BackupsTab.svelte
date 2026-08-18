@@ -1,10 +1,15 @@
 <script lang="ts">
   // One app's Backups tab.
   //
-  // Everything here is about the same folder the tile represents: what archives of
-  // it exist, and making one more. The work itself is detached — the tile carries
-  // the progress bar, exactly like an install or an uninstall — so this panel
-  // starts an operation and then gets out of the way.
+  // Everything here is about the same folder the tile represents: what backups of it
+  // exist, and making one more. The work itself is detached — the tile carries the
+  // progress bar, exactly like an install or an uninstall — so this panel starts an
+  // operation and then gets out of the way.
+  //
+  // The list spans every engine, and "Back up now" writes to whichever one is
+  // configured in Settings › Backups. Neither is a choice this tab makes: there is one
+  // backup mechanism and the engine is a setting it reads, so a remote backup shows up
+  // here beside a local one and restores the same way. Each row says where it is.
   import {
     fetchBackups,
     estimateBackup,

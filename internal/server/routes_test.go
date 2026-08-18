@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,5 +108,65 @@ func TestBackupEngineRoutesAreReachableWithoutDockerOrARepository(t *testing.T) 
 		if !strings.Contains(rec.Body.String(), tc.wantBody) {
 			t.Errorf("%s %s body = %s, want it to contain %q", tc.method, tc.path, rec.Body.String(), tc.wantBody)
 		}
+	}
+}
+
+// The user-data restore route sits under /backups/, where the next segment is otherwise
+// an app name. Static beats a parameter in chi, which is what stops this being read as
+// a restore of an app called "userdata" — the same precedence the /apps/{id}/{action}
+// routes rely on above, and worth pinning for the same reason.
+func TestUserDataRestoreRouteBeatsTheAppWildcard(t *testing.T) {
+	h := New(config.Config{DataRoot: t.TempDir()}, fstest.MapFS{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/backups/userdata/restore",
+		strings.NewReader(`{"name":"2026-01-01_000000"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// The box has the local engine and no repository, so the restore is refused — but by
+	// the user-data handler, which says so in the engine's terms. handleRestoreOrphan
+	// would have reported a missing backup for an app instead.
+	body := rec.Body.String()
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /api/backups/userdata/restore = %d %s; want 400", rec.Code, body)
+	}
+	if !strings.Contains(body, "engine") {
+		t.Errorf("body = %s; want the user-data handler's refusal, not an app restore", body)
+	}
+}
+
+// The global page must describe the user-data set even on a box that cannot back it up,
+// because "no backups" and "this engine will never do this" look identical otherwise.
+func TestGlobalBackupsDescribesTheUserDataSet(t *testing.T) {
+	h := New(config.Config{DataRoot: t.TempDir()}, fstest.MapFS{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/backups", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/backups = %d %s; want 200", rec.Code, rec.Body.String())
+	}
+
+	var got struct {
+		UserData struct {
+			Available bool     `json:"available"`
+			Reason    string   `json:"reason"`
+			Source    string   `json:"source"`
+			Excluded  []string `json:"excluded"`
+		} `json:"user_data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.UserData.Available {
+		t.Error("the local engine cannot back up the user-data set; available must be false")
+	}
+	if got.UserData.Reason == "" {
+		t.Error("an unavailable set must say why")
+	}
+	// The exclusions are what make a restore that did not bring something back
+	// diagnosable, so they are part of the payload rather than folklore.
+	if len(got.UserData.Excluded) == 0 || got.UserData.Source == "" {
+		t.Errorf("user_data = %+v; want the source and its exclusions", got.UserData)
 	}
 }

@@ -41,8 +41,35 @@ type Config struct {
 	// UserData includes everything under the data root that is not an app.
 	UserData bool `json:"user_data"`
 
+	// Mode is the box-wide retention intent, and Keep / Count / MaxAgeDays are the
+	// parameters the chosen mode reads. Empty means the box has no opinion and
+	// follows whatever the deployment provisioned — the same "store only the
+	// override" discipline as Engine above, for the same reason.
+	//
+	// Clearing the mode clears its parameter with it. An inherited layer that still
+	// carried tiers would be indistinguishable from a user who had typed them, which
+	// is exactly the ambiguity Mode exists to remove.
+	Mode Mode `json:"mode,omitempty"`
+
 	// Keep is the tiered retention the engine is asked to apply.
 	Keep Keep `json:"keep"`
+
+	// Count is read under ModeCount, MaxAgeDays under ModeAge.
+	Count      int `json:"count,omitempty"`
+	MaxAgeDays int `json:"max_age_days,omitempty"`
+
+	// Engines holds per-engine overrides, keyed by the engine's permanent ID.
+	//
+	// Retention is per-engine because engines differ in what expiry their storage can
+	// even survive (see apps.RetentionModel), and because an engine dropped from the
+	// picker keeps expiring the backups it already wrote. With one shared set of
+	// numbers, switching kopia → rclone → kopia would quietly rewrite the first
+	// engine's intent while its snapshots were still ageing out under it.
+	//
+	// Entries for engines this build does not know are preserved untouched: engine IDs
+	// are permanent, and dropping the settings of an engine the user might switch back
+	// to is a silent loss of a choice they made.
+	Engines map[string]EngineSettings `json:"engines,omitempty"`
 
 	// SMTP is where failure alerts go. Empty means no alerting — which is a real
 	// choice a user can make, and the reason this is not validated into existence.
@@ -94,7 +121,9 @@ func New(path string) *Store {
 	if b, err := os.ReadFile(path); err == nil {
 		var loaded Config
 		if json.Unmarshal(b, &loaded) == nil {
-			s.cur = loaded
+			// Normalised on read as well as on write: a file that predates modes has to
+			// resolve correctly on a box where nobody ever opens the settings page.
+			s.cur = sane(migrate(loaded))
 		}
 	}
 	return s
@@ -140,6 +169,26 @@ func (s *Store) Set(c Config) error {
 	return nil
 }
 
+// migrate reads a settings file written before retention had modes.
+//
+// Such a file carries tiers and no mode, and the two cases are not the same thing.
+// Tiers equal to the preset are what Defaults() writes on a box nobody has ever
+// configured, so they are read as "never decided" — the box goes on following
+// whatever the deployment provisions, which is what an untouched box should do.
+// Anything else is a number a user actually typed, and is preserved as a custom
+// override. Inferring the other way round would pin every box in the fleet to
+// today's default the moment it first wrote its settings file.
+//
+// It runs on load rather than inside sane, because sane runs on every write and this
+// is not idempotent: once tiers have been read as a mode, re-reading them would keep
+// re-deciding a question the mode has already answered.
+func migrate(c Config) Config {
+	if c.Mode == ModeInherit && c.Keep != (Keep{}) && c.Keep != SmartKeep() {
+		c.Mode = ModeCustom
+	}
+	return c
+}
+
 // sane clamps values that would otherwise produce a schedule that never fires or a
 // retention policy that keeps nothing.
 func sane(c Config) Config {
@@ -154,6 +203,25 @@ func sane(c Config) Config {
 	}
 	if c.KeepLocal < 0 {
 		c.KeepLocal = 0
+	}
+	c.Count = max(c.Count, 0)
+	c.MaxAgeDays = max(c.MaxAgeDays, 0)
+	if !c.Mode.Valid() {
+		c.Mode = ModeInherit
+	}
+	for id, es := range c.Engines {
+		if !es.Mode.Valid() {
+			es.Mode = ModeInherit
+		}
+		es.Keep.Latest = max(es.Keep.Latest, 0)
+		es.Count = max(es.Count, 0)
+		es.MaxAgeDays = max(es.MaxAgeDays, 0)
+		es.UploadLimitMB = max(es.UploadLimitMB, 0)
+		if es.KeepLocal != nil && *es.KeepLocal < 0 {
+			zero := 0
+			es.KeepLocal = &zero
+		}
+		c.Engines[id] = es
 	}
 	return c
 }

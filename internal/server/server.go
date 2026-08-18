@@ -46,6 +46,7 @@ type Server struct {
 	engines     *backup.Set
 	backupConf  *backupconfig.Store
 	backupSched *backup.Scheduler
+	userData    *backup.UserData
 }
 
 // New builds the root HTTP handler. A nil-Docker environment still serves the
@@ -95,7 +96,16 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// is, which is what keeps older backups reachable after a switch.
 		s.apps.Engines = s.engines
 	}
+	// The user-data set's read and restore half. It holds the same *Set the registry and
+	// the scheduler do — see applyChosenEngine on why that set is mutated rather than
+	// replaced when the engine changes.
+	s.userData = backup.NewUserData(cfg, s.engines, s.backupConf)
 	s.backupSched = backup.NewScheduler(cfg, s.apps, s.engines, s.backupConf)
+	// The two must not write the same tree at once, in either order: a restore during a
+	// run would be restoring under a snapshot, and a run during a restore would snapshot
+	// a half-restored state. Each refuses while the other is working.
+	s.userData.Busy = func() bool { return s.backupSched.State().Running }
+	s.backupSched.RestoreInProgress = func() bool { return s.userData.State().Running }
 	s.backupSched.OnChange = throttle(300*time.Millisecond, s.broadcastApps)
 	s.backupSched.Start(context.Background())
 
@@ -179,6 +189,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Post("/backup/email-key", s.handleEmailKey)
 
 		r.Get("/backups", s.handleGlobalBackups)
+		// Static beats {app} in chi, which is what keeps this from being read as a
+		// restore of an app called "userdata" — the same precedence the /apps/{id}/{action}
+		// routes above rely on. TestUserDataRestoreRouteBeatsTheAppWildcard pins it.
+		r.Post("/backups/userdata/restore", s.handleRestoreUserData)
 		r.Post("/backups/{app}/restore", s.handleRestoreOrphan)
 		r.Delete("/backups/{app}/{name}", s.handleDeleteBackup)
 

@@ -140,6 +140,36 @@ func (p *LocalProvider) List(ctx context.Context, app string) ([]Backup, error) 
 	return ListBackups(p.cfg.BackupsDir(), app), nil
 }
 
+// ListAll walks .backups/ and returns each app's archives. The directory is created
+// by the writers on demand, so its absence is an empty result rather than an error —
+// that is the normal state of a box that has never taken a backup.
+//
+// Sizes are left unmeasured here for the same reason List leaves them: measuring a
+// folder archive walks a tree that can be terabytes, and the caller that displays
+// them wraps this in Measure.
+func (p *LocalProvider) ListAll(ctx context.Context) (map[string][]Backup, error) {
+	entries, err := os.ReadDir(p.cfg.BackupsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := map[string][]Backup{}
+	for _, e := range entries {
+		// A non-directory, or a name that is not a compose project, is not an app's
+		// archive directory — the same guard ListBackups applies before it builds a
+		// path from the name.
+		if !e.IsDir() || !ValidProjectName(e.Name()) {
+			continue
+		}
+		if list := ListBackups(p.cfg.BackupsDir(), e.Name()); len(list) > 0 {
+			out[e.Name()] = list
+		}
+	}
+	return out, nil
+}
+
 // Materialize is a no-op: this engine's backups are already on local disk, which is
 // the whole point of it. It still resolves the name, so that asking for something
 // that is not there fails here rather than further down.

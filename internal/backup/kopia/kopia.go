@@ -362,24 +362,32 @@ func (p *Provider) EnsurePolicy(ctx context.Context, s Source, keep Retention) e
 		return err
 	}
 
-	// The app tree has its own per-app sources; backing it up here too would store
-	// everything twice.
-	//
-	// AppDataShared is deliberately *not* excluded: on a box running two engines each
-	// engine's backup then carries the other's configuration, so recovering either
-	// returns the rest. The password riding along is harmless — reading it requires
-	// the password already — it is merely useless.
-	//
-	// Cache and logs are matched by pattern rather than by a fixed list, so the next
-	// engine someone adds does not silently ship its multi-gigabyte cache offsite
-	// every night for data that is rebuilt on demand.
-	_, err := p.run(ctx, nil, 5*time.Minute, "policy", "set", path,
-		"--add-ignore", "/AppData/",
-		"--add-ignore", "**/cache/",
-		"--add-ignore", "**/logs/",
-	)
+	// The exclusions themselves, and why each one is there, are on UserDataExclusions.
+	args := []string{"policy", "set", path}
+	for _, ig := range UserDataExclusions {
+		args = append(args, "--add-ignore", ig)
+	}
+	_, err := p.run(ctx, nil, 5*time.Minute, args...)
 	return err
 }
+
+// UserDataExclusions is what the user-data set leaves out, and it is exported because
+// the page that offers a restore has to be able to say so: a restore that does not
+// bring something back is only diagnosable if the exclusions are visible. One list, so
+// what is shown can never drift from what is applied.
+//
+//   - The app tree has its own per-app sources; backing it up here too would store
+//     everything twice — and it is the reason an in-place restore is done entry by
+//     entry, since a delete-extra aimed at the data root would remove it.
+//   - Cache and logs are matched by pattern rather than by a fixed list, so the next
+//     engine someone adds does not silently ship its multi-gigabyte cache offsite every
+//     night for data that is rebuilt on demand.
+//
+// AppDataShared is deliberately *not* excluded: on a box running two engines each
+// engine's backup then carries the other's configuration, so recovering either returns
+// the rest. The password riding along is harmless — reading it requires the password
+// already — it is merely useless.
+var UserDataExclusions = []string{"/AppData/", "**/cache/", "**/logs/"}
 
 // Retention is the tiered (GFS) policy. Because each source accumulates snapshots
 // over time, this maps directly onto kopia's own policy engine instead of having to
@@ -448,6 +456,174 @@ func (p *Provider) BackupUserData(ctx context.Context, stamp string) (string, er
 		return "", err
 	}
 	return b.Name, nil
+}
+
+// ListUserData returns the user-data set's snapshots, newest first.
+//
+// The set is one source with many snapshots over time, so this is the same read as an
+// app's — the reserved App name is what tells them apart on the way out.
+func (p *Provider) ListUserData(ctx context.Context) ([]apps.Backup, error) {
+	return p.ListSource(ctx, UserDataSource())
+}
+
+// RestoreUserData puts the user-data set back.
+//
+// **In place, this deliberately does not restore the data root as one target.** It
+// restores each of the snapshot's top-level entries into its own path. The reason is
+// `--delete-extra`, which is what makes a restore a restore rather than a merge: aimed
+// at the data root it would delete everything there that the snapshot does not
+// contain — and `AppData/` is excluded from this snapshot by policy, so it would
+// delete every app's data on the box. Per-entry, `AppData` is never a target and
+// cannot be reached. Verified against kopia 0.23.1; TestUserDataRestoreNeverTargetsTheDataRoot
+// is what catches a regression.
+//
+// Two consequences worth stating plainly, because they are the semantics the UI has to
+// describe:
+//
+//   - Within each restored entry the result is exact: files created since the snapshot
+//     are removed, deletions are undone, modifications reverted.
+//   - A top-level entry that exists on disk but not in the snapshot is left alone. It
+//     did not exist when the snapshot was taken, so a true restore would remove it —
+//     but silently deleting a whole tree the user made since is a worse surprise than
+//     leaving it, and nothing forces the choice to be made here.
+//   - AppDataShared/ is skipped in place, though it is in the snapshot. See inPlaceSkip.
+func (p *Provider) RestoreUserData(ctx context.Context, stamp string, opts apps.UserDataRestoreOpts, emit func(apps.Event)) error {
+	id, err := p.snapshotID(ctx, userDataApp, stamp)
+	if err != nil {
+		return err
+	}
+
+	// Restoring into a fresh directory is the simple case: there is nothing there to
+	// delete, so one call does it and --delete-extra would be meaningless.
+	if opts.Dest != "" {
+		if !filepath.IsAbs(opts.Dest) {
+			return fmt.Errorf("kopia: restore destination must be an absolute path: %s", opts.Dest)
+		}
+		if err := os.MkdirAll(opts.Dest, 0o755); err != nil {
+			return err
+		}
+		_, err = p.run(ctx, emit, 0, "restore", id, opts.Dest, "--progress")
+		return err
+	}
+
+	entries, err := p.entries(ctx, id)
+	if err != nil {
+		return err
+	}
+	wanted, err := selectEntries(entries, opts.Entries)
+	if err != nil {
+		return err
+	}
+	if len(wanted) == 0 {
+		return fmt.Errorf("kopia: snapshot %s holds nothing to restore", stamp)
+	}
+
+	for _, e := range wanted {
+		if inPlaceSkip[e.name] {
+			// Skipped only when restoring over the live tree. See inPlaceSkip.
+			if emit != nil {
+				emit(apps.Event{Message: "Leaving " + e.name + " as it is"})
+			}
+			continue
+		}
+		dst := filepath.Join(p.cfg.DataRoot, e.name)
+		args := []string{"restore", id + "/" + e.name, dst, "--progress"}
+		// Only a directory can hold extra files. Aimed at a plain file --delete-extra has
+		// nothing to act on, and overwriting is kopia's default.
+		if e.dir {
+			args = append(args, "--delete-extra")
+		}
+		if emit != nil {
+			emit(apps.Event{Message: "Restoring " + e.name})
+		}
+		if _, err := p.run(ctx, emit, 0, args...); err != nil {
+			return fmt.Errorf("restoring %s: %w", e.name, err)
+		}
+	}
+	return nil
+}
+
+// inPlaceSkip is what an in-place restore leaves alone even though the snapshot holds
+// it.
+//
+// AppDataShared/ carries the backup engines' own configuration — endpoint, password,
+// cache — and it is in the set deliberately, so that recovering *any* engine's backup
+// returns the credentials for the others. That is exactly right for restoring onto a
+// fresh box, and exactly wrong for restoring over a live one: the files being replaced
+// are the ones the engine performing the restore is reading, and an older repository
+// config swapped in mid-restore points the engine at a repository that is not the one
+// it is currently reading from.
+//
+// It is not excluded from the *snapshot* — that would break disaster recovery, which is
+// the reason it is included — only from the in-place restore, which is the one case
+// where the live copy is more current than the backed-up one by definition.
+var inPlaceSkip = map[string]bool{"AppDataShared": true}
+
+// entry is one top-level member of a snapshot.
+type entry struct {
+	name string
+	dir  bool
+}
+
+// entries lists a snapshot's top-level members.
+//
+// `kopia ls` has no --json, so this parses the long form. Fields are mode, size, date,
+// time, zone, object id, name — split with a limit so a name containing spaces stays
+// whole, and a trailing "/" is what marks a directory. Verified against kopia 0.23.1.
+func (p *Provider) entries(ctx context.Context, id string) ([]entry, error) {
+	out, err := p.run(ctx, nil, 5*time.Minute, "ls", "-l", id)
+	if err != nil {
+		return nil, err
+	}
+	var list []entry
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 7 {
+			continue
+		}
+		// The columns are padded to align, so the separator is a *run* of spaces of
+		// unknown width — splitting on single spaces yields empty fields and a name made
+		// of column fragments. Anchor on the object id instead, which is the field before
+		// the name: everything after it is the name, spaces and all.
+		oid := fields[5]
+		at := strings.Index(line, oid)
+		if at < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[at+len(oid):])
+		dir := strings.HasSuffix(name, "/")
+		name = strings.TrimSuffix(name, "/")
+		// A name that is not a plain member of the data root has no business becoming a
+		// path. The snapshot came from a repository, and this is the value that reaches
+		// filepath.Join below.
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+			continue
+		}
+		list = append(list, entry{name: name, dir: dir})
+	}
+	return list, nil
+}
+
+// selectEntries narrows the snapshot's members to what the caller asked for, refusing
+// a name the snapshot does not have — so "restore just Documents" cannot become
+// "restore whatever path you name".
+func selectEntries(have []entry, want []string) ([]entry, error) {
+	if len(want) == 0 {
+		return have, nil
+	}
+	byName := map[string]entry{}
+	for _, e := range have {
+		byName[e.name] = e
+	}
+	out := make([]entry, 0, len(want))
+	for _, w := range want {
+		e, ok := byName[w]
+		if !ok {
+			return nil, fmt.Errorf("kopia: this backup has no %q to restore", w)
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // --- apps.Provider -----------------------------------------------------------
@@ -573,6 +749,44 @@ func (p *Provider) ListSource(ctx context.Context, s Source) ([]apps.Backup, err
 	return out, nil
 }
 
+// ListAll returns every app's snapshots in one query, grouped by the app tag rather
+// than derived from any local state — that is what lets a rebuilt box list what it
+// can restore before anything is installed on it.
+//
+// One query is the point: the alternative is a subprocess per app, and this backs the
+// page that lists every app at once.
+//
+// The user-data set is excluded: it is a source, not an app, and it has no tile, no
+// folder and no per-app page for the global list to link it to.
+//
+// App names are validated through apps.ValidProjectName and stamps through
+// ParseBackupName (inside snapshot.backup), because both arrive from a repository. An
+// unparseable tag is dropped rather than surfaced.
+func (p *Provider) ListAll(ctx context.Context) (map[string][]apps.Backup, error) {
+	snaps, err := p.allSnapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]apps.Backup{}
+	for _, sn := range snaps {
+		app := sn.tag(tagApp)
+		if app == "" || app == userDataApp || !apps.ValidProjectName(app) {
+			continue
+		}
+		if sn.tag(tagPass) == "1" {
+			continue // torn, never restorable — the rule ListSource applies
+		}
+		if b, ok := sn.backup(app); ok {
+			out[app] = append(out[app], b)
+		}
+	}
+	for app := range out {
+		list := out[app]
+		sort.Slice(list, func(i, j int) bool { return list[i].Stamp > list[j].Stamp })
+	}
+	return out, nil
+}
+
 func (p *Provider) Delete(ctx context.Context, app, stamp string) error {
 	return p.AbortSource(ctx, AppSource(app), stamp)
 }
@@ -676,8 +890,18 @@ func (s snapshot) backup(app string) (apps.Backup, bool) {
 }
 
 func (p *Provider) snapshots(ctx context.Context, app string) ([]snapshot, error) {
+	return p.listSnapshots(ctx, "--tags", tagApp+":"+app)
+}
+
+// allSnapshots is the same read with no app filter, for enumerating which apps the
+// repository knows about.
+func (p *Provider) allSnapshots(ctx context.Context) ([]snapshot, error) {
+	return p.listSnapshots(ctx)
+}
+
+func (p *Provider) listSnapshots(ctx context.Context, filter ...string) ([]snapshot, error) {
 	out, err := p.run(ctx, nil, 5*time.Minute,
-		"snapshot", "list", "--all", "--json", "--tags", tagApp+":"+app)
+		append([]string{"snapshot", "list", "--all", "--json"}, filter...)...)
 	if err != nil {
 		return nil, err
 	}

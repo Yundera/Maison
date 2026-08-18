@@ -42,23 +42,42 @@ func buildEngines(cfg config.Config, store *backupconfig.Store) *backup.Set {
 		apps.NewLocalProvider(cfg),
 		kopia.New(cfg),
 	)
+	applyChosenEngine(set, store)
+	return set
+}
+
+// applyChosenEngine points the set's writer at whatever the configuration now says.
+//
+// It **mutates the set in place** rather than returning a new one, and that matters:
+// the registry, the scheduler and the user-data coordinator all hold the same *Set, and
+// none of them is re-handed it when the engine setting changes. Replacing the set here
+// would leave every one of them writing through the previous instance — silently, since
+// the old set is perfectly functional and merely wrong about which engine the user
+// picked.
+func applyChosenEngine(set *backup.Set, store *backupconfig.Store) {
 	// The user's override wins; empty means "follow whatever the deployment
 	// provisioned", which is inferred below rather than stored.
 	if chosen := store.Get().Engine; chosen != "" {
 		if err := set.SetWriter(chosen); err != nil {
 			log.Printf("backup: %v (falling back to the local engine)", err)
 		}
-		return set
+		return
 	}
 	// No override: prefer a remote engine that is actually connected. That inference
 	// *is* the provisioning signal — a repository the host-side script has connected —
 	// so there is no second file for the two sides to disagree about.
+	//
+	// The local engine is the fallback and is reasserted explicitly, because clearing an
+	// override has to be able to move the writer *back* — not merely leave it wherever
+	// the last explicit choice put it.
+	if err := set.SetWriter(apps.EngineLocal); err != nil {
+		log.Printf("backup: %v", err)
+	}
 	if k, ok := set.Get(kopia.ID); ok {
 		if p, isKopia := k.(*kopia.Provider); isKopia && p.Status(context.Background()).Connected {
 			_ = set.SetWriter(kopia.ID)
 		}
 	}
-	return set
 }
 
 // engineStatus is what the settings page renders.
@@ -134,16 +153,11 @@ func (s *Server) handlePutBackupConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// One path for both cases, mutating the set the rest of the process already holds:
+	// an explicit choice and a cleared one are the same question asked of the same
+	// object. See applyChosenEngine.
 	if s.engines != nil {
-		if in.Engine != "" {
-			_ = s.engines.SetWriter(in.Engine)
-		} else {
-			// Cleared: fall back to whatever the deployment provisions.
-			s.engines = buildEngines(s.cfg, s.backupConf)
-			if s.apps != nil {
-				s.apps.Engines = s.engines
-			}
-		}
+		applyChosenEngine(s.engines, s.backupConf)
 	}
 	// A changed schedule must take effect without a restart.
 	if s.backupSched != nil {

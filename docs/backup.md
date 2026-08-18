@@ -2,7 +2,12 @@
 
 > **Status: mostly implemented.** The engine seam, the `local` and `kopia` engines,
 > the two-pass app backup, the user-data set, all three restore paths, the nightly
-> schedule, retention and failure notifications are in the tree and tested.
+> schedule, retention and failure notifications are in the tree and tested. Listing,
+> restore and delete all read through the engine set, so a remote backup is a
+> first-class one in the UI (§[One surface, one mechanism](#one-surface-one-mechanism)).
+>
+> The user-data set is listable and restorable from the Backups page — both modes, with
+> the guards described in [Restore](#the-user-data-set).
 >
 > **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)),
 > and the host-side `ensure-backup-config.sh` that renders storage credentials onto
@@ -39,12 +44,21 @@ this document follows from them being different.
 | Contents | compose files, `.env`, the app's own data | Documents, Downloads, Media, whatever else the user drops at the data root |
 | Consistency | containers stopped — a real point-in-time snapshot | none; a live filesystem, read as-is |
 | Orchestration | stop → snapshot → start, per app | none — nothing to stop |
-| Granularity | restore one app without touching others | one set |
+| Granularity | restore one app without touching others | one set, or named top-level folders |
+| Restore | rename / materialise / in place, per app | copy into a new folder, or in place entry by entry |
 
 **User data is the simpler path and the right thing to build first.** Nothing is
 stopped, no staging copy exists, and its source path never changes. Every piece of
 the provider layer can be exercised against it before app orchestration enters the
 picture.
+
+**The user-data set is remote-only.** The local engine deliberately does not implement
+it and must not: its archives live under `AppData/.backups/`, on the same disk the set
+would be copied from, so the copy protects against nothing while doubling the space
+used. The scheduler therefore does not offer it as a target for an engine that cannot do
+it — otherwise a default install (local engine, user data on) reports a failed backup
+every night and mails its owner about it while nothing is wrong — and the page says why
+rather than showing an empty list.
 
 **A database must never live under the user-data set.** It has no consistency
 guarantee: a file being written while the engine reads it is captured mid-write.
@@ -109,10 +123,18 @@ type Provider interface {
     Caps() Caps        // LocalSpace, Instant, Retention, Offsite
     Snapshot(ctx, app, stamp string, emit func(Event)) (Ref, error)
     List(ctx, app string) ([]Backup, error)
+    ListAll(ctx) (map[string][]Backup, error)   // every app, in one call
     Materialize(ctx, app, stamp string, emit func(Event)) error
     Delete(ctx, app, stamp string) error
 }
 ```
+
+`ListAll` is the bulk shape of `List` and exists for a cost reason, not a convenience
+one: for a remote engine every call is a subprocess against the repository, and the
+global page shows every app at once. Asking "which apps do you have" and then
+listing each would make that page cost one subprocess per installed app. It also
+cannot be answered from what is installed — on a rebuilt box the repository is the
+only thing that still knows the apps existed, which is exactly when the page matters.
 
 ### What the registry owns, and what a provider owns
 
@@ -140,6 +162,42 @@ Two consequences:
   its way home.
 - **A provider removed from the picker stays registered read-only.** You can stop
   offering an engine; you cannot stop reading what it wrote.
+
+### One surface, one mechanism
+
+> **There is no such thing as a "cloud backup" feature.** There is backup, and the
+> engine is a setting it reads.
+
+This is a UI rule as much as a code one, and it was broken first in the UI: the
+engine, schedule and retention lived on a *Cloud backup* settings page while a
+separate *Backups* page listed archives. Two pages, two URLs one keystroke apart
+(`/settings/backup`, `/settings/backups`), two API prefixes likewise (`/api/backup`,
+`/api/backups`) — and the implication that backing up to a repository is a different
+feature from backing up to disk. It is not: everything that triggers a backup calls
+`Registry.engine()` and knows nothing else about where the bytes go.
+
+They are now one page — destination and schedule above, every backup below — and the
+word "cloud" does not appear in it. `local` and `kopia` are two values of one setting,
+and the row for a backup says where it is (`on this disk`, `offsite`, or both).
+
+What made the split more than cosmetic is that the two halves had drifted apart in the
+code. Writes went through the engine set; **reads did not.** Both listing endpoints
+walked `.backups/` directly, and `StartRestore` gated on a file being there before
+dispatching to the engine-aware path underneath. So on a box configured for kopia the
+Backups page was empty while the repository held everything, and a remote-only backup
+could not be restored from the UI at all — the code to do it was reachable only from
+the scheduler. Every read now goes through the set:
+
+| Path | Reads through |
+|---|---|
+| Per-app tab, global page | `Set.List`, `Set.ListAll` |
+| Restore (precondition *and* execution) | `Set.Locate` |
+| Delete | `Set.Delete` — from **every** engine holding it, since one row means one backup |
+
+Two writes deliberately stay local, and are exceptions rather than oversights:
+archive-on-uninstall and the update rollback point (`BackupWith`). Both need a rename
+they can undo in seconds, and a repository upload is not that. `keep_local` pruning is
+local by definition.
 
 ---
 
@@ -407,12 +465,76 @@ three guards are mandatory rather than best-effort:
 
 Two knock-on changes:
 
-- `ListBackups` / `ListAll` become a union of local and remote-only entries, deduped
-  by `(app, stamp)`, with a tier badge per row. Remote listing is a subprocess call
-  and **must be cached** — the global backups page is already the expensive read.
+- **Done.** Listing is a union of local and remote entries, deduped by `(app, stamp)`,
+  with the tier on every row — `Set.List` for one app, `Set.ListAll` for the global
+  page. The caching the earlier draft called for turned out to be the wrong fix: the
+  cost was never one query, it was one query *per app*. `Provider.ListAll` returns
+  every app in a single call instead, so the page costs one subprocess per engine
+  however many apps it shows, with nothing stale to invalidate.
 - Install-from-backup still goes through `RestoreBackup`, so it inherits the first
   two paths unchanged. It does **not** get the in-place path, and does not need it:
   a fresh install has no live folder to write over.
+
+### The user-data set
+
+Two modes, and the safe one is the default in the UI.
+
+```
+copy      restore into ${DATA_ROOT}/Restored/<stamp>/ (or a named directory).
+          Touches nothing that exists, so no undo snapshot and no marker.
+          This is what "get my Documents from three weeks ago back" wants.
+in place  restore over the live tree, entry by entry, with --delete-extra.
+          Exact within each restored entry; destructive by construction.
+```
+
+**In place is done entry by entry, never by aiming at the data root, and that is a
+safety property rather than a style choice.** `--delete-extra` is what makes a restore a
+restore rather than a merge — it removes what the snapshot does not contain. Aimed at
+`${DATA_ROOT}` it would therefore delete `AppData/`, which is excluded from this
+snapshot by policy, taking every app's data on the box with it. Restoring each top-level
+entry into its own path means `AppData` is never a target and cannot be reached.
+`TestUserDataRestoreNeverTargetsTheDataRoot` runs the real engine and asserts exactly
+that, because both spellings read as "restore the user data" and only one of them
+destroys the box.
+
+Three consequences, all of which the UI has to state rather than imply:
+
+- Within a restored entry the result is exact: files created since are removed,
+  deletions undone, modifications reverted.
+- A top-level entry on disk but *not* in the snapshot is **left alone**. A true restore
+  would remove it, but silently deleting a whole tree the user made since is a worse
+  surprise than leaving it.
+- `AppDataShared/` is skipped in place, though it is in the snapshot on purpose (so that
+  recovering any engine's backup returns the others' credentials). In place it is the one
+  directory whose live copy is newer than the backup by definition, and it holds the
+  configuration the engine performing the restore is reading.
+
+The guards mirror the app in-place path, and each refuses rather than proceeding:
+
+1. **An undo snapshot first**, so the restore is reversible; it is incremental, so it
+   costs about the delta. If it fails, nothing is written.
+2. **A marker** under `AppData/maison/` — outside the set being restored, so the restore
+   cannot delete its own marker. It outlives a restart, and while it is there the page
+   says the tree is neither state and offers to finish the job.
+3. **One at a time, in both directions.** A second restore is refused, not queued: two
+   writers over one tree produce a state that came from neither backup. A restore is also
+   refused while a backup run is going, and the nightly run skips its user-data target
+   while a restore is in flight — a snapshot of a half-restored tree is a state that never
+   existed, and it counts against retention, so it can push out the very snapshot being
+   restored from.
+
+Copy mode has a guard of its own, and only it needs one: it writes a full second copy of
+the set onto the same disk, and the set is the largest thing on the box by design. It is
+refused when there is not room, with 10% headroom, matching the app path — filling the
+data disk does not merely fail the restore, it starts failing every app writing to that
+disk. In place needs no extra room, so the guard deliberately does not apply to it:
+refusing there would make a full disk unrecoverable by the one operation that could fix
+it.
+
+Apps are **not** stopped for this. The set holds no app state — `AppData/` is excluded —
+so what is being replaced is Documents, Downloads and Media. An app holding an open
+handle on a media file being replaced is in the same position as a user overwriting that
+file over Samba, which is an ordinary thing to do to a NAS.
 
 ### Disaster recovery
 

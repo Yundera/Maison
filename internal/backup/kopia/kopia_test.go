@@ -394,3 +394,175 @@ func TestProgressParsingIsToleran(t *testing.T) {
 		}
 	}
 }
+
+// The single most dangerous thing in this package: an in-place restore of the user-data
+// set must never be able to delete AppData/.
+//
+// The mechanism it relies on is --delete-extra, which is what makes a restore a restore
+// rather than a merge. Aimed at the data root it would delete everything the snapshot
+// does not contain — and AppData/ is excluded from this snapshot by policy, so it would
+// take every app's data with it. RestoreUserData therefore restores entry by entry and
+// never names the data root as a target.
+//
+// This test exists because that property is invisible in the code: both spellings look
+// like "restore the user data", and only one of them destroys the box.
+func TestUserDataRestoreNeverTargetsTheDataRoot(t *testing.T) {
+	p, cfg := newRepo(t)
+	ctx := context.Background()
+	src := UserDataSource()
+
+	if err := p.EnsurePolicy(ctx, src, DefaultRetention()); err != nil {
+		t.Fatalf("EnsurePolicy: %v", err)
+	}
+	if err := p.SnapshotSource(ctx, src, stamp1, 2, nil); err != nil {
+		t.Fatalf("SnapshotSource: %v", err)
+	}
+
+	appFile := filepath.Join(cfg.AppsDir(), "jellyfin", "db", "data.sqlite")
+	notes := filepath.Join(cfg.DataRoot, "Documents", "notes.txt")
+	extra := filepath.Join(cfg.DataRoot, "Documents", "since-the-backup.txt")
+	fresh := filepath.Join(cfg.DataRoot, "MadeLater")
+
+	// Drift the tree the way a user would between the backup and the restore.
+	if err := os.WriteFile(appFile, []byte("rows written after the backup"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(notes); err != nil { // deleted since
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(extra, []byte("new"), 0o644); err != nil { // created since
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fresh, 0o755); err != nil { // a whole new top-level tree
+		t.Fatal(err)
+	}
+
+	// Everything the snapshot holds except the fixture's own repository. newRepo puts a
+	// *filesystem* repository at ${DataRoot}/repo so the tests need no bucket, which puts
+	// it inside the user-data set — a layout no real deployment has, and one where the
+	// restore would be reading from the very directory it is writing to. Naming the rest
+	// exercises the same per-entry loop.
+	all, err := p.entries(ctx, mustSnapshotID(t, p, stamp1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, e := range all {
+		if e.name != "repo" {
+			want = append(want, e.name)
+		}
+	}
+	if err := p.RestoreUserData(ctx, stamp1, apps.UserDataRestoreOpts{Entries: want}, nil); err != nil {
+		t.Fatalf("RestoreUserData: %v", err)
+	}
+
+	// The property this test exists for.
+	got, err := os.ReadFile(appFile)
+	if err != nil {
+		t.Fatalf("an in-place user-data restore deleted app data: %v", err)
+	}
+	if string(got) != "rows written after the backup" {
+		t.Errorf("app data = %q; the restore must not touch AppData at all", got)
+	}
+
+	// Within a restored entry it is an exact restore, not a merge.
+	if b, err := os.ReadFile(notes); err != nil || string(b) != "user notes" {
+		t.Errorf("Documents/notes.txt = %q (%v); a deleted file must come back", b, err)
+	}
+	if _, err := os.Stat(extra); !os.IsNotExist(err) {
+		t.Error("a file created after the backup survived the restore; --delete-extra did not apply")
+	}
+
+	// A top-level tree that did not exist at snapshot time is left alone, rather than
+	// silently deleted. See RestoreUserData for why that boundary is where it is.
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a top-level directory made after the backup was deleted: %v", err)
+	}
+}
+
+// entries is parsed out of `kopia ls -l`, which has no --json, so the field layout is a
+// contract with the CLI exactly like the tag prefix is.
+func TestEntriesReadsTopLevelNamesAndDirFlags(t *testing.T) {
+	p, _ := newRepo(t)
+	ctx := context.Background()
+	src := UserDataSource()
+
+	if err := p.EnsurePolicy(ctx, src, DefaultRetention()); err != nil {
+		t.Fatalf("EnsurePolicy: %v", err)
+	}
+	if err := p.SnapshotSource(ctx, src, stamp1, 2, nil); err != nil {
+		t.Fatalf("SnapshotSource: %v", err)
+	}
+	id, err := p.snapshotID(ctx, userDataApp, stamp1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := p.entries(ctx, id)
+	if err != nil {
+		t.Fatalf("entries: %v", err)
+	}
+	byName := map[string]bool{}
+	for _, e := range got {
+		byName[e.name] = e.dir
+	}
+	if dir, ok := byName["Documents"]; !ok || !dir {
+		t.Errorf("entries = %+v; want Documents present and marked a directory", got)
+	}
+	// The exclusion holds here too: what is not in the snapshot cannot be a target.
+	if _, ok := byName["AppData"]; ok {
+		t.Error("AppData appeared in the snapshot's entries; it must be excluded")
+	}
+	for _, e := range got {
+		if strings.ContainsAny(e.name, "/\\") || e.name == "" {
+			t.Errorf("entry %q would not be safe to join onto a path", e.name)
+		}
+	}
+}
+
+// mustSnapshotID resolves the user-data snapshot for a stamp.
+func mustSnapshotID(t *testing.T, p *Provider, stamp string) string {
+	t.Helper()
+	id, err := p.snapshotID(context.Background(), userDataApp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// AppDataShared holds the engines' own configuration and is in the snapshot on purpose,
+// so that recovering any engine's backup returns the credentials for the others. In
+// place that is the one directory whose live copy is more current than the backup by
+// definition — and it is being read by the engine doing the restore.
+func TestInPlaceRestoreLeavesTheEngineConfigurationAlone(t *testing.T) {
+	p, cfg := newRepo(t)
+	ctx := context.Background()
+	src := UserDataSource()
+
+	if err := p.EnsurePolicy(ctx, src, DefaultRetention()); err != nil {
+		t.Fatalf("EnsurePolicy: %v", err)
+	}
+	if err := p.SnapshotSource(ctx, src, stamp1, 2, nil); err != nil {
+		t.Fatalf("SnapshotSource: %v", err)
+	}
+
+	// Something written into the engine's directory after the backup was taken. A
+	// --delete-extra restore of AppDataShared would remove it, because the snapshot does
+	// not contain it — which is precisely what must not happen to the directory holding
+	// the credentials the running restore is using. (The password file itself is not the
+	// probe: rewriting it would lock the engine out of its own repository, which is the
+	// same failure this guard exists to prevent, arriving early.)
+	marker := filepath.Join(cfg.BackupEngineDir(ID), "connected-since-the-backup")
+	if err := os.WriteFile(marker, []byte("newer than the snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.RestoreUserData(ctx, stamp1, apps.UserDataRestoreOpts{Entries: []string{"AppDataShared"}}, nil); err != nil {
+		t.Fatalf("RestoreUserData: %v", err)
+	}
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("an in-place restore rolled back the engine's own directory (%v); it must "+
+			"leave the credentials the running restore is using alone", err)
+	}
+}

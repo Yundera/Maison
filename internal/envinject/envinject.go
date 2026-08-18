@@ -24,8 +24,8 @@ import (
 // and the data root.
 //
 // Everything else an app receives comes from .env.app (see internal/appenv), which
-// merges these in. Maison's own configuration — APPSTORE_URL, PROTECTED_APPS, the
-// listen address — is not here and is never forwarded to an app.
+// merges these in. Maison's own configuration — APPSTORE_URL, the store cache,
+// the listen address — is not here and is never forwarded to an app.
 func BaseVars(cfg config.Config, appID string) map[string]string {
 	tz := cfg.TZ
 	if tz == "" {

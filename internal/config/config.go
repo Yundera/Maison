@@ -44,13 +44,6 @@ type Config struct {
 
 	StoreURLs []string // app-store zip URLs (multi-store)
 
-	// ProtectedApps names apps the user must not uninstall from the dashboard —
-	// the platform's own pieces (maison, casaos, …), which appear as ordinary
-	// tiles but whose Uninstall entry is hidden and whose DELETE is refused. An
-	// entry matches an app's store ID (x-casaos store_app_id / x-compose-app id)
-	// or, failing that, its compose project name. Case-insensitive.
-	ProtectedApps []string
-
 	// Domains returns the additional domains every app is published on, beyond the
 	// primary one its compose already routes (see internal/caddyroutes). It is a
 	// function, not a slice, because the operator edits the list at runtime while
@@ -106,25 +99,8 @@ func FromEnv() Config {
 		TZ:            os.Getenv("TZ"),
 		StoreURLs: splitList(envOr("APPSTORE_URL",
 			"https://github.com/Yundera/AppStore/archive/refs/heads/main.zip")),
-		ProtectedApps: splitList(os.Getenv("PROTECTED_APPS")),
 	}
 	return c
-}
-
-// IsProtected reports whether an app is exempt from uninstall. Both identifiers
-// are tested: storeID (the store's app id, e.g. "maison") and project (the
-// compose project / folder name), so a protected app is caught whether or not it
-// carries store metadata.
-func (c Config) IsProtected(storeID, project string) bool {
-	for _, p := range c.ProtectedApps {
-		if storeID != "" && strings.EqualFold(p, storeID) {
-			return true
-		}
-		if project != "" && strings.EqualFold(p, project) {
-			return true
-		}
-	}
-	return false
 }
 
 // AppsDir is the flat root that holds one directory per app

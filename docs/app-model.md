@@ -154,6 +154,18 @@ A small dot in the **top-left** of the tile reflects the container health check:
 The dot only appears when Docker reports a health check for the stack; a stack
 with no health check has no dot.
 
+### 4. Which grid — driven by the app's `view`
+
+Existence and appearance say *whether* a tile is drawn; the app's `x-compose-app`
+`view` says *where*. `system` puts it in the dashboard's System grid and protects
+it (no stop, no uninstall, no scheduled backup); `hidden` draws no tile at all;
+anything else — including every app that says nothing — lands in the ordinary
+grid. [`x-compose-app.md`](./x-compose-app.md) is authoritative for it.
+
+Note the asymmetry with the rule above: a hidden app still *exists*. Its folder is
+there, it runs, and Maison manages it — it simply has no tile. Only a `.` in the
+name takes an app out of the model entirely (see below).
+
 ---
 
 ## Backups live in `.backups/`
@@ -356,6 +368,7 @@ name.
 | Variables | `.env` (prefilled on create) |
 | Running / stopped / busy / clickable | Live Docker state |
 | Health dot | Docker health check |
+| Which grid (app / system / none) | The app's `x-compose-app` `view` |
 | Uninstall | Move to `.backups/<app>/<stamp>` (optionally `.zip`) — data never deleted |
 | Backup | Two-pass copy into `.backups/<app>/<stamp>`; the app is down only for the delta pass |
 | Restore | Archive the current folder, then put the chosen one back — always reversible |

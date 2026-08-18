@@ -93,8 +93,6 @@ services:
       PGID: "1000"
       TZ: "${TZ:-UTC}"
       APPSTORE_URL: "https://github.com/Yundera/AppStore/archive/refs/heads/main.zip"
-      # Store ids the user cannot uninstall from the dashboard (comma-separated).
-      PROTECTED_APPS: "${PROTECTED_APPS:-}"
 
       # NOTE: what an app *receives* is not set here — it is written to .env.app by
       # the `appenv` service below, exactly as a Yundera PCS orchestrator writes it

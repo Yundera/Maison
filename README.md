@@ -63,7 +63,7 @@ The README is the overview. These are **authoritative** and win on any conflict:
 |-----|-------------------|
 | [`docs/app-model.md`](./docs/app-model.md) | Where an app **lives** on disk and how its tile state is derived. Start here. |
 | [`docs/lifecycle.md`](./docs/lifecycle.md) | What install / start / update / save / uninstall / backup / restore actually **do**, in order, and their failure semantics. |
-| [`docs/x-compose-app.md`](./docs/x-compose-app.md) | Maison's own compose extension: `folders`, `hooks`, and the resolved web-UI URL. |
+| [`docs/x-compose-app.md`](./docs/x-compose-app.md) | Maison's own compose extension: `view`, `folders`, `hooks`, and the resolved web-UI URL. |
 | [`docs/domains.md`](./docs/domains.md) | The **additional domains** apps are published on (`sslip.io` / `nip.io` / your own), and the Caddy routes Maison generates for them. |
 | [`docs/FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md) | Row-by-row scope table vs `casa-img`. |
 | [`docs/backup.md`](./docs/backup.md) | **Design, not yet implemented.** Offsite backup and disaster recovery: the two backup sets, the pluggable engine, scheduling, retention, encryption, and recovery mode. |
@@ -180,6 +180,12 @@ Just the app grid — no global search bar, no promo cards.
 - Each **tile** = icon + name, with a status dot driven by the container health check.
   Hover reveals **Open** and a burger (⋯) menu: **Open, Settings, Restart, Stop, Start,
   Uninstall**. Tiles are **drag-to-reorder**.
+- **App / System.** The section heading is a switch when the box has system apps —
+  the platform's own pieces, which declare `view: system` in their compose
+  ([`docs/x-compose-app.md`](./docs/x-compose-app.md)). They get their own grid, and
+  their menu withholds **Stop** and **Uninstall** (the API refuses both); **Restart**
+  stays. `view: hidden` keeps an app off the dashboard entirely. With no system app
+  declared, the heading is a plain "App" and nothing else changes.
 - A tile is **greyed** when stopped, shows a **`…` overlay** while a lifecycle op is in
   flight, and shows **two progress bars** (image download + stack start) while installing.
 - **Unmanaged apps** — any host Compose stack carrying `x-casaos` that Maison didn't
@@ -375,7 +381,6 @@ networks:
 | `DATA_ROOT` | `/DATA` | Data folder inside the container. |
 | `DATA_HOST_PATH` | = `DATA_ROOT` | That folder's path on the host. |
 | `APPSTORE_URL` | Yundera AppStore zip | Store source(s), comma-separated. |
-| `PROTECTED_APPS` | — | Store ids the user cannot uninstall (e.g. `maison,casaos`), comma-separated. The tiles still show; only Uninstall is withheld — in the menu and in the API. |
 | `PUID` / `PGID` | `1000` | Ownership applied to app folders. |
 | `TZ` | — | Timezone for the dashboard and installed apps. |
 | `REF_NET`, `REF_PORT`, `REF_SCHEME`, `REF_DOMAIN`, `REF_SEPARATOR` | — / `-` | Store templating: app network + `{app}{sep}{domain}` hostnames. |

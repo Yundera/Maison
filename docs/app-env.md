@@ -8,7 +8,7 @@ Maison separates them:
 
 | | Lives in | Owned by | Example |
 |---|---|---|---|
-| **What Maison needs to run** | Maison's own environment (`docker-compose.yml`) | Maison | `DATA_ROOT`, `APPSTORE_URL`, `PROTECTED_APPS`, `HTTP_ADDR` |
+| **What Maison needs to run** | Maison's own environment (`docker-compose.yml`) | Maison | `DATA_ROOT`, `APPSTORE_URL`, `HTTP_ADDR` |
 | **What an app receives** | `.env.app` | the **deployment** | `APP_NET`, `APP_DOMAIN`, `APP_PUBLIC_IP_DASH`, `APP_DEFAULT_PASSWORD` |
 
 Nothing is in both, so there is never a question of which one wins.

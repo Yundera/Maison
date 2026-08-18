@@ -14,13 +14,17 @@ export interface App {
   port?: string
   index?: string
   category?: string
+  /** Which dashboard grid this tile belongs in, from the app's x-compose-app
+   *  `view`. Absent means the ordinary grid; "hidden" apps get no tile. */
+  view?: 'apps' | 'system' | 'hidden'
   /** Fully-resolved click URL from x-compose-app (webui-*); wins when set. */
   url?: string
   /** Aggregated Docker health-check verdict; drives the tile status dot.
    *  Absent when no container declares a health check. */
   health?: 'healthy' | 'unhealthy' | 'starting'
-  /** Pinned by the operator (PROTECTED_APPS): the tile hides its Uninstall
-   *  entry, and the backend refuses a DELETE for it. */
+  /** A system app (view === 'system'): the tile withholds Stop and Uninstall
+   *  and the backend refuses both. Restart stays available — it is how a
+   *  wedged platform app is recovered without an SSH session. */
   protected?: boolean
   /** True while a lifecycle op (start/stop/restart/uninstall) is in flight:
    *  the tile shows a "…" overlay and hides its burger menu. */

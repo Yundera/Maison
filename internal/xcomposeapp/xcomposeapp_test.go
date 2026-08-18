@@ -89,3 +89,32 @@ func TestParseHooks(t *testing.T) {
 		t.Fatalf("hooks = %+v, want %+v", a.Hooks, want)
 	}
 }
+
+func TestParseView(t *testing.T) {
+	a, err := Parse(map[string]any{"view": "system"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if a.View != ViewSystem {
+		t.Fatalf("view = %q, want %q", a.View, ViewSystem)
+	}
+}
+
+// An unknown view is a cosmetic mistake, not a reason to refuse the app: it
+// falls back to the ordinary grid, which is where the app would have been
+// anyway.
+func TestNormalizeView(t *testing.T) {
+	cases := map[string]string{
+		"system":    ViewSystem,
+		"  System ": ViewSystem,
+		"HIDDEN":    ViewHidden,
+		"apps":      ViewApps,
+		"":          ViewApps,
+		"dashboard": ViewApps,
+	}
+	for in, want := range cases {
+		if got := NormalizeView(in); got != want {
+			t.Errorf("NormalizeView(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

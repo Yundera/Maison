@@ -33,11 +33,16 @@ const SchemaVersion = 2
 // App is the Maison-native app metadata. Only the fields Maison consumes are
 // modelled; unknown keys are ignored.
 type App struct {
-	Schema        int       `yaml:"schema_version,omitempty"`
-	ID            string    `yaml:"id,omitempty"`
-	Title         Localized `yaml:"title,omitempty"`
-	Icon          string    `yaml:"icon,omitempty"`
-	Category      string    `yaml:"category,omitempty"`
+	Schema   int       `yaml:"schema_version,omitempty"`
+	ID       string    `yaml:"id,omitempty"`
+	Title    Localized `yaml:"title,omitempty"`
+	Icon     string    `yaml:"icon,omitempty"`
+	Category string    `yaml:"category,omitempty"`
+	// View is the dashboard grid the app's tile lands in — see the View*
+	// constants. Presentation only, which is why it does NOT raise
+	// SchemaVersion: a build that predates it renders the app in the ordinary
+	// grid, which is exactly where the app used to be.
+	View          string    `yaml:"view,omitempty"`
 	Tagline       Localized `yaml:"tagline,omitempty"`
 	Description   Localized `yaml:"description,omitempty"`
 	Developer     string    `yaml:"developer,omitempty"`
@@ -69,6 +74,39 @@ type App struct {
 	// hooks that bracket install and up. See docs/x-compose-app.md.
 	Folders []Folder `yaml:"folders,omitempty"`
 	Hooks   Hooks    `yaml:"hooks,omitempty"`
+}
+
+// Dashboard views an app's tile can land in (the `view` field).
+const (
+	// ViewApps is the ordinary app grid, and the default for anything that does
+	// not say otherwise.
+	ViewApps = "apps"
+	// ViewSystem is the platform's own pieces — the dashboard, its gateway, the
+	// host stack. They get their own grid, and declaring it is also what makes an
+	// app *protected*: Maison refuses to stop or uninstall it and the backup
+	// scheduler leaves it alone. There is no operator-side list; an app is a
+	// system app because its own compose says so.
+	ViewSystem = "system"
+	// ViewHidden keeps an app off the dashboard altogether — infrastructure with
+	// nothing worth clicking.
+	ViewHidden = "hidden"
+)
+
+// NormalizeView maps a declared `view` onto one of the constants above,
+// defaulting to ViewApps.
+//
+// An unrecognised value is deliberately not an error. Unknown keys are tolerated
+// everywhere else in this extension, and refusing to render an app over a
+// cosmetic hint would be a worse failure than putting it in the ordinary grid.
+func NormalizeView(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case ViewSystem:
+		return ViewSystem
+	case ViewHidden:
+		return ViewHidden
+	default:
+		return ViewApps
+	}
 }
 
 // Folder is a directory Maison creates (and takes ownership of) before it

@@ -200,7 +200,7 @@ func (s *Scheduler) canBackUpUserData() bool {
 //     exactly like an app — deliberately, so the dashboard tiles itself. Stopping it
 //     would kill the process running the backup, and the run would end mid-flight
 //     with nothing to report it.
-//   - Protected apps: the platform's own pieces, which is what ProtectedApps names.
+//   - System apps: the platform's own pieces, which is what `view: system` names.
 //     Taking the gateway or the dashboard down nightly is not a backup strategy.
 //
 // The cost is that platform state is not backed up by the schedule. That is a
@@ -210,7 +210,7 @@ func (s *Scheduler) skip(name string) bool {
 	if filepath.Clean(filepath.Join(s.cfg.AppsDir(), name)) == filepath.Clean(s.cfg.StateDir()) {
 		return true
 	}
-	return s.cfg.IsProtected("", name)
+	return s.apps.Protected(name)
 }
 
 // RunAll backs up every target, one at a time.

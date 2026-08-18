@@ -1,5 +1,6 @@
 {
   "app": "App",
+  "system": "System",
   "app_store": "App Store",
   "system_status": "System status",
   "storage": "Storage",

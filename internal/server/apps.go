@@ -51,6 +51,12 @@ func (s *Server) handleAppAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown action"})
 		return
 	}
+	// A stop aimed at a system app is refused, not failed: the UI withholds the
+	// menu entry, and the API says why for anything that asks anyway.
+	if errors.Is(err, apps.ErrProtected) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

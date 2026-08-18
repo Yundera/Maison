@@ -53,9 +53,19 @@ type App struct {
 	// "unhealthy", "starting", or "" when no container declares a health check.
 	// Drives the tile's top-left status dot (green/orange).
 	Health string `json:"health,omitempty"`
-	// Protected marks an app the operator pinned via PROTECTED_APPS (matched on
-	// store id, e.g. "maison"): it shows as a normal tile but its Uninstall
-	// entry is hidden and the DELETE endpoint refuses it.
+	// View is the dashboard grid this tile belongs in — "apps" (the default),
+	// "system", or "hidden" (no tile at all). Declared by the app's own
+	// x-compose-app `view`; see xcomposeapp.NormalizeView.
+	View string `json:"view,omitempty"`
+	// Protected marks a system app: it renders as an ordinary tile in the System
+	// grid, but Maison refuses to stop or uninstall it (the menu withholds those
+	// entries and the API answers 403), and the backup scheduler skips it.
+	//
+	// It is derived from View in one place — buildApp — rather than resolved
+	// independently by each guard, so the tile, the API and the scheduler cannot
+	// disagree about what is protected. That single derivation is also where an
+	// explicit `protected:` key would slot in, should a system-looking app ever
+	// need to stay uninstallable.
 	Protected bool `json:"protected,omitempty"`
 	// Busy is set while a lifecycle operation (start/stop/restart/uninstall) is
 	// in flight for this app. The tile then shows a "…" overlay and hides its
@@ -128,10 +138,16 @@ type Registry struct {
 	StoppedPassTimeout time.Duration
 
 	mu         sync.Mutex
+	views      map[string]string          // app id -> view from the last listing
 	busy       map[string]int             // app id -> in-flight operation count
 	uninstalls map[string]*UninstallState // app id -> live uninstall progress
 	backups    map[string]*BackupState    // app id -> live backup/restore progress
 }
+
+// workingDirTimeout bounds the Docker lookup that locates an unmanaged stack's
+// compose. It is only reached when the app list hasn't been built yet, so a
+// slow or wedged daemon costs one guard check, not the dashboard.
+const workingDirTimeout = 5 * time.Second
 
 // New creates a Registry.
 func New(cfg config.Config, dx *dockerx.Client) *Registry {
@@ -276,7 +292,6 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 			app = buildApp(name, si, ca, r.cfg.AppDomain(), true, StatusStopped, nil)
 		}
 		app.Busy = r.isBusy(name)
-		app.Protected = r.cfg.IsProtected(app.Store, name)
 		out = append(out, app)
 		seen[name] = true
 	}
@@ -294,13 +309,39 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 		app := buildApp(name, si, ca, r.cfg.AppDomain(), false, statusOf(ps.running, ps.total), ps.svcPorts)
 		app.Health = ps.health()
 		app.Busy = r.isBusy(name)
-		app.Protected = r.cfg.IsProtected(app.Store, name)
 		out = append(out, app)
 		seen[name] = true
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	r.rememberViews(out)
 	return out, nil
+}
+
+// rememberViews caches the view resolved for each app on the last listing.
+//
+// The list is rebuilt constantly (every WebSocket broadcast), so this is the
+// cheap path for Protected(): it answers from metadata already parsed, and keeps
+// answering for a *stopped* unmanaged stack — whose compose location is only
+// knowable from a running container. Without the cache, stopping Docker or
+// stopping the stack would quietly unprotect it.
+func (r *Registry) rememberViews(list []App) {
+	views := make(map[string]string, len(list))
+	for _, a := range list {
+		views[a.ID] = a.View
+	}
+	r.mu.Lock()
+	r.views = views
+	r.mu.Unlock()
+}
+
+// cachedView returns the view remembered for an app by the last List, and
+// whether it was known at all.
+func (r *Registry) cachedView(id string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.views[id]
+	return v, ok
 }
 
 func (r *Registry) isManaged(project string) bool {
@@ -410,7 +451,7 @@ func statusOf(running, total int) string {
 }
 
 func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain string, managed bool, status string, svcPorts map[string][]dockerx.Port) App {
-	app := App{ID: name, Name: name, Managed: managed, Status: status}
+	app := App{ID: name, Name: name, Managed: managed, Status: status, View: xcomposeapp.ViewApps}
 	if si != nil {
 		if t := xcasaos.Localized(si.Title); t != "" {
 			app.Name = t
@@ -440,7 +481,11 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 			app.Store = ca.ID
 		}
 		app.URL = ca.WebURL(domain)
+		app.View = xcomposeapp.NormalizeView(ca.View)
 	}
+	// A system app is a protected app: no stop, no uninstall, no scheduled
+	// backup. One derivation for all three (see the Protected field).
+	app.Protected = app.View == xcomposeapp.ViewSystem
 	// Prefer the container's ACTUAL published host port so "Open" works without a
 	// gateway. Only when x-compose-app gave no URL and no hostname (gateway route)
 	// is configured.
@@ -599,7 +644,14 @@ func (r *Registry) Republish(ctx context.Context) {
 	r.changed()
 }
 
+// Stop brings a project down. A system app is refused: stopping the dashboard —
+// or the gateway in front of it — takes the UI down with the request that asked
+// for it, and nothing is left to start it again. Restart stays available, since
+// the stack comes back on its own.
 func (r *Registry) Stop(ctx context.Context, id string) error {
+	if r.Protected(id) {
+		return ErrProtected
+	}
 	r.enter(id)
 	defer r.leave(id)
 	return r.dx.StopProject(ctx, id)
@@ -611,16 +663,52 @@ func (r *Registry) Restart(ctx context.Context, id string) error {
 	return r.dx.RestartProject(ctx, id)
 }
 
-// Protected reports whether the app is exempt from uninstall, resolving its store
-// id from its compose metadata (falling back to the project name).
+// Protected reports whether the app is a system app — exempt from stop and
+// uninstall, and skipped by the backup scheduler.
 func (r *Registry) Protected(id string) bool {
-	storeID := ""
-	si, ca := r.metaFor(id, "")
-	if si != nil {
-		storeID = si.StoreAppID
+	return r.viewOf(id) == xcomposeapp.ViewSystem
+}
+
+// viewOf resolves an app's declared view: from the last listing when it is
+// known, else straight from the app's compose.
+//
+// The working-dir lookup in the fallback is not optional. An unmanaged stack has
+// no folder under AppsDir, so metaFor can only reach its compose through the
+// directory Docker reports for the project — and the platform's own discovered
+// stacks are exactly the apps this guard exists for. Resolving them with an empty
+// working dir would find no metadata, report "not a system app", and silently
+// drop the guard from the stacks whose removal is fatal.
+func (r *Registry) viewOf(id string) string {
+	if v, ok := r.cachedView(id); ok {
+		return v
 	}
-	if ca != nil && ca.ID != "" {
-		storeID = ca.ID
+	workingDir := ""
+	if !r.isManaged(id) {
+		workingDir = r.workingDirOf(id)
 	}
-	return r.cfg.IsProtected(storeID, id)
+	_, ca := r.metaFor(id, workingDir)
+	if ca == nil {
+		return xcomposeapp.ViewApps
+	}
+	return xcomposeapp.NormalizeView(ca.View)
+}
+
+// workingDirOf returns the directory Docker reports for a project's containers,
+// or "" when Docker doesn't answer or nothing of the project is up.
+func (r *Registry) workingDirOf(project string) string {
+	if r.dx == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), workingDirTimeout)
+	defer cancel()
+	conts, err := r.dx.ListProjectContainers(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, c := range conts {
+		if c.Project == project && c.WorkingDir != "" {
+			return c.WorkingDir
+		}
+	}
+	return ""
 }

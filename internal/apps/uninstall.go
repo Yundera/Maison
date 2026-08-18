@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// ErrProtected is returned when an uninstall targets an app the operator listed
-// in PROTECTED_APPS (see config.Config.IsProtected).
-var ErrProtected = errors.New("this app is protected and cannot be uninstalled")
+// ErrProtected is returned when a stop or an uninstall targets a system app —
+// one whose compose declares `view: system` (see Registry.Protected).
+var ErrProtected = errors.New("this is a system app and cannot be stopped or uninstalled")
 
 // Uninstall phases, in order.
 const (
@@ -48,7 +48,7 @@ type UninstallState struct {
 // progress so it rides the live app list — the confirmation dialog can close
 // immediately and the tile carries the (red) progress bars to the end.
 //
-// It returns only the errors that are knowable up front: a protected app. The
+// It returns only the errors that are knowable up front: a system app. The
 // uninstall itself runs on a background context, so it is NOT cancelled when the
 // caller goes away; its failure lands in the tracked state (Phase == error) and
 // stays on the tile until it is retried or dismissed.

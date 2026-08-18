@@ -72,6 +72,7 @@ x-compose-app:
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | url | no | Tile icon. | `icon` |
 | `category` | string | no | Store grouping. | `category` |
+| **`view`** | `apps` \| `system` \| `hidden` | no (default `apps`) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
 | `description` | string \| localized | no | Store long description (Markdown). | `description` |
 | `developer` | string | no | Store attribution. | `developer` / `author` |
@@ -207,6 +208,61 @@ pulled, before any hook runs, and before the containers start — on the first b
 
 [`lifecycle.md`](./lifecycle.md) is authoritative for these sequences, and covers
 what the other operations (start, restart, update, save, uninstall) do with them.
+
+---
+
+## Views
+
+`view` says which of the dashboard's grids an app's tile belongs to. It is
+presentation, not capability — with one deliberate exception, below.
+
+| Value | The tile |
+|---|---|
+| `apps` (default) | The ordinary app grid, alongside everything else. |
+| `system` | The **System** grid, and the app is **protected** (below). |
+| `hidden` | No tile at all. |
+
+The dashboard's section heading becomes an **App / System** switch as soon as one
+app declares `view: system`, and is a plain heading otherwise — a deployment that
+declares nothing looks exactly as it did.
+
+```yaml
+x-compose-app:
+  view: system
+```
+
+`view` does **not** raise `schema_version`. A Maison that predates it ignores the
+key and renders the app in the ordinary grid, which is where the app would have
+been anyway — a version gate would turn a cosmetic hint into a refusal to start
+the app at all. Note the consequence for `system`: on an older build the app is
+also not protected.
+
+An unrecognised value falls back to `apps` rather than failing the app, in
+keeping with "unknown keys are tolerated and skipped".
+
+### `view: system` protects the app
+
+A system app is the platform itself — the dashboard, the gateway in front of it,
+the host stack. Maison therefore refuses to take it down:
+
+| Operation | On a system app |
+|---|---|
+| **Stop** | Refused. The menu entry is withheld and the API answers `403`. Stopping the dashboard from its own tile takes the UI down with the click that asked for it, and leaves nothing running to bring it back. |
+| **Uninstall** | Refused, the same way. |
+| **Restart** | **Allowed** — the stack comes back on its own, so it is how a wedged platform app is recovered without an SSH session. |
+| **Start** | Allowed. |
+| **Scheduled backup** | Skipped. Backing an app up stops it, and taking the gateway down nightly is not a backup strategy (see [`lifecycle.md`](./lifecycle.md)). |
+
+This is the only protection mechanism; there is no operator-side list. An app is
+a system app because **its own compose says so** — which is what lets a stack
+Maison merely *discovered* be protected too: Maison reads `x-compose-app` from
+the compose in the directory Docker reports for the project, exactly as it does
+for the tile's icon and name.
+
+Being self-declared, it is a **foot-gun guard, not a security boundary**: Maison
+has no authentication, and for a managed app the operator can edit `view` out
+through Settings → override. That is deliberate — it is also the escape hatch for
+an operator who genuinely means to remove a platform piece.
 
 ---
 

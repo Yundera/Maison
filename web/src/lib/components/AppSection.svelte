@@ -9,10 +9,21 @@
   import { tileDragging } from '../stores/ui'
   import { t } from '../i18n'
 
+  // Which grid is on screen. The platform's own pieces declare `view: system` in
+  // their compose and get their own; everything else lands in the ordinary one.
+  // Deliberately NOT persisted across reloads: a dashboard that reopens on the
+  // System grid reads as "where did my apps go".
+  type View = 'apps' | 'system'
+  let view = $state<View>('apps')
+
   let items = $state<TileData[]>([])
   let dragging = $state(false)
   let addMenu = $state(false)
   let showLinkModal = $state(false)
+
+  // The switch only appears once there is something to switch to, so a box with
+  // no system apps looks exactly as it did before.
+  const hasSystem = $derived($apps.some((a) => a.view === 'system'))
 
   onMount(() => {
     loadApps()
@@ -27,17 +38,26 @@
       return []
     }
   }
+  /** Persist the visible grid's order, keeping every id it didn't show.
+   *  A drag only ever reorders one view; writing just those ids would drop the
+   *  other grid's arrangement the first time either is touched. */
   function saveOrder(ids: string[]) {
-    localStorage.setItem('maison.order', JSON.stringify(ids))
+    const rest = loadOrder().filter((id) => !ids.includes(id))
+    localStorage.setItem('maison.order', JSON.stringify([...ids, ...rest]))
   }
 
   const STORE_TILE: TileData = { kind: 'system', id: '__store', name: 'App Store' }
 
-  function buildOrdered(a: App[], l: Link[]): TileData[] {
-    const tiles: TileData[] = [
-      ...a.map((app) => ({ kind: 'app', id: 'app:' + app.id, app }) as TileData),
-      ...l.map((link) => ({ kind: 'link', id: link.id, link }) as TileData),
-    ]
+  /** The tiles for one view, in the operator's saved order.
+   *
+   *  `hidden` apps are in neither: they are infrastructure with nothing worth
+   *  clicking. External links and the App Store tile belong to the app grid —
+   *  the store installs apps, not platform pieces. */
+  function buildOrdered(v: View, a: App[], l: Link[]): TileData[] {
+    const tiles: TileData[] = a
+      .filter((app) => (app.view ?? 'apps') === v)
+      .map((app) => ({ kind: 'app', id: 'app:' + app.id, app }) as TileData)
+    if (v === 'apps') tiles.push(...l.map((link) => ({ kind: 'link', id: link.id, link }) as TileData))
     const order = loadOrder()
     const rank = (id: string) => {
       const i = order.indexOf(id)
@@ -45,15 +65,23 @@
     }
     tiles.sort((x, y) => rank(x.id) - rank(y.id))
     // App Store system tile is always pinned first.
-    return [STORE_TILE, ...tiles]
+    return v === 'apps' ? [STORE_TILE, ...tiles] : tiles
   }
 
-  // Rebuild the grid when apps/links change, except while a drag is in flight.
+  // Rebuild the grid when the view or apps/links change, except while a drag is
+  // in flight.
   $effect(() => {
+    const v = view
     const a = $apps
     const l = $links
     if (dragging) return
-    items = buildOrdered(a, l)
+    items = buildOrdered(v, a, l)
+  })
+
+  // The last system app can be uninstalled (or stop declaring itself one) while
+  // its grid is on screen; fall back rather than leave an empty one showing.
+  $effect(() => {
+    if (!hasSystem && view === 'system') view = 'apps'
   })
 
   function onConsider(e: CustomEvent<{ items: TileData[] }>) {
@@ -76,20 +104,35 @@
 
 <section class="app-section">
   <header class="section-header">
-    <h1>{$t('app')}</h1>
-    <div class="add-wrap">
-      <button class="add" title="Add" aria-label="Add" onclick={() => (addMenu = !addMenu)}>+</button>
-      {#if addMenu}
-        <div class="add-menu" use:clickOutside={() => (addMenu = false)}>
-          <button
-            onclick={() => {
-              addMenu = false
-              showLinkModal = true
-            }}>{$t('add_external_link')}</button
-          >
-        </div>
-      {/if}
-    </div>
+    {#if hasSystem}
+      <h1 class="views">
+        <button class:active={view === 'apps'} aria-pressed={view === 'apps'} onclick={() => (view = 'apps')}
+          >{$t('app')}</button
+        >
+        <button class:active={view === 'system'} aria-pressed={view === 'system'} onclick={() => (view = 'system')}
+          >{$t('system')}</button
+        >
+      </h1>
+    {:else}
+      <h1>{$t('app')}</h1>
+    {/if}
+    <!-- An external link is a shortcut the operator adds to their own grid;
+         there is nothing to add to the platform's. -->
+    {#if view === 'apps'}
+      <div class="add-wrap">
+        <button class="add" title="Add" aria-label="Add" onclick={() => (addMenu = !addMenu)}>+</button>
+        {#if addMenu}
+          <div class="add-menu" use:clickOutside={() => (addMenu = false)}>
+            <button
+              onclick={() => {
+                addMenu = false
+                showLinkModal = true
+              }}>{$t('add_external_link')}</button
+            >
+          </div>
+        {/if}
+      </div>
+    {/if}
   </header>
 
   <div
@@ -120,6 +163,28 @@
     font-size: 1.5rem;
     font-weight: 600;
     margin: 0;
+  }
+  /* The heading becomes the switch: same type, the inactive view dimmed rather
+     than boxed, so the row still reads as a title and not as a toolbar. */
+  .views {
+    display: flex;
+    gap: 1rem;
+  }
+  .views button {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    opacity: 0.45;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .views button:hover {
+    opacity: 0.75;
+  }
+  .views button.active {
+    opacity: 1;
   }
   .add-wrap {
     position: relative;

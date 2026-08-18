@@ -127,8 +127,14 @@
         {#if tile.app.status === 'stopped'}
           <button onclick={() => act('start')}>{$t('start')}</button>
         {:else}
+          <!-- A system app keeps Restart but not Stop: stopping the dashboard (or
+               the gateway in front of it) takes the UI down with the click that
+               asked for it, and leaves nothing running to bring it back. The
+               server refuses both stop and uninstall for these too. -->
           <button onclick={() => act('restart')}>{$t('restart')}</button>
-          <button onclick={() => act('stop')}>{$t('stop')}</button>
+          {#if !tile.app.protected}
+            <button onclick={() => act('stop')}>{$t('stop')}</button>
+          {/if}
         {/if}
         {#if !tile.app.protected}
           <button class="danger" onclick={remove}>{$t('uninstall')}</button>

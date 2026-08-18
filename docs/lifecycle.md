@@ -199,7 +199,7 @@ format and the restore path.
 ### Detached, like an install
 
 `DELETE /api/apps/{id}` **starts** the uninstall and returns `202 Accepted`; only an
-up-front refusal (a protected app → `403`) is answered synchronously. The work runs
+up-front refusal (a system app → `403`) is answered synchronously. The work runs
 on a background context, so it survives the request, and the confirmation dialog
 closes at once instead of blocking the dashboard on a zip that can take minutes.
 
@@ -332,7 +332,7 @@ Four properties that are not obvious from "run it daily":
 - **Jitter.** A fleet all firing at 03:30 is a thundering herd against one bucket.
   The offset is derived from the data path, so it is stable per box.
 - **Two apps are never targets:** Maison's own state directory (stopping it kills
-  the process running the backup) and anything in `PROTECTED_APPS`. Platform state
+  the process running the backup) and any app declaring `view: system`. Platform state
   is therefore not covered by the schedule — a deliberate gap, because covering it
   properly means backing it up *without* stopping it.
 

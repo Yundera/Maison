@@ -11,7 +11,7 @@
 #
 # That is the whole separation. What an app receives is stated here. What Maison
 # needs to run itself stays in its own environment (DATA_ROOT, APPSTORE_URL,
-# PROTECTED_APPS, …) and is never forwarded.
+# HTTP_ADDR, …) and is never forwarded.
 #
 # A few variables are NOT listed here because Maison derives them per app and
 # per install — AppID, PUID, PGID, TZ, DATA_ROOT, DATA_HOST_PATH. They are merged

@@ -3,7 +3,7 @@
 //
 // CasaOS mixes the variables it needs to run with the variables it forwards to the
 // apps it manages, in one environment. Maison separates them: what Maison needs
-// stays in Maison's own environment (DATA_ROOT, APPSTORE_URL, PROTECTED_APPS, …)
+// stays in Maison's own environment (DATA_ROOT, APPSTORE_URL, HTTP_ADDR, …)
 // and is never forwarded; what an app receives is written in .env.app, which lives
 // with the deployment's data rather than in Maison's compose. Nothing is in both,
 // so there is no question of which one wins.

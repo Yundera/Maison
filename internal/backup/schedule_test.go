@@ -31,7 +31,19 @@ func newScheduler(t *testing.T, appNames ...string) (*Scheduler, *backupconfig.S
 		}
 	}
 	store := backupconfig.New(filepath.Join(cfg.StateDir(), "backup.json"))
-	return NewScheduler(cfg, nil, New(), store), store
+	// A real registry, because the run's skip guard asks it which apps are system
+	// apps — that answer comes from each app's compose, not from configuration.
+	return NewScheduler(cfg, apps.New(cfg, nil), New(), store), store
+}
+
+// seedSystemApp gives an app dir a compose that declares it a platform piece.
+func seedSystemApp(t *testing.T, cfg config.Config, name string) {
+	t.Helper()
+	body := "services: {}\nx-compose-app:\n  view: system\n"
+	path := filepath.Join(cfg.AppsDir(), name, "docker-compose.yml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The run enumerates apps with the same guard the on-disk paths use, so the
@@ -48,6 +60,23 @@ func TestTargetsSkipNonProjects(t *testing.T) {
 	}
 	want := "app:immich app:jellyfin"
 	if strings.Join(got, " ") != want {
+		t.Fatalf("Targets = %v, want %q", got, want)
+	}
+}
+
+// A system app is left out of the nightly run: backing an app up stops it, and
+// the platform's own pieces are exactly the ones that must not go down at 03:30.
+func TestTargetsSkipSystemApps(t *testing.T) {
+	s, store := newScheduler(t, "jellyfin", "yundera")
+	seedSystemApp(t, s.cfg, "yundera")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tg := range s.Targets() {
+		got = append(got, tg.ID())
+	}
+	if want := "app:jellyfin"; strings.Join(got, " ") != want {
 		t.Fatalf("Targets = %v, want %q", got, want)
 	}
 }

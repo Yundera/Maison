@@ -207,6 +207,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 
 		r.Get("/settings", s.handleGetSettings)
 		r.Put("/settings", s.handlePutSettings)
+		r.Get("/settings/domains", s.handleGetDomains)
 		r.Put("/settings/domains", s.handlePutDomains)
 		r.Get("/settings/appenv", s.handleGetAppEnv)
 		r.Put("/settings/appenv", s.handlePutAppEnv)

@@ -27,9 +27,35 @@ services:
       caddy_0.reverse_proxy: "{{upstreams 80}}"
 `
 
+// deployVars are the interpolation variables of the box these tests describe —
+// the two spellings of its public IP that a real PCS carries at once, and the two
+// of its domain. syncEnv resolves against them; sync does not resolve at all.
+var deployVars = map[string]string{
+	"APP_PUBLIC_IP_DASH": "10-0-0-1",
+	"PUBLIC_IP_DASH":     "10-0-0-1",
+	"APP_DOMAIN":         "box.example.com",
+	"DOMAIN":             "box.example.com",
+}
+
+func resolveWith(vars map[string]string) Resolver {
+	return func(host string) string {
+		return varRef.ReplaceAllStringFunc(host, func(ref string) string {
+			if v, ok := vars[strings.Trim(ref, "${}")]; ok {
+				return v
+			}
+			return ref
+		})
+	}
+}
+
 func sync(t *testing.T, base, override string, doms []domains.Domain) string {
 	t.Helper()
-	out, err := Sync([]byte(base), []byte(override), doms)
+	return syncWith(t, base, override, doms, nil)
+}
+
+func syncWith(t *testing.T, base, override string, doms []domains.Domain, resolve Resolver) string {
+	t.Helper()
+	out, err := Sync([]byte(base), []byte(override), doms, resolve)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -74,7 +100,7 @@ func TestSyncIsIdempotent(t *testing.T) {
 func TestSyncRemovesItsOwnRoutes(t *testing.T) {
 	generated := sync(t, outlineBase, "", yundera)
 
-	out, err := Sync([]byte(outlineBase), []byte(generated), nil)
+	out, err := Sync([]byte(outlineBase), []byte(generated), nil, nil)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -114,7 +140,7 @@ x-compose-app:
 	}
 
 	// And removing the domains again leaves their file untouched.
-	out, err := Sync([]byte(outlineBase), []byte(got), nil)
+	out, err := Sync([]byte(outlineBase), []byte(got), nil, nil)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -242,5 +268,68 @@ func TestVarsCoversTheLabelsCompose(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("Vars() = %v, want %v", got, want)
 		}
+	}
+}
+
+// maisonBase is Maison's own stack as a PCS writes it — the older, un-prefixed
+// spelling of the deployment's variables. It routes the same three hosts a store
+// app does, under different names for the same values.
+const maisonBase = `name: maison
+services:
+  maison:
+    image: rg.fr-par.scw.cloud/aptero/maison:1.0.0
+    labels:
+      caddy_0: maison-${DOMAIN}
+      caddy_0.import: gateway_tls
+      caddy_0.reverse_proxy: "{{upstreams 80}}"
+      caddy_1: maison-${PUBLIC_IP_DASH}.nip.io
+      caddy_1.import: gateway_tls
+      caddy_1.reverse_proxy: "{{upstreams 80}}"
+      caddy_2: maison-${PUBLIC_IP_DASH}.sslip.io
+      caddy_2.reverse_proxy: "{{upstreams 80}}"
+`
+
+// TestSyncSkipsAHostAlreadyRoutedUnderAnotherSpelling is the bug this resolution
+// exists for. `${PUBLIC_IP_DASH}` and `${APP_PUBLIC_IP_DASH}` are one address, so
+// a compose already carrying `maison-${PUBLIC_IP_DASH}.nip.io` is already on the
+// configured nip domain — generating for it published the dashboard twice on
+// `maison-10-0-0-1.nip.io`, once with gateway_tls and once without, and left
+// whichever Caddy picked to decide the TLS.
+func TestSyncSkipsAHostAlreadyRoutedUnderAnotherSpelling(t *testing.T) {
+	got := syncWith(t, maisonBase, "", yundera, resolveWith(deployVars))
+
+	if strings.Contains(got, "caddy_3") || strings.Contains(got, "caddy_4") {
+		t.Errorf("generated a route onto a host the base already serves:\n%s", got)
+	}
+	if got != "" {
+		t.Errorf("nothing to generate and no override to keep, want an empty file:\n%s", got)
+	}
+}
+
+// The other half: resolution must not make Maison blind to a domain that is
+// genuinely new. Same base, same variables, a domain the box does not serve yet.
+func TestSyncStillGeneratesForAnUnroutedDomain(t *testing.T) {
+	lan := []domains.Domain{{Name: "lan", Domain: "lan.example.com"}}
+	got := syncWith(t, maisonBase, "", lan, resolveWith(deployVars))
+
+	if !strings.Contains(got, "caddy_3: maison-lan.example.com") {
+		t.Errorf("want a generated route on the new domain:\n%s", got)
+	}
+}
+
+// A previously generated route written with the other spelling must still be
+// recognised as sitting on a configured domain, or removing the domain would
+// leave it behind forever.
+func TestDropRecognisesAGeneratedRouteUnderAnotherSpelling(t *testing.T) {
+	stale := `services:
+  outline:
+    labels:
+      caddy_9: outline-${PUBLIC_IP_DASH}.nip.io
+      caddy_9.reverse_proxy: "{{upstreams 80}}"
+`
+	got := syncWith(t, outlineBase, stale, yundera, resolveWith(deployVars))
+
+	if strings.Contains(got, "caddy_9") {
+		t.Errorf("stale route on a configured domain survived:\n%s", got)
 	}
 }

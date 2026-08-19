@@ -43,6 +43,32 @@ anything about this, and never has to: `directives` is where it lives.
 The list is empty by default — apps are then reachable only at the primary domain,
 exactly as their compose routes them.
 
+## The settings panel
+
+**Settings › Domains** edits exactly this list, and is built to say what the list
+*is*:
+
+- **The primary domain is shown first, read-only** — as the token an app's own
+  route is written with (`${APP_DOMAIN}`) and as the host it currently resolves to,
+  with the label a store app already carries. An extra name means nothing without
+  the name it is extra to, and a list on its own reads like a domain switcher.
+- **Nothing is preset.** sslip.io and nip.io used to be one-click chips here, which
+  put a Yundera deployment's routing policy in the dashboard's UI. Every entry is
+  written by the operator; the panel lists the interpolation variables this
+  deployment actually has (read off `.env.app`) so a templated host is discoverable
+  without naming a wildcard DNS service.
+- **Directives are editable per entry**, as key/value rows, because that is where
+  the difference between two domains lives — the same app, on one host with
+  `import: gateway_tls` and on another with nothing at all. Each entry previews the
+  label group it generates, resolved against this deployment's variables.
+- **Applying is explicit.** Saving rewrites every app's override and recreates every
+  running container (below), so an editing session is batched behind one button
+  rather than fired per keystroke.
+
+The panel is served by `GET`/`PUT /api/settings/domains`; the GET carries the
+primary domain and the routing variables alongside the list. Only the routing
+family of `.env.app` travels — that file also holds the seeded admin password.
+
 ## What gets generated
 
 For each service, Maison finds every `caddy_N` label whose host references the
@@ -81,6 +107,16 @@ Four rules make that work:
 - **A host that is already routed is skipped**, whether the store shipped it or the
   operator wrote it. So an app store that still carries its own `sslip.io` labels is
   never published twice, and Maison can be rolled out before the store is trimmed.
+  "Already routed" is decided on the **resolved** host, not on the written text: a
+  compose can reach one address through two spellings of the same variable — the
+  PCS's own stack writes `maison-${PUBLIC_IP_DASH}.nip.io` while the configured
+  domain is `${APP_PUBLIC_IP_DASH}.nip.io` — and compared as text those look like
+  two hosts, which published the app twice on one name with two different TLS
+  settings. `stackup.SyncRoutes` resolves with the variables `docker compose` will
+  interpolate the labels with (`envinject.Render`); a reference that cannot be
+  resolved is left as written, so two genuinely unknown hosts never collapse into
+  each other. The same resolution decides which stale override routes belong to a
+  configured domain and get cleaned up.
 
 Indices are allocated after the highest one either file already uses, so a
 generated route never lands on top of a hand-written one.

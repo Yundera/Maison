@@ -74,8 +74,6 @@
     {/if}
   </header>
 
-  <p class="callout">{$t('app_env_owner')}</p>
-
   {#if loading}
     <p class="note">{$t('loading')}</p>
   {:else}
@@ -131,17 +129,6 @@
   }
   .hint code {
     font-size: 0.75rem;
-  }
-  /* The file has another writer on a PCS — say so before they edit it. */
-  .callout {
-    margin: 0;
-    padding: 0.6rem 0.75rem;
-    border-radius: 6px;
-    background: hsla(208, 16%, 96%, 1);
-    border-left: 3px solid var(--primary);
-    font-size: 0.78rem;
-    line-height: 1.45;
-    color: var(--grey-600);
   }
   textarea {
     width: 100%;

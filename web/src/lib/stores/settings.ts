@@ -56,17 +56,41 @@ settings.subscribe((s) => {
 })
 
 /**
+ * The domains editor's payload: the additional domains, plus the primary domain
+ * they are added to.
+ *
+ * The primary one travels with the list because the list alone does not say what
+ * it is a list *of* — an extra name is meaningless without the name it is extra
+ * to. It is read-only here: it comes from each app's own compose route
+ * (`myapp-${APP_DOMAIN}`), which Maison never edits.
+ */
+export interface DomainsView {
+  /** The placeholder an app's own route is written with, e.g. `${APP_DOMAIN}`. */
+  primaryToken: string
+  /** What that placeholder resolves to on this box; '' when the box has no domain. */
+  primaryHost: string
+  domains: Domain[]
+  /** The .env.app routing variables a host template may interpolate, so the
+   *  editor can resolve a preview before the value is written onto every app. */
+  vars: Record<string, string>
+}
+
+export const loadDomains = () => api.get<DomainsView>('/api/settings/domains')
+
+/**
  * Replace the additional domains apps are published on.
  *
  * Domains have their own endpoint rather than riding the debounced save above:
  * the server rewrites every app's Caddy labels and recreates its containers to
- * pick them up, which is not something to fire off between keystrokes. Resolves
- * once the settings are saved — the republish continues in the background, and
- * the tiles show it.
+ * pick them up, which is not something to fire off between keystrokes — which is
+ * also why the editor batches an editing session behind an explicit apply rather
+ * than saving each field. Resolves once the settings are saved; the republish
+ * continues in the background, and the tiles show it.
  */
-export async function saveDomains(list: Domain[]): Promise<void> {
-  const saved = await api.put<Domain[]>('/api/settings/domains', list)
-  settings.update((s) => ({ ...s, domains: saved ?? [] }))
+export async function saveDomains(list: Domain[]): Promise<DomainsView> {
+  const view = await api.put<DomainsView>('/api/settings/domains', list)
+  settings.update((s) => ({ ...s, domains: view?.domains ?? [] }))
+  return view
 }
 
 export const wallpaper = derived(settings, ($s) => $s.wallpaper)

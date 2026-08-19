@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/yundera/maison/internal/appenv"
+	"github.com/yundera/maison/internal/caddyroutes"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/envinject"
@@ -31,6 +32,72 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.settings.Get())
 }
 
+// domainsView is the domains editor's payload.
+//
+// It carries more than the list it edits, because the list on its own does not say
+// what it is a list *of*: an operator looking at "sslip → ${APP_PUBLIC_IP_DASH}.sslip.io"
+// cannot tell whether it is an addition to the deployment's domain or a replacement
+// of it. So the primary domain travels with it — as the token a compose label is
+// actually written with, and as the host that token currently resolves to.
+type domainsView struct {
+	// PrimaryToken is the placeholder a store app's own route is templated with
+	// (`${APP_DOMAIN}`). Shown read-only: it comes from the app's compose, which
+	// Maison never edits.
+	PrimaryToken string `json:"primaryToken"`
+
+	// PrimaryHost is what that token resolves to on this box (.env.app's APP_DOMAIN),
+	// or "" on a deployment with no domain — in which case apps have no reachable
+	// web address at all and the editor says so.
+	PrimaryHost string `json:"primaryHost"`
+
+	// Domains is the operator's list of additional domains.
+	Domains []domains.Domain `json:"domains"`
+
+	// Vars are the .env.app variables a domain template may interpolate, so the
+	// editor can preview the host a template resolves to before it is saved onto
+	// every app.
+	//
+	// Deliberately not all of .env.app: that file also carries the seeded admin
+	// password, which has no business in this endpoint. Only the routing family
+	// travels.
+	Vars map[string]string `json:"vars"`
+}
+
+// routingVarPrefixes selects the .env.app keys that are about *where an app is
+// reached*, which are the only ones a domain template has any use for. See
+// internal/appenv's default file: they are one commented section of it.
+var routingVarPrefixes = []string{"APP_DOMAIN", "APP_PUBLIC_IP", "domain"}
+
+// domainsView builds the editor's payload from the live settings and .env.app.
+//
+// Both halves come from one read of .env.app — the same source Config.AppDomain
+// reads, but taken here directly, like the .env.app editor beside it does. That
+// keeps the shown primary host and the shown variables from ever disagreeing.
+func (s *Server) domainsView() domainsView {
+	env := appenv.Load(s.cfg)
+	vars := map[string]string{}
+	for k, v := range env {
+		for _, p := range routingVarPrefixes {
+			if strings.HasPrefix(k, p) {
+				vars[k] = v
+				break
+			}
+		}
+	}
+	return domainsView{
+		PrimaryToken: caddyroutes.PrimaryToken,
+		PrimaryHost:  env["APP_DOMAIN"],
+		Domains:      s.settings.Get().Domains,
+		Vars:         vars,
+	}
+}
+
+// handleGetDomains returns the domains editor's payload: the additional domains
+// plus the primary domain they are added to.
+func (s *Server) handleGetDomains(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.domainsView())
+}
+
 // handlePutDomains replaces the additional domains apps are published on, then
 // republishes the running ones onto the new list.
 //
@@ -45,13 +112,42 @@ func (s *Server) handlePutDomains(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
+	seen := map[string]bool{}
 	for i := range in {
 		in[i].Name = strings.TrimSpace(in[i].Name)
 		in[i].Domain = strings.TrimSpace(in[i].Domain)
 		if in[i].Name == "" || in[i].Domain == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "each domain needs a name and a domain"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "each domain needs a name and a host"})
 			return
 		}
+		if strings.ContainsAny(in[i].Domain, " \t") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a host cannot contain spaces: " + in[i].Domain})
+			return
+		}
+		// The editor keys its rows on the host, generation skips a host that is
+		// already routed, and two rows on one host would fight over the same
+		// generated route. One entry per host.
+		if seen[in[i].Domain] {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "that host is already in the list: " + in[i].Domain})
+			return
+		}
+		seen[in[i].Domain] = true
+
+		// Directives come from a key/value editor, which is free to hand back the
+		// blank row someone opened and did not fill in. Drop those rather than
+		// writing an empty Caddy sub-directive into every app's override.
+		clean := map[string]string{}
+		for k, v := range in[i].Directives {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			clean[k] = strings.TrimSpace(v)
+		}
+		if len(clean) == 0 {
+			clean = nil
+		}
+		in[i].Directives = clean
 	}
 
 	cur := s.settings.Get()
@@ -63,7 +159,7 @@ func (s *Server) handlePutDomains(w http.ResponseWriter, r *http.Request) {
 	if s.apps != nil {
 		go s.apps.Republish(context.Background())
 	}
-	writeJSON(w, http.StatusOK, s.settings.Get().Domains)
+	writeJSON(w, http.StatusOK, s.domainsView())
 }
 
 // appEnvBody is the .env.app editor's payload.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/yundera/maison/internal/caddyroutes"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/envinject"
 )
 
 // SyncRoutes reconciles the app's generated Caddy routes — the ones publishing it
@@ -39,7 +40,17 @@ func SyncRoutes(cfg config.Config, project, dir string, files []string) []string
 	}
 	override, _ := os.ReadFile(overridePath)
 
-	out, err := caddyroutes.Sync(base, override, doms)
+	// Host identity is decided on the resolved host, not on the written text — the
+	// same variables `docker compose` will interpolate the labels with when it
+	// brings this stack up (envinject.Render: the process environment, Maison's
+	// base variables, then the app's own .env). Without it a route already declared
+	// as `${PUBLIC_IP_DASH}.nip.io` reads as a different host from a domain
+	// configured as `${APP_PUBLIC_IP_DASH}.nip.io`, and the app is published twice
+	// on one name. See caddyroutes.Resolver.
+	appEnv, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	resolve := func(host string) string { return envinject.Render(host, cfg, project, appEnv) }
+
+	out, err := caddyroutes.Sync(base, override, doms, resolve)
 	if err != nil {
 		// A malformed override is the operator's to fix, and they can still see it in
 		// the YAML editor. Failing the up over it would strand the app with no way

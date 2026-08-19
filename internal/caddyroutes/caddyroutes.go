@@ -59,11 +59,18 @@ import (
 // of the product must not be able to reach — see internal/brand.
 const ManifestKey = "generated-routes"
 
+// PrimaryToken is the canonical placeholder for the deployment's primary domain
+// — the one a store app templates its single route with, and the one the settings
+// editor shows as the domain every additional domain is added *to*. It is exported
+// so the UI states the mechanism in the compose file's own vocabulary rather than
+// re-inventing a name for it.
+const PrimaryToken = "${APP_DOMAIN}"
+
 // primaryTokens are the placeholders a compose file uses for the deployment's
 // primary domain. A caddy label that references one of them is a route Maison
 // can republish; one that doesn't (a hardcoded host, an already-generated
 // sslip.io route) is left alone.
-var primaryTokens = []string{"${APP_DOMAIN}", "${DOMAIN}", "${domain}"}
+var primaryTokens = []string{PrimaryToken, "${DOMAIN}", "${domain}"}
 
 var (
 	caddyKey = regexp.MustCompile(`^caddy(_\d+)?$`)
@@ -71,14 +78,36 @@ var (
 	varRef   = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 )
 
+// Resolver expands a host's ${VAR} references the way `docker compose` will when
+// it reads the label off the file — the app's .env overlaid on the environment
+// Maison runs compose with (see envinject.Render).
+//
+// It exists because "is this host already routed?" cannot be answered on the
+// written text. A compose may reach the same host through different spellings of
+// the same variable: Maison's own stack writes `maison-${PUBLIC_IP_DASH}.nip.io`
+// while a configured domain is `${APP_PUBLIC_IP_DASH}.nip.io`, and both are
+// `maison-<ip>.nip.io` by the time Caddy sees them. Compared as text they look
+// like two hosts, and the app ends up published twice on one name with two
+// different TLS settings.
+//
+// A reference it cannot resolve is left as written, so two genuinely unknown
+// hosts never collapse into each other.
+type Resolver func(string) string
+
 // Sync reconciles the generated route groups in override against doms, using
 // base for the routes to clone. It returns the new override, or nil when nothing
 // is left in it and the file should be removed.
 //
+// resolve decides host identity (see Resolver); nil compares hosts as written,
+// which is right for a caller that has no environment to resolve against.
+//
 // It is a pure function over the two files' bytes: everything that decides the
 // output is in its arguments, which is what lets the whole rule be tested without
 // Docker, a store, or a filesystem.
-func Sync(base, override []byte, doms []domains.Domain) ([]byte, error) {
+func Sync(base, override []byte, doms []domains.Domain, resolve Resolver) ([]byte, error) {
+	if resolve == nil {
+		resolve = func(s string) string { return s }
+	}
 	baseRoot, err := yamlnode.Root(base)
 	if err != nil {
 		return nil, fmt.Errorf("docker-compose.yml: %w", err)
@@ -88,8 +117,8 @@ func Sync(base, override []byte, doms []domains.Domain) ([]byte, error) {
 		return nil, fmt.Errorf("docker-compose.override.yml: %w", err)
 	}
 
-	dropped := dropGenerated(overRoot, doms)
-	manifest := generate(baseRoot, overRoot, doms)
+	dropped := dropGenerated(overRoot, doms, resolve)
+	manifest := generate(baseRoot, overRoot, doms, resolve)
 
 	// Nothing was generated before and nothing is now — an app with no routes on the
 	// primary domain, or a deployment with no additional domains. Hand the override
@@ -163,7 +192,7 @@ type group struct {
 // generate clones every base route group that sits on the primary domain onto
 // each additional domain, writing the clones into the override. It returns the
 // manifest of what it wrote, keyed by service.
-func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain) map[string][]string {
+func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain, resolve Resolver) map[string][]string {
 	manifest := map[string][]string{}
 	if len(doms) == 0 {
 		return manifest
@@ -182,10 +211,14 @@ func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain) map[string][
 		// label itself, or because the operator wrote it by hand — is left to whoever
 		// declared it. This is what lets Maison run against a store that has not
 		// been trimmed yet without publishing every app twice.
+		//
+		// Keyed on the *resolved* host, because that is what decides whether two
+		// labels are the same route: `${PUBLIC_IP_DASH}` and `${APP_PUBLIC_IP_DASH}`
+		// are two names for one address (see Resolver).
 		routed := map[string]bool{}
 		for _, p := range append(append([]kv{}, baseLabels...), overLabels...) {
 			if caddyKey.MatchString(p.key) {
-				routed[p.val] = true
+				routed[resolve(p.val)] = true
 			}
 		}
 		next := nextIndex(baseLabels, overLabels)
@@ -198,10 +231,10 @@ func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain) map[string][
 			}
 			for _, d := range doms {
 				host := strings.ReplaceAll(g.host, token, d.Domain)
-				if routed[host] {
+				if routed[resolve(host)] {
 					continue
 				}
-				routed[host] = true
+				routed[resolve(host)] = true
 
 				key := fmt.Sprintf("caddy_%d", next)
 				next++
@@ -236,7 +269,7 @@ func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain) map[string][
 // the raw YAML view — any override route whose host sits on a configured domain.
 // It reports whether it removed anything, so a run with nothing to do can leave
 // the file alone entirely.
-func dropGenerated(overRoot *yaml.Node, doms []domains.Domain) bool {
+func dropGenerated(overRoot *yaml.Node, doms []domains.Domain, resolve Resolver) bool {
 	dropped := false
 	if prev := readManifest(overRoot); len(prev) > 0 {
 		dropped = true
@@ -253,7 +286,7 @@ func dropGenerated(overRoot *yaml.Node, doms []domains.Domain) bool {
 	for _, name := range yamlnode.Keys(svcs) {
 		labels := labelsNode(overRoot, name)
 		for _, g := range routeGroups(labelPairs(labels)) {
-			if !onAnyDomain(g.host, doms) {
+			if !onAnyDomain(g.host, doms, resolve) {
 				continue
 			}
 			dropped = true
@@ -266,9 +299,17 @@ func dropGenerated(overRoot *yaml.Node, doms []domains.Domain) bool {
 	return dropped
 }
 
-func onAnyDomain(host string, doms []domains.Domain) bool {
+// onAnyDomain reports whether host sits on one of the configured domains, on the
+// resolved host so that a route written with a different spelling of the same
+// variable is still recognised — otherwise a generated route from an older run
+// would never be cleaned up, which is the mirror image of the duplicate Resolver
+// exists to prevent.
+func onAnyDomain(host string, doms []domains.Domain, resolve Resolver) bool {
+	host = resolve(host)
 	for _, d := range doms {
-		if d.Domain != "" && strings.HasSuffix(host, d.Domain) {
+		// The resolved suffix is checked too: a domain that resolves to nothing
+		// would otherwise match every host and take the whole override with it.
+		if suffix := resolve(d.Domain); d.Domain != "" && suffix != "" && strings.HasSuffix(host, suffix) {
 			return true
 		}
 	}

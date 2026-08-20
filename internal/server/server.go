@@ -57,7 +57,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 
 	// Apps are published on the operator's additional domains, and they edit that
 	// list at runtime — so the Config every layer below copies reads it live rather
-	// than snapshotting it at boot. See internal/caddyroutes.
+	// than snapshotting it at boot. See internal/routes.
 	cfg.Domains = settings.Domains
 
 	s := &Server{

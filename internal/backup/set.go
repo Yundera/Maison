@@ -197,6 +197,28 @@ func (s *Set) ListAll(ctx context.Context, backupsDir, appsDir string) []apps.Ap
 		}
 	}
 
+	return groupApps(byApp, backupsDir, appsDir)
+}
+
+// ListAllIn is ListAll for ONE engine — the shape the Backups page reads, because it
+// shows a tab per engine and each tab is that engine's repository, not a view of a
+// union. Totals are per engine for the same reason: a header summing across engines
+// would describe a quantity of storage nobody is paying for.
+func (s *Set) ListAllIn(ctx context.Context, engine, backupsDir, appsDir string) []apps.AppBackups {
+	p, ok := s.Get(engine)
+	if !ok {
+		return nil
+	}
+	got, err := p.ListAll(ctx)
+	if err != nil {
+		logRead(err, "list all", p)
+		return nil
+	}
+	return groupApps(got, backupsDir, appsDir)
+}
+
+// groupApps turns app -> backups into the page's per-app groups, measured and sorted.
+func groupApps(byApp map[string][]apps.Backup, backupsDir, appsDir string) []apps.AppBackups {
 	out := make([]apps.AppBackups, 0, len(byApp))
 	for app, all := range byApp {
 		list := apps.Measure(backupsDir, sortedBackups(all))

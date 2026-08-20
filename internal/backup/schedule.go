@@ -303,7 +303,10 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 			log.Printf("backup: setting retention for %s: %v", t.App, err)
 		}
 	}
-	name, err := s.apps.Backup(ctx, t.App, false, nil)
+	// The empty engine is the default one, deliberately: the nightly run is exactly
+	// the case with nobody there to pick a target, and it is what the "default engine"
+	// setting means. A manual backup can name another engine; this cannot.
+	name, err := s.apps.Backup(ctx, t.App, "", false, nil)
 	if err != nil {
 		return "", err
 	}

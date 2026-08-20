@@ -100,7 +100,7 @@ func TestPutDomainsCleansTheEditorsInput(t *testing.T) {
 	if len(got.Domains) != 1 {
 		t.Fatalf("domains = %v, want one entry", got.Domains)
 	}
-	if d := got.Domains[0].Directives; len(d) != 1 || d["import"] != "gateway_tls" {
+	if d := got.Domains[0].Labels; len(d) != 1 || d["import"] != "gateway_tls" {
 		t.Errorf("directives = %v, want the blank row dropped and the value trimmed", d)
 	}
 

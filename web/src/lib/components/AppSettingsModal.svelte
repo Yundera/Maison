@@ -740,6 +740,21 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+    /* The modal is a fixed height (min(88vh, 680px)), so any tab whose content is
+       plain flow rather than its own scroller was simply cut off — the Backups tab
+       reached that point first, with a target picker, an engine tab strip and a list
+       of archives stacked in one column.
+
+       Tabs that manage their own scrolling (.env-list, .code, .logs) are unaffected:
+       they are flex:1 children of this box, so they still size to it and scroll
+       internally rather than growing it. */
+    overflow-y: auto;
+    /* So a scrollbar sits beside the content rather than on top of the buttons at
+       the right edge of a row. */
+    padding-right: 0.25rem;
+    /* A modal that has scrolled to its end should not then start scrolling the page
+       behind it. */
+    overscroll-behavior: contain;
   }
   /* Form / YAML / Effective — three views of the same override, right-aligned so
      the switch reads as a mode toggle rather than another row of tabs. */

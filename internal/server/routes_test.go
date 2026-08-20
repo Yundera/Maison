@@ -159,7 +159,28 @@ func TestGlobalBackupsDescribesTheUserDataSet(t *testing.T) {
 		t.Fatalf("GET /api/backups = %d %s; want 200", rec.Code, rec.Body.String())
 	}
 
+	// One entry per engine — the page is a tab each, so the user-data card is per
+	// engine too: the local engine can never hold the set, and an engine that held it
+	// before the default changed still lists it.
 	var got struct {
+		Engines []struct {
+			Engine   string `json:"engine"`
+			UserData struct {
+				Available bool     `json:"available"`
+				Reason    string   `json:"reason"`
+				Source    string   `json:"source"`
+				Excluded  []string `json:"excluded"`
+			} `json:"user_data"`
+		} `json:"engines"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Engines) == 0 {
+		t.Fatalf("GET /api/backups returned no engines: %s", rec.Body.String())
+	}
+	var local *struct {
+		Engine   string `json:"engine"`
 		UserData struct {
 			Available bool     `json:"available"`
 			Reason    string   `json:"reason"`
@@ -167,18 +188,23 @@ func TestGlobalBackupsDescribesTheUserDataSet(t *testing.T) {
 			Excluded  []string `json:"excluded"`
 		} `json:"user_data"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
+	for i := range got.Engines {
+		if got.Engines[i].Engine == "local" {
+			local = &got.Engines[i]
+		}
 	}
-	if got.UserData.Available {
+	if local == nil {
+		t.Fatalf("no local engine in %s", rec.Body.String())
+	}
+	if local.UserData.Available {
 		t.Error("the local engine cannot back up the user-data set; available must be false")
 	}
-	if got.UserData.Reason == "" {
+	if local.UserData.Reason == "" {
 		t.Error("an unavailable set must say why")
 	}
 	// The exclusions are what make a restore that did not bring something back
 	// diagnosable, so they are part of the payload rather than folklore.
-	if len(got.UserData.Excluded) == 0 || got.UserData.Source == "" {
-		t.Errorf("user_data = %+v; want the source and its exclusions", got.UserData)
+	if len(local.UserData.Excluded) == 0 || local.UserData.Source == "" {
+		t.Errorf("user_data = %+v; want the source and its exclusions", local.UserData)
 	}
 }

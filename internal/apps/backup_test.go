@@ -24,7 +24,7 @@ func TestBackupFolderSnapshotsTheApp(t *testing.T) {
 	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
-	name, err := r.Backup(context.Background(), "jellyfin", false, nil)
+	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestBackupZipLeavesNoStagingFolder(t *testing.T) {
 	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
-	name, err := r.Backup(context.Background(), "jellyfin", true, nil)
+	name, err := r.Backup(context.Background(), "jellyfin", "", true, nil)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -94,11 +94,11 @@ func TestBackupRefusesWhenTheDiskIsTooFull(t *testing.T) {
 	// A free-space reading is only available for a real filesystem, so rather than
 	// filling one we check the arithmetic the guard runs on: needed scales with the
 	// artefact, and the zip case budgets for the snapshot and the zip together.
-	folder, err := r.EstimateBackup("jellyfin", false)
+	folder, err := r.EstimateBackup("jellyfin", "", false)
 	if err != nil {
 		t.Fatalf("EstimateBackup: %v", err)
 	}
-	zipped, err := r.EstimateBackup("jellyfin", true)
+	zipped, err := r.EstimateBackup("jellyfin", "", true)
 	if err != nil {
 		t.Fatalf("EstimateBackup: %v", err)
 	}
@@ -111,10 +111,10 @@ func TestBackupRefusesWhenTheDiskIsTooFull(t *testing.T) {
 	}
 
 	// An app with no folder cannot be backed up, and says so before any work.
-	if _, err := r.EstimateBackup("nosuchapp", false); err == nil {
+	if _, err := r.EstimateBackup("nosuchapp", "", false); err == nil {
 		t.Error("estimating a missing app should fail")
 	}
-	if err := r.StartBackup("nosuchapp", false); err == nil {
+	if err := r.StartBackup("nosuchapp", "", false); err == nil {
 		t.Error("backing up a missing app should fail")
 	}
 	if len(r.Backups()) != 0 {
@@ -138,7 +138,7 @@ func TestStartBackupTracksThenClearsItsProgress(t *testing.T) {
 		}
 	}
 
-	if err := r.StartBackup("jellyfin", false); err != nil {
+	if err := r.StartBackup("jellyfin", "", false); err != nil {
 		t.Fatalf("StartBackup: %v", err)
 	}
 	// Tracked from the moment it is asked for, so the tile carries progress without
@@ -163,7 +163,7 @@ func TestRestoreArchivesTheStateItReplaces(t *testing.T) {
 	app := filepath.Join(appsDir, "jellyfin")
 	seedApp(t, app)
 
-	name, err := r.Backup(context.Background(), "jellyfin", false, nil)
+	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}

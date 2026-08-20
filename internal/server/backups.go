@@ -10,6 +10,7 @@ import (
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
+	"github.com/yundera/maison/internal/backup/kopia"
 )
 
 // Backups have two surfaces, because they outlive the app they belong to.
@@ -55,7 +56,11 @@ func (s *Server) handleBackupEstimate(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return
 	}
-	est, err := s.apps.EstimateBackup(chi.URLParam(r, "id"), r.URL.Query().Get("zip") == "true")
+	// engine is the target the dialog currently has selected — the estimate depends on
+	// it, since a remote engine streams and needs no local room while the local one
+	// needs a full second copy. Empty means the default.
+	est, err := s.apps.EstimateBackup(
+		chi.URLParam(r, "id"), r.URL.Query().Get("engine"), r.URL.Query().Get("zip") == "true")
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -74,7 +79,12 @@ func (s *Server) handleStartBackup(w http.ResponseWriter, r *http.Request) {
 	// zip=true compresses the snapshot and keeps only the zip; otherwise the
 	// snapshot itself is the backup (docs/lifecycle.md).
 	zip := r.URL.Query().Get("zip") == "true"
-	if err := s.apps.StartBackup(chi.URLParam(r, "id"), zip); err != nil {
+	// engine names where this one backup goes. It is a target for THIS run, not a
+	// stored preference: the nightly run, an uninstall and the update rollback point
+	// all keep using the default engine, so nothing the user picks here can quietly
+	// change where their app stops being backed up to.
+	engine := r.URL.Query().Get("engine")
+	if err := s.apps.StartBackup(chi.URLParam(r, "id"), engine, zip); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -106,30 +116,66 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
-// handleGlobalBackups is the Backups settings page: every app with backups in any
-// engine, with orphans marked and local folder archives measured. Deliberately the
-// expensive read — it is what answers "what is eating the disk", and it is opened by
-// hand.
-func (s *Server) handleGlobalBackups(w http.ResponseWriter, r *http.Request) {
-	list := s.engines.ListAll(r.Context(), s.cfg.BackupsDir(), s.cfg.AppsDir())
-	if list == nil {
-		list = []apps.AppBackups{}
-	}
-	out := map[string]any{"apps": list, "user_data": s.userDataView(r.Context())}
+// engineBackups is one engine's tab on the Backups page: its apps, its user-data
+// snapshots, and what it costs.
+//
+// The page is a tab per engine rather than one merged view because engines are
+// independent repositories. A merged list has to invent a vocabulary for "in two
+// places at once", and every such vocabulary has been wrong — the one this replaced
+// reported a stamp held by two remote engines as "on this disk + offsite". A tab needs
+// no vocabulary: everything inside it is that engine's, and so is every button.
+type engineBackups struct {
+	Engine string `json:"engine"`
+	// Name is the deployment's name for it, empty when nobody provisioned one — the
+	// client falls back to describing the engine. See engineInfo.Name.
+	Name    string `json:"name,omitempty"`
+	Offsite bool   `json:"offsite"`
 
-	// What the app backups cost *on this disk*, which is not the sum of their sizes:
-	// a backup that exists only in a repository takes no space here, and adding its
-	// size to a figure printed next to "free" would describe a disk that does not
-	// exist. Only local and both-tier rows count.
-	var localUsed int64
-	for _, g := range list {
-		for _, b := range g.Backups {
-			if b.Engine == apps.EngineLocal {
-				localUsed += b.Size
+	Apps     []apps.AppBackups `json:"apps"`
+	UserData userDataView      `json:"user_data"`
+
+	// Total is what this engine holds, summed over its own backups only. Used is the
+	// part of that which sits on this machine's data disk — the same number for the
+	// local engine, and zero for a remote one, which is what makes it the figure that
+	// belongs beside "free".
+	Total int64 `json:"total"`
+	Used  int64 `json:"used"`
+}
+
+// handleGlobalBackups is the Backups settings page: one entry per engine, each with
+// its apps (orphans marked, local folder archives measured) and its user-data
+// snapshots. Deliberately the expensive read — it is what answers "what is eating the
+// disk", and it is opened by hand.
+func (s *Server) handleGlobalBackups(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{}
+
+	engines := []engineBackups{}
+	if s.engines != nil {
+		for _, id := range s.engines.IDs() {
+			eb := engineBackups{Engine: id, Apps: []apps.AppBackups{}}
+			if p, ok := s.engines.Get(id); ok {
+				eb.Offsite = p.Caps().Offsite
+				if k, isKopia := p.(*kopia.Provider); isKopia {
+					eb.Name = k.Status(r.Context()).Label
+				}
 			}
+			if list := s.engines.ListAllIn(r.Context(), id, s.cfg.BackupsDir(), s.cfg.AppsDir()); list != nil {
+				eb.Apps = list
+			}
+			for _, g := range eb.Apps {
+				eb.Total += g.Total
+			}
+			// A backup that exists only in a repository takes no space here, and adding
+			// its size to a figure printed next to "free" would describe a disk that does
+			// not exist.
+			if id == apps.EngineLocal {
+				eb.Used = eb.Total
+			}
+			eb.UserData = s.userDataViewIn(r.Context(), id)
+			engines = append(engines, eb)
 		}
 	}
-	out["local_used"] = localUsed
+	out["engines"] = engines
 
 	// Free space is part of this page rather than a separate call: deciding whether
 	// to delete a backup is deciding against the space it frees.
@@ -165,7 +211,13 @@ type userDataView struct {
 	Restore backup.RestoreState `json:"restore"`
 }
 
-func (s *Server) userDataView(ctx context.Context) userDataView {
+// userDataViewIn is the "your files" card for ONE engine's tab.
+//
+// Reads are per engine while writes stay the writer's: an engine that held the set
+// before the default was switched still lists and restores it. The restore state is
+// box-wide — one restore at a time, whichever engine it came from — so every tab shows
+// the same one rather than each pretending to have its own.
+func (s *Server) userDataViewIn(ctx context.Context, engine string) userDataView {
 	out := userDataView{
 		Backups:  []apps.Backup{},
 		Source:   s.cfg.DataRoot,
@@ -175,9 +227,9 @@ func (s *Server) userDataView(ctx context.Context) userDataView {
 		out.Reason = "Backups are not available on this box."
 		return out
 	}
-	out.Available, out.Reason = s.userData.Available()
+	out.Available, out.Reason = s.userData.AvailableIn(engine)
 	out.Restore = s.userData.State()
-	if list := s.userData.List(ctx); len(list) > 0 {
+	if list := s.userData.ListIn(ctx, engine); len(list) > 0 {
 		out.Backups = list
 		out.Size = list[0].Size // newest first
 	}
@@ -197,6 +249,7 @@ func (s *Server) handleRestoreUserData(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Name    string   `json:"name"`
+		Engine  string   `json:"engine"`
 		Dest    string   `json:"dest"`
 		Entries []string `json:"entries"`
 	}
@@ -206,7 +259,7 @@ func (s *Server) handleRestoreUserData(w http.ResponseWriter, r *http.Request) {
 	}
 	// Not r.Context(): the restore outlives the request that asked for it, exactly like
 	// an app backup.
-	err := s.userData.Restore(context.Background(), body.Name,
+	err := s.userData.Restore(context.Background(), body.Engine, body.Name,
 		apps.UserDataRestoreOpts{Dest: body.Dest, Entries: body.Entries}, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

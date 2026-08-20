@@ -142,7 +142,7 @@ func TestInPlaceRestoreTakesAnUndoSnapshotFirst(t *testing.T) {
 	f := newFakeUserData()
 	u, _ := newUserData(t, f)
 
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	if st := waitIdle(t, u); st.Error != "" {
@@ -163,7 +163,7 @@ func TestInPlaceRestoreIsRefusedWhenTheUndoSnapshotFails(t *testing.T) {
 	f.backupErr = errors.New("repository unreachable")
 	u, cfg := newUserData(t, f)
 
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
 		t.Fatalf("Restore should start and then fail, not refuse to start: %v", err)
 	}
 	st := waitIdle(t, u)
@@ -193,7 +193,7 @@ func TestRestoreToADirectoryTakesNoUndoSnapshot(t *testing.T) {
 	u, cfg := newUserData(t, f)
 	dest := filepath.Join(cfg.DataRoot, "Restored")
 
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{Dest: dest}, nil); err != nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{Dest: dest}, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	if st := waitIdle(t, u); st.Error != "" {
@@ -247,7 +247,7 @@ func TestASuccessfulInPlaceRestoreClearsTheMarker(t *testing.T) {
 	f := newFakeUserData()
 	u, cfg := newUserData(t, f)
 
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	if st := waitIdle(t, u); st.Error != "" || st.Interrupted {
@@ -265,7 +265,7 @@ func TestAFailedInPlaceRestoreLeavesTheMarker(t *testing.T) {
 	f.restoreErr = errors.New("connection reset")
 	u, cfg := newUserData(t, f)
 
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	st := waitIdle(t, u)
@@ -292,12 +292,12 @@ func TestASecondRestoreIsRefusedWhileOneIsRunning(t *testing.T) {
 	slow := &slowRestore{fakeUserData: f, release: release}
 	u.set = New(slow)
 
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
 		t.Fatalf("first Restore: %v", err)
 	}
 	slow.waitStarted(t)
 
-	err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil)
+	err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil)
 	if err == nil {
 		t.Error("a second concurrent restore was accepted; it must be refused")
 	}
@@ -312,7 +312,7 @@ func TestRestoreRefusesANameThatIsNotOne(t *testing.T) {
 	u, _ := newUserData(t, f)
 
 	for _, bad := range []string{"notes", "../../etc/passwd", ""} {
-		if err := u.Restore(context.Background(), bad, apps.UserDataRestoreOpts{}, nil); err == nil {
+		if err := u.Restore(context.Background(), "", bad, apps.UserDataRestoreOpts{}, nil); err == nil {
 			t.Errorf("Restore(%q) was accepted", bad)
 		}
 	}
@@ -325,7 +325,7 @@ func TestRestoreRefusesANameThatIsNotOne(t *testing.T) {
 // directory happens to be, which is not a decision the caller gets to make implicitly.
 func TestRestoreRefusesARelativeDestination(t *testing.T) {
 	u, _ := newUserData(t, newFakeUserData())
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{Dest: "Restored"}, nil); err == nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{Dest: "Restored"}, nil); err == nil {
 		t.Error("a relative destination was accepted")
 	}
 }
@@ -372,7 +372,7 @@ func TestRestoreIsRefusedWhileABackupIsRunning(t *testing.T) {
 	u, _ := newUserData(t, f)
 	u.Busy = func() bool { return true }
 
-	err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil)
+	err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil)
 	if err == nil {
 		t.Fatal("a restore was accepted while a backup was running")
 	}
@@ -393,7 +393,7 @@ func TestCopyRestoreIsRefusedWithoutRoom(t *testing.T) {
 	f.list[0].Size = 1 << 62
 	u, cfg := newUserData(t, f)
 
-	err := u.Restore(context.Background(), udStamp,
+	err := u.Restore(context.Background(), "", udStamp,
 		apps.UserDataRestoreOpts{Dest: filepath.Join(cfg.DataRoot, "Restored")}, nil)
 	if err == nil {
 		t.Fatal("a copy restore that cannot fit was accepted")
@@ -414,7 +414,7 @@ func TestInPlaceRestoreIsNotRefusedForSpace(t *testing.T) {
 	f.list[0].Size = 1 << 62
 	u, _ := newUserData(t, f)
 
-	if err := u.Restore(context.Background(), udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
+	if err := u.Restore(context.Background(), "", udStamp, apps.UserDataRestoreOpts{}, nil); err != nil {
 		t.Fatalf("an in-place restore was refused for space it does not need: %v", err)
 	}
 	if st := waitIdle(t, u); st.Error != "" {

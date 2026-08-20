@@ -1,4 +1,4 @@
-package caddyroutes
+package routes
 
 import (
 	"strings"
@@ -11,7 +11,7 @@ import (
 // treats them: nip.io goes through the gateway's custom CA, sslip.io deliberately
 // does not (it falls through to Let's Encrypt).
 var yundera = []domains.Domain{
-	{Name: "nip", Domain: "${APP_PUBLIC_IP_DASH}.nip.io", Directives: map[string]string{"import": "gateway_tls"}},
+	{Name: "nip", Domain: "${APP_PUBLIC_IP_DASH}.nip.io", Labels: map[string]string{"import": "gateway_tls"}},
 	{Name: "sslip", Domain: "${APP_PUBLIC_IP_DASH}.sslip.io"},
 }
 

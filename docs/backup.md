@@ -643,8 +643,18 @@ What follows from it:
   an uninstall and "Back up now" put the next backup. It has no bearing on what is
   listed, restorable or deletable, which is what keeps a user's history reachable after
   they switch.
-- **Rows are grouped by engine in the UI**, and the group header is where the offsite
-  question is answered, since the engine is what decides it.
+- **The Backups page is a tab per engine.** Everything inside a tab — the app list,
+  the totals, the "your files" card, the same-disk warning — belongs to that engine,
+  and so does every button in it. The app's own Backups tab keeps a single list with a
+  group header per engine, because it is one app across all of them.
+- **The user-data set is read per engine too.** `UserData.Engine()` is still the
+  writer, because writing the set is the schedule's job and the schedule has one
+  destination; but `ListIn`/`AvailableIn`/`Restore` take an engine, so a box that wrote
+  its files to a repository and then switched its default still lists and restores
+  them. Previously that card showed only the writer's snapshots, so switching to the
+  local engine — which can never hold the set — made them look deleted.
+- **The restore state is box-wide.** One restore at a time, whichever engine it came
+  from, so every tab reports the same one rather than each pretending to have its own.
 
 Engines are named on screen by the deployment, not by this package: `engineInfo.Name`
 comes from the host-written state file, so a provisioned PCS can call its space

@@ -33,9 +33,8 @@
     restoreBackup,
     deleteBackup,
     engineLabel,
-    type AppBackups,
+    type EngineBackups,
     type Backup,
-    type UserDataBackups,
   } from '../../stores/backups'
   import { renderSize } from '../../format'
   import BackupRows from '../BackupRows.svelte'
@@ -49,12 +48,15 @@
   let note = $state('')
 
   // --- what backups exist -------------------------------------------------------
-  let list = $state<AppBackups[]>([])
-  let userData = $state<UserDataBackups | null>(null)
-  // What the app backups occupy on this disk. Deliberately not the sum of their sizes:
-  // a backup that lives only in a repository takes no space here, and printing that sum
-  // next to the free space would describe a disk that does not exist.
-  let localUsed = $state(0)
+  //
+  // One entry per engine, shown as a tab each. Engines are independent repositories:
+  // what is in one has no bearing on what is in another, they can be written to in
+  // parallel, and the only thing the selected engine decides is where the NEXT backup
+  // goes. A single merged list had to describe a backup as being "in two places at
+  // once", which stopped being expressible the moment a second remote engine was
+  // possible — a tab needs no such vocabulary.
+  let engines = $state<EngineBackups[]>([])
+  let tab = $state('')
   let free = $state<number | null>(null)
   let loading = $state(true)
   let listError = $state('')
@@ -75,10 +77,17 @@
     loading = true
     try {
       const r = await fetchAllBackups()
-      list = r.apps
-      userData = r.user_data ?? null
-      localUsed = r.local_used ?? 0
+      engines = r.engines ?? []
       free = r.free ?? null
+      // Keep whichever tab is open across a reload — this reloads on a poll while a
+      // restore runs, and a tab that jumped back to the default mid-restore would take
+      // the progress off screen. Otherwise open the engine that receives new backups,
+      // which is the one the user is most likely to be asking about.
+      if (!engines.some((e) => e.engine === tab)) {
+        tab = engines.some((e) => e.engine === status?.active)
+          ? (status?.active ?? '')
+          : (engines[0]?.engine ?? '')
+      }
       listError = ''
     } catch (e) {
       listError = e instanceof Error ? e.message : String(e)
@@ -115,7 +124,10 @@
   // message it is polling for changes once per restored folder, so a tighter loop would
   // spend a container start per tick to re-render the same sentence.
   $effect(() => {
-    if (!userData?.restore.running) return
+    // Any engine's restore, not just the open tab's: there is one restore at a time on
+    // the box, and switching tabs while it runs must not stop the polling that reports
+    // it.
+    if (!engines.some((e) => e.user_data.restore.running)) return
     const id = setInterval(loadArchives, 5000)
     return () => clearInterval(id)
   })
@@ -197,11 +209,6 @@
   )
   const misconfigured = $derived(!!activeEngine && !activeEngine.connected)
 
-  /** The same-disk warning is only true while the writing engine is not offsite, and
-   *  now that this page knows which engine that is, it can stop saying it once the
-   *  backups genuinely do survive the disk. Shown when unknown, since "no warning"
-   *  is the claim that needs evidence. */
-  const sameDiskOnly = $derived(!activeEngine || !activeEngine.offsite)
 
   // --- archive actions ----------------------------------------------------------
   async function run(fn: () => Promise<void>) {
@@ -228,7 +235,9 @@
     Object.fromEntries((status?.engines ?? []).filter((e) => e.name).map((e) => [e.id, e.name!])),
   )
 
-  const used = $derived(list.reduce((n, a) => n + a.total, 0))
+  /** The open tab, falling back to the first engine so the page renders during the
+   *  window between the engine list arriving and a tab being chosen. */
+  const active = $derived(engines.find((e) => e.engine === tab) ?? engines[0] ?? null)
 </script>
 
 <header class="head">
@@ -350,69 +359,140 @@
   {/if}
 </section>
 
-<!-- Your files, above the app list: the backend's two sets are apps and user data, and
-     this is the second of them. Deliberately its own card rather than a group in the
-     list below, which is a list of apps. -->
-{#if userData}
-  <UserDataCard data={userData} onchanged={loadArchives} />
+<!-- One tab per engine. Each tab is that engine's repository and nothing else: its
+     files, its app backups, its totals. Both cards used to sit above a single merged
+     list, which meant "Your files" showed only the engine that happened to be selected
+     — a box that wrote its files to a repository and then switched its default showed
+     an empty card while the snapshots were still there.
+
+     The strip sits outside the cards rather than wrapping them, so the two cards below
+     stay the siblings they were and neither ends up nested inside another. -->
+<div class="tabs" role="tablist">
+  {#each engines as e (e.engine)}
+    <button
+      role="tab"
+      class="tab"
+      class:on={active?.engine === e.engine}
+      aria-selected={active?.engine === e.engine}
+      onclick={() => (tab = e.engine)}
+    >
+      {engineLabel(e.engine, e.name, (k) => $t(k))}
+      <!-- The default engine is marked rather than reordered: which engine receives the
+           next backup is the one thing the tabs cannot show by themselves, and moving it
+           would make the strip reshuffle when the setting changes. -->
+      {#if e.engine === status?.active}
+        <span class="badge">{$t('backup_engine_active')}</span>
+      {/if}
+    </button>
+  {/each}
+</div>
+
+{#if listError}
+  <section class="card"><p class="err">{listError}</p></section>
+{:else if loading && !engines.length}
+  <section class="card"><p class="empty">{$t('loading')}</p></section>
+{:else if active}
+  <!-- Your files first: the backend's two sets are apps and user data, and the user
+       data one is not an app — putting it inside the list below would file it under a
+       heading that is a list of apps. -->
+  <UserDataCard data={active.user_data} engine={active.engine} onchanged={loadArchives} />
+
+  <!-- Every backup this engine holds, grouped by app. This list is what an app's own
+       Backups tab cannot be: it reaches the backups of an app that is gone
+       (uninstalling renames the folder, so the tile and its tab disappear with it — and
+       "I uninstalled it and regret it" is the most common reason to want a restore),
+       and it puts the cost on the same screen as the delete button. -->
+  <section class="card">
+    <h4>{$t('backups_stored')}</h4>
+
+    <!-- Two different questions, so two different figures: what this engine holds, and
+         what it costs on this disk. They are the same number for the local engine and
+         zero-against-something for a remote one, and conflating them next to "free"
+         would misdescribe the disk. -->
+    <p class="totals">
+      {$t('backups_total', { used: renderSize(active.total) })}
+      · {$t('backups_local_used', { used: renderSize(active.used) })}
+      {#if free !== null}
+        · {$t('backups_free', { free: renderSize(free) })}
+      {/if}
+    </p>
+
+    <!-- The same-disk warning belongs to the TAB's engine, not to the selected one. It
+         used to be derived from whichever engine was writing, which said nothing about
+         the list underneath it once a box had both: a repository's backups survive
+         losing the disk whether or not it is the current default, and the local
+         engine's never do. -->
+    {#if !active.offsite}
+      <p class="note">{$t('backups_scope_note')}</p>
+    {/if}
+
+    {#if !active.apps.length}
+      <p class="empty">{$t('backups_empty')}</p>
+    {:else}
+      {#each active.apps as group (group.app)}
+        <div class="group">
+          <h5>
+            {group.app}
+            {#if group.orphan}
+              <span class="tag" title={$t('backups_orphan_hint')}>{$t('backups_orphan')}</span>
+            {/if}
+            <span class="size">{renderSize(group.total)}</span>
+          </h5>
+          <!-- showEngine is off: this tab is already one engine, so naming it above
+               every app would repeat the tab label down the page. -->
+          <BackupRows
+            backups={group.backups}
+            showEngine={false}
+            {busy}
+            onrestore={(b) => restore(group.app, b)}
+            ondelete={(b) => remove(group.app, b)}
+          />
+        </div>
+      {/each}
+    {/if}
+  </section>
 {/if}
 
-<!-- Every backup on the box, whatever wrote it, grouped by app.
-     This list is what an app's own Backups tab cannot be: it reaches the backups of
-     an app that is gone (uninstalling renames the folder, so the tile and its tab
-     disappear with it — and "I uninstalled it and regret it" is the most common
-     reason to want a restore), and it puts the total cost on the same screen as the
-     delete button, because deciding to delete one is deciding against the space it
-     frees. -->
-<section class="card">
-  <h4>{$t('backups_stored')}</h4>
-
-  <!-- Two different questions, so two different figures: what the backups amount to,
-       and what they cost on this disk. They are the same number only on a box with no
-       remote engine, and conflating them next to "free" would misdescribe the disk. -->
-  <p class="totals">
-    {$t('backups_total', { used: renderSize(used) })}
-    · {$t('backups_local_used', { used: renderSize(localUsed) })}
-    {#if free !== null}
-      · {$t('backups_free', { free: renderSize(free) })}
-    {/if}
-  </p>
-
-  {#if listError}
-    <p class="err">{listError}</p>
-  {/if}
-
-  {#if loading}
-    <p class="empty">{$t('loading')}</p>
-  {:else if !list.length}
-    <p class="empty">{$t('backups_empty')}</p>
-  {:else}
-    {#each list as group (group.app)}
-      <div class="group">
-        <h5>
-          {group.app}
-          {#if group.orphan}
-            <span class="tag" title={$t('backups_orphan_hint')}>{$t('backups_orphan')}</span>
-          {/if}
-          <span class="size">{renderSize(group.total)}</span>
-        </h5>
-        <BackupRows
-          backups={group.backups}
-          {engineNames}
-          {busy}
-          onrestore={(b) => restore(group.app, b)}
-          ondelete={(b) => remove(group.app, b)}
-        />
-      </div>
-    {/each}
-  {/if}
-
-  {#if sameDiskOnly}
-    <p class="note">{$t('backups_scope_note')}</p>
-  {/if}
-</section>
-
 <style>
+  .tabs {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.9rem;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 0;
+    background: none;
+    padding: 0.45rem 0.7rem;
+    margin-bottom: -1px;
+    border-bottom: 2px solid transparent;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.on {
+    color: var(--text);
+    border-bottom-color: var(--accent, var(--text));
+  }
+  .badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.05rem 0.4rem;
+  }
+
   .head {
     max-width: 46rem;
     margin-bottom: 1rem;
@@ -424,7 +504,11 @@
     border-radius: 12px;
     padding: 1rem 1.25rem;
   }
-  .card + .card {
+  /* The tab strip separates the settings card from the tab's own cards, so there are
+     no longer two adjacent .card siblings in this component to hang the gap on — and
+     the card below the strip is rendered by UserDataCard, whose class this scope
+     cannot reach anyway. The spacing lives on the strip instead. */
+  .tabs {
     margin-top: 1.25rem;
   }
   h3 {

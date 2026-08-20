@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/yundera/maison/internal/appenv"
-	"github.com/yundera/maison/internal/caddyroutes"
+	"github.com/yundera/maison/internal/routes"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/envinject"
@@ -85,7 +85,7 @@ func (s *Server) domainsView() domainsView {
 		}
 	}
 	return domainsView{
-		PrimaryToken: caddyroutes.PrimaryToken,
+		PrimaryToken: routes.PrimaryToken,
 		PrimaryHost:  env["APP_DOMAIN"],
 		Domains:      s.settings.Get().Domains,
 		Vars:         vars,
@@ -133,11 +133,11 @@ func (s *Server) handlePutDomains(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[in[i].Domain] = true
 
-		// Directives come from a key/value editor, which is free to hand back the
-		// blank row someone opened and did not fill in. Drop those rather than
-		// writing an empty Caddy sub-directive into every app's override.
+		// Labels come from a key/value editor, which is free to hand back the blank
+		// row someone opened and did not fill in. Drop those rather than writing an
+		// empty label into every app's override.
 		clean := map[string]string{}
-		for k, v := range in[i].Directives {
+		for k, v := range in[i].Labels {
 			k = strings.TrimSpace(k)
 			if k == "" {
 				continue
@@ -147,7 +147,7 @@ func (s *Server) handlePutDomains(w http.ResponseWriter, r *http.Request) {
 		if len(clean) == 0 {
 			clean = nil
 		}
-		in[i].Directives = clean
+		in[i].Labels = clean
 	}
 
 	cur := s.settings.Get()

@@ -19,6 +19,7 @@
   let {
     backups,
     engineNames = {},
+    showEngine = true,
     busy = false,
     onrestore,
     ondelete,
@@ -26,6 +27,10 @@
     backups: Backup[]
     /** Engine ID -> the name the deployment provisioned for it, when it has one. */
     engineNames?: Record<string, string>
+    /** Whether to head each group with its engine. False where the surface is already
+     *  one engine — the settings page is a tab per engine, and repeating the name above
+     *  every app would be noise rather than information. */
+    showEngine?: boolean
     busy?: boolean
     onrestore: (b: Backup) => void
     ondelete: (b: Backup) => void
@@ -82,10 +87,12 @@
          losing this server, and the engine is what decides that. The name comes from
          the deployment when it provisioned one, so a PCS says "Yundera Backup
          Storage" while the same engine self-hosted says only what it is. -->
-    <h5 class="engine">
-      {g.label}
-      <span class="tier">{g.offsite ? $t('backup_tier_remote') : $t('backup_tier_local')}</span>
-    </h5>
+    {#if showEngine}
+      <h5 class="engine">
+        {g.label}
+        <span class="tier">{g.offsite ? $t('backup_tier_remote') : $t('backup_tier_local')}</span>
+      </h5>
+    {/if}
     <ul class="rows">
       {#each g.rows as b (b.engine + ':' + b.name)}
         <li class="row" class:asking={pending?.key === b.engine + ':' + b.name}>

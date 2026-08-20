@@ -21,7 +21,17 @@
   import { renderSize } from '../../format'
   import { renderStamp, restoreUserData, type Backup, type UserDataBackups } from '../../stores/backups'
 
-  let { data, onchanged }: { data: UserDataBackups; onchanged: () => void } = $props()
+  let {
+    data,
+    engine,
+    onchanged,
+  }: {
+    data: UserDataBackups
+    /** The engine whose tab this card is in. Restores name it, so a snapshot in an
+     *  engine that is no longer the default is still restorable. */
+    engine: string
+    onchanged: () => void
+  } = $props()
 
   // Which backup is being restored, and how. Null means the picker is closed — the
   // destructive option is never one stray click away.
@@ -48,7 +58,7 @@
     busy = true
     error = ''
     try {
-      await restoreUserData(picked.backup.name, {
+      await restoreUserData(picked.backup.name, engine, {
         dest: picked.mode === 'copy' ? copyDest(picked.backup) : '',
       })
       picked = null

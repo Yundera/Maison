@@ -78,7 +78,7 @@ type Estimate struct {
 // EstimateBackup measures what a backup of `id` would cost. The size walk is
 // stat-only, but it does visit every file — the dialog calls this once on open,
 // not on a poll.
-func (r *Registry) EstimateBackup(id string, zip bool) (Estimate, error) {
+func (r *Registry) EstimateBackup(id, engine string, zip bool) (Estimate, error) {
 	if !projectRe.MatchString(id) {
 		return Estimate{}, fmt.Errorf("invalid app name: %s", id)
 	}
@@ -92,7 +92,17 @@ func (r *Registry) EstimateBackup(id string, zip bool) (Estimate, error) {
 	// guard is skipped entirely rather than computed and passed. This is what lets an
 	// app occupying most of its own disk be backed up at all — the local engine
 	// refuses it, because a full second copy genuinely does not fit.
-	if !r.engine().Caps().NeedsLocalSpace {
+	// Against the TARGET engine, not the default. A remote engine streams and needs no
+	// local room; the local one needs a full second copy. Estimating against the
+	// default while writing somewhere else gets this exactly backwards — targeting the
+	// local engine on a kopia-default box would skip the free-space guard entirely, and
+	// filling the data disk does not merely fail the backup, it fails every app still
+	// writing to that disk.
+	target, err := r.engineFor(engine)
+	if err != nil {
+		return Estimate{}, err
+	}
+	if !target.Caps().NeedsLocalSpace {
 		return Estimate{Size: size, Needed: 0, Free: freeSpace(r.cfg.DataRoot), Enough: true, Zip: zip, Streamed: true}, nil
 	}
 
@@ -123,8 +133,8 @@ func (r *Registry) EstimateBackup(id string, zip bool) (Estimate, error) {
 // the tile until it is retried or dismissed.
 //
 // Idempotent: a second call while the same app is being backed up is a no-op.
-func (r *Registry) StartBackup(id string, zip bool) error {
-	est, err := r.EstimateBackup(id, zip)
+func (r *Registry) StartBackup(id, engine string, zip bool) error {
+	est, err := r.EstimateBackup(id, engine, zip)
 	if err != nil {
 		return err
 	}
@@ -145,7 +155,7 @@ func (r *Registry) StartBackup(id string, zip bool) error {
 	go func() {
 		// Deliberately not a request context: the backup must outlive the request
 		// that asked for it.
-		_, err := r.Backup(context.Background(), id, zip, r.trackBackup(id))
+		_, err := r.Backup(context.Background(), id, engine, zip, r.trackBackup(id))
 		r.finishBackup(id, err, "backup")
 	}()
 	return nil
@@ -257,8 +267,12 @@ func (r *Registry) ClearBackup(id string) {
 //
 // The restart is deferred, so a failure anywhere after the stop still brings the
 // app back up. Leaving an app down is a worse outcome than a missing backup.
-func (r *Registry) Backup(ctx context.Context, id string, zip bool, emit func(BackupEvent)) (string, error) {
-	return r.BackupWith(ctx, r.engine(), id, zip, emit)
+func (r *Registry) Backup(ctx context.Context, id, engine string, zip bool, emit func(BackupEvent)) (string, error) {
+	p, err := r.engineFor(engine)
+	if err != nil {
+		return "", err
+	}
+	return r.BackupWith(ctx, p, id, zip, emit)
 }
 
 // BackupWith runs a backup through a named engine rather than the configured one.
@@ -402,12 +416,41 @@ func freeSpace(dir string) int64 {
 // unchanged. It is built per call rather than cached because it holds nothing but
 // the config it was handed.
 func (r *Registry) engine() Provider {
-	if r.Engines != nil {
-		if p := r.Engines.Writer(); p != nil {
-			return p
+	p, _ := r.engineFor("")
+	return p
+}
+
+// engineFor resolves the engine a backup should be written to.
+//
+// An empty ID means the default — the engine the schedule, an uninstall and the
+// update rollback point all write to, and the only answer those paths can have since
+// nobody is there to pick one. A named ID is a **manual** backup aimed somewhere else:
+// "keep a local copy of this app too", or "push this one offsite now".
+//
+// It is deliberately a target and not a stored per-app preference. A preference would
+// be per-app *participation* — a thing the nightly run would also have to honour — and
+// if the two ever disagreed, an app the user believed was going offsite would quietly
+// stop. That is the one outcome this feature must not produce.
+func (r *Registry) engineFor(id string) (Provider, error) {
+	if r.Engines == nil {
+		// No engine set: the built-in local provider, which is what every caller that
+		// predates the seam gets. Naming an engine here cannot be honoured.
+		if id != "" && id != EngineLocal {
+			return nil, fmt.Errorf("unknown backup engine: %s", id)
 		}
+		return NewLocalProvider(r.cfg), nil
 	}
-	return NewLocalProvider(r.cfg)
+	if id == "" {
+		if p := r.Engines.Writer(); p != nil {
+			return p, nil
+		}
+		return NewLocalProvider(r.cfg), nil
+	}
+	p, ok := r.Engines.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("unknown backup engine: %s", id)
+	}
+	return p, nil
 }
 
 // locate finds the engine that holds a backup and the backup itself.

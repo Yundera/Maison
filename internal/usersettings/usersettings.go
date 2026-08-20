@@ -65,9 +65,18 @@ func (s *Store) Get() Settings {
 func (s *Store) Domains() []domains.Domain { return s.Get().Domains }
 
 // Set persists new settings.
+//
+// The incoming set is merged onto the *current* settings, not onto the defaults:
+// callers send the fields they are editing, and a field they leave out has to keep
+// the value it has. Merging onto Defaults() instead silently reset every omitted
+// field — the dashboard's own PUT /api/settings carries only wallpaper, language,
+// widgets and domains, so adding a store source and then changing the wallpaper
+// dropped the store source. Clearing a field still works, by sending it as an
+// explicit empty value ([] rather than absent), which is how the domains editor
+// removes the last domain.
 func (s *Store) Set(n Settings) error {
 	s.mu.Lock()
-	s.cur = merge(Defaults(), n)
+	s.cur = merge(s.cur, n)
 	cur := s.cur
 	s.mu.Unlock()
 
@@ -81,21 +90,27 @@ func (s *Store) Set(n Settings) error {
 	return os.WriteFile(s.path, b, 0o644)
 }
 
-func merge(def, in Settings) Settings {
+// merge overlays the fields in carries onto base, leaving the rest of base alone.
+// A zero value means "not supplied" rather than "set to zero", so an empty slice
+// and an absent one are different: [] clears the list, absent keeps it.
+//
+// base is Defaults() when loading a file that may predate a field, and the current
+// settings when applying an edit (see Set).
+func merge(base, in Settings) Settings {
 	if in.Wallpaper != "" {
-		def.Wallpaper = in.Wallpaper
+		base.Wallpaper = in.Wallpaper
 	}
 	if in.Language != "" {
-		def.Language = in.Language
+		base.Language = in.Language
 	}
 	if in.Widgets != nil {
-		def.Widgets = in.Widgets
+		base.Widgets = in.Widgets
 	}
 	if in.StoreSources != nil {
-		def.StoreSources = in.StoreSources
+		base.StoreSources = in.StoreSources
 	}
 	if in.Domains != nil {
-		def.Domains = in.Domains
+		base.Domains = in.Domains
 	}
-	return def
+	return base
 }

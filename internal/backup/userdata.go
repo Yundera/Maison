@@ -141,14 +141,35 @@ func (u *UserData) State() RestoreState {
 // support at all — there is nothing to dispatch to. Apps do not have this problem
 // because every engine implements the app interface.
 func (u *UserData) Engine() UserDataRestoreEngine {
+	return u.engineFor("")
+}
+
+// engineFor resolves one engine by ID, or the writer when the ID is empty.
+//
+// Writes are always the writer's: the schedule backs the set up to whichever engine is
+// the default, and Engine() above is that path. **Reads are not.** A box that wrote
+// user-data snapshots to kopia and then switched its default to the local engine still
+// has those snapshots, and they are listable and restorable by naming kopia — which is
+// the same rule apps already follow, and the reason the Backups page is a tab per
+// engine rather than a view of the selected one.
+//
+// Nil means this engine cannot serve the set at all. The local engine is the case that
+// matters: its archives live on the disk the set would be copied from, so it
+// deliberately implements nothing here.
+func (u *UserData) engineFor(id string) UserDataRestoreEngine {
 	if u.set == nil {
 		return nil
 	}
-	w := u.set.Writer()
-	if w == nil {
+	var p apps.Provider
+	if id == "" {
+		p = u.set.Writer()
+	} else {
+		p, _ = u.set.Get(id)
+	}
+	if p == nil {
 		return nil
 	}
-	e, ok := w.(UserDataRestoreEngine)
+	e, ok := p.(UserDataRestoreEngine)
 	if !ok {
 		return nil
 	}
@@ -163,29 +184,60 @@ func (u *UserData) Engine() UserDataRestoreEngine {
 // saying: a default install has the local engine selected and the user-data checkbox
 // on, and would otherwise show an empty list that reads as "nothing to worry about".
 func (u *UserData) Available() (bool, string) {
-	if u.Engine() == nil {
-		return false, "The selected backup engine keeps backups on this server's own disk, " +
+	return u.AvailableIn("")
+}
+
+// AvailableIn is Available for one named engine, which is what a per-engine view asks.
+//
+// The two reasons it can answer no are different in kind, and only one of them is about
+// this engine. "This engine cannot hold your files" is permanent and true of the local
+// engine forever. "It is switched off" is a setting, and it is about the *schedule* —
+// so it is only reported for the engine the schedule actually writes to. An engine
+// holding snapshots from before the switch is available for reading regardless of what
+// the checkbox says now.
+func (u *UserData) AvailableIn(id string) (bool, string) {
+	if u.engineFor(id) == nil {
+		return false, "This backup engine keeps backups on this server's own disk, " +
 			"so it cannot back up your files: the copy would sit on the disk it is meant to " +
 			"survive. Choose a remote engine to include them."
 	}
-	if u.store != nil && !u.store.Get().UserData {
+	if u.isWriter(id) && u.store != nil && !u.store.Get().UserData {
 		return false, "Backing up your files is switched off. Turn on \"Include your files\" above."
 	}
 	return true, ""
+}
+
+// isWriter reports whether this ID names the engine new backups go to. An empty ID is
+// the writer by definition.
+func (u *UserData) isWriter(id string) bool {
+	if id == "" {
+		return true
+	}
+	if u.set == nil {
+		return false
+	}
+	w := u.set.Writer()
+	return w != nil && w.ID() == id
 }
 
 // List returns the user-data snapshots, newest first, or nothing when the engine cannot
 // serve them. An engine with no repository yet is not an error — it is the normal state
 // of a box whose provisioning has not run.
 func (u *UserData) List(ctx context.Context) []apps.Backup {
-	e := u.Engine()
+	return u.ListIn(ctx, "")
+}
+
+// ListIn lists one engine's user-data snapshots. See engineFor: reading is per engine,
+// writing is the writer's.
+func (u *UserData) ListIn(ctx context.Context, id string) []apps.Backup {
+	e := u.engineFor(id)
 	if e == nil {
 		return nil
 	}
 	got, err := e.ListUserData(ctx)
 	if err != nil {
 		if !errors.Is(err, apps.ErrNotConfigured) {
-			logRead(err, "list user data", u.set.Writer())
+			log.Printf("backup: list user data from engine %q: %v", id, err)
 		}
 		return nil
 	}
@@ -216,10 +268,14 @@ func (u *UserData) List(ctx context.Context) []apps.Backup {
 //
 // Restoring into a new directory skips all of it. Nothing existing is touched, so
 // there is nothing to undo and nothing to warn about.
-func (u *UserData) Restore(ctx context.Context, stamp string, opts apps.UserDataRestoreOpts, emit func(apps.Event)) error {
-	e := u.Engine()
+func (u *UserData) Restore(ctx context.Context, engine, stamp string, opts apps.UserDataRestoreOpts, emit func(apps.Event)) error {
+	// The engine the snapshot came from, not the writer: the user picked a row in one
+	// engine's tab. The undo snapshot below then lands in that same engine, which keeps
+	// a set's history in one repository rather than splitting it across two on a
+	// restore.
+	e := u.engineFor(engine)
 	if e == nil {
-		ok, why := u.Available()
+		ok, why := u.AvailableIn(engine)
 		if !ok {
 			return errors.New(why)
 		}
@@ -244,7 +300,7 @@ func (u *UserData) Restore(ctx context.Context, stamp string, opts apps.UserData
 	// essentially nothing, which is why the guard is only on this branch — and why it is
 	// here rather than in the engine: the engine streams, the disk is Maison's problem.
 	if !inPlace {
-		if err := u.roomFor(ctx, stamp, opts.Dest); err != nil {
+		if err := u.roomFor(ctx, engine, stamp, opts.Dest); err != nil {
 			return err
 		}
 	}
@@ -279,9 +335,9 @@ func (u *UserData) Restore(ctx context.Context, stamp string, opts apps.UserData
 // lets the restore proceed rather than blocking it on a guess — also as the app path
 // does. A size of zero means the engine did not report one, which is not evidence that
 // it fits, so it is allowed through rather than refused on a number that is not there.
-func (u *UserData) roomFor(ctx context.Context, stamp, dest string) error {
+func (u *UserData) roomFor(ctx context.Context, engine, stamp, dest string) error {
 	var size int64
-	for _, b := range u.List(ctx) {
+	for _, b := range u.ListIn(ctx, engine) {
 		if b.Name == stamp {
 			size = b.Size
 			break

@@ -82,13 +82,29 @@ export interface UserDataBackups {
   restore: UserDataRestoreState
 }
 
-export interface GlobalBackups {
+/** One engine's tab on the Backups page.
+ *
+ *  Engines are independent repositories, so the page is a tab each rather than one
+ *  merged view: everything inside a tab belongs to that engine, and so does every
+ *  button in it. A merged list would have to invent a vocabulary for "in two places at
+ *  once", and every such vocabulary has been wrong. */
+export interface EngineBackups {
+  engine: string
+  /** The deployment's name for it; absent when nobody provisioned one. */
+  name?: string
+  offsite: boolean
   apps: AppBackups[]
   user_data: UserDataBackups
-  /** What the app backups cost *on this disk* — not the sum of their sizes, since a
-   *  backup that exists only in a repository takes no space here. This is the figure
-   *  that belongs next to `free`. */
-  local_used: number
+  /** What this engine holds, over its own backups only. */
+  total: number
+  /** The part of `total` sitting on this machine's data disk — the same number for the
+   *  local engine, zero for a remote one. This is the figure that belongs next to
+   *  `free`; `total` is not, since a repository takes no space here. */
+  used: number
+}
+
+export interface GlobalBackups {
+  engines: EngineBackups[]
   free?: number
   total?: number
 }
@@ -113,15 +129,24 @@ export function fetchAllBackups(): Promise<GlobalBackups> {
 
 /** Whether this app can be backed up right now, and what it would take. Walks the
  *  app folder, so call it when a dialog opens — not on a poll. */
-export function estimateBackup(app: string, zip: boolean): Promise<Estimate> {
-  return api.get<Estimate>(`/api/apps/${encodeURIComponent(app)}/backups/estimate?zip=${zip}`)
+export function estimateBackup(app: string, zip: boolean, engine = ''): Promise<Estimate> {
+  // The engine matters to the answer, not just to the write: a remote engine streams
+  // and needs no local room, while the local one needs a full second copy of the app.
+  return api.get<Estimate>(
+    `/api/apps/${encodeURIComponent(app)}/backups/estimate?zip=${zip}&engine=${encodeURIComponent(engine)}`,
+  )
 }
 
 /** Kick off a detached backup. Resolves once the server has *started* it; progress
  *  then arrives on the live "apps" channel as the tile's bar, exactly like an
  *  install. Rejects up front on an unknown app or too little free space. */
-export function startBackup(app: string, zip: boolean): Promise<void> {
-  return api.post(`/api/apps/${encodeURIComponent(app)}/backup?zip=${zip}`)
+export function startBackup(app: string, zip: boolean, engine = ''): Promise<void> {
+  // A target for this one backup, not a stored preference: the nightly run, an
+  // uninstall and the update rollback point all keep using the default engine, so
+  // nothing chosen here can quietly change where this app stops being backed up to.
+  return api.post(
+    `/api/apps/${encodeURIComponent(app)}/backup?zip=${zip}&engine=${encodeURIComponent(engine)}`,
+  )
 }
 
 /** Restore an archive over the live app, detached like a backup. The app's current
@@ -178,9 +203,16 @@ export function renderStamp(stamp: string): string {
  *
  *  `entries` limits it to named top-level folders ("Documents"); empty means everything
  *  the backup holds. */
-export function restoreUserData(name: string, opts: { dest?: string; entries?: string[] } = {}): Promise<void> {
+export function restoreUserData(
+  name: string,
+  engine: string,
+  opts: { dest?: string; entries?: string[] } = {},
+): Promise<void> {
   return api.post('/api/backups/userdata/restore', {
     name,
+    // The engine the snapshot came from, not the one selected now: a box that wrote
+    // its files to a repository and then switched its default still restores them.
+    engine,
     dest: opts.dest ?? '',
     entries: opts.entries ?? [],
   })

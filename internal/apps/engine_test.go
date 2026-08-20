@@ -50,7 +50,7 @@ func TestBackupUsesTheConfiguredEngine(t *testing.T) {
 	fake := backuptest.NewRemote("kopia")
 	r.Engines = backup.New(fake)
 
-	name, err := r.Backup(context.Background(), "jellyfin", false, nil)
+	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestBackupDiscardsIncompleteWork(t *testing.T) {
 			tc.apply(fake)
 			r.Engines = backup.New(fake)
 
-			if _, err := r.Backup(context.Background(), "jellyfin", false, nil); err == nil {
+			if _, err := r.Backup(context.Background(), "jellyfin", "", false, nil); err == nil {
 				t.Fatal("Backup should have failed")
 			}
 			if !strings.Contains(strings.Join(fake.Calls, " "), "abort:jellyfin/") {
@@ -107,7 +107,7 @@ func TestBackupKeepsWhatItCommitted(t *testing.T) {
 	fake := backuptest.NewRemote("kopia")
 	r.Engines = backup.New(fake)
 
-	name, err := r.Backup(context.Background(), "jellyfin", false, nil)
+	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestBackupKeepsWhatItCommitted(t *testing.T) {
 func TestBackupWithoutAnEngineUsesTheLocalOne(t *testing.T) {
 	r, cfg := newRegistry(t)
 
-	name, err := r.Backup(context.Background(), "jellyfin", false, nil)
+	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -203,5 +203,50 @@ func TestStartRestoreRefusesWhatNoEngineHas(t *testing.T) {
 		if err := r.StartRestore(context.Background(), "jellyfin", "", name); err == nil {
 			t.Errorf("StartRestore(%q) succeeded; no engine holds it", name)
 		}
+	}
+}
+
+// The free-space guard has to be evaluated against the engine the backup is actually
+// going to, not the default one.
+//
+// A remote engine streams and needs no local room, so it reports Needed:0 and always
+// "enough". If a manual backup aimed at the local engine were estimated against a
+// remote default, the guard would be skipped for the one case that genuinely needs a
+// full second copy on disk — and filling the data root does not merely fail the
+// backup, it fails every app still writing to that disk.
+func TestEstimateFollowsTheTargetEngineNotTheDefault(t *testing.T) {
+	r, _ := newRegistry(t)
+	// Default is remote; the local engine is registered and selectable as a target.
+	remote := backuptest.NewRemote("kopia")
+	set := backup.New(remote, apps.NewLocalProvider(config.Config{DataRoot: t.TempDir()}))
+	if err := set.SetWriter("kopia"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	def, err := r.EstimateBackup("jellyfin", "", false)
+	if err != nil {
+		t.Fatalf("EstimateBackup(default): %v", err)
+	}
+	if !def.Streamed || def.Needed != 0 {
+		t.Errorf("default (remote) estimate = %+v; want streamed with nothing needed locally", def)
+	}
+
+	local, err := r.EstimateBackup("jellyfin", apps.EngineLocal, false)
+	if err != nil {
+		t.Fatalf("EstimateBackup(local): %v", err)
+	}
+	if local.Streamed || local.Needed == 0 {
+		t.Errorf("local estimate = %+v; want real local space to be required", local)
+	}
+
+	// An engine nobody registered is refused rather than silently falling back to the
+	// default — writing somewhere other than where the user asked is the failure this
+	// whole seam exists to prevent.
+	if _, err := r.EstimateBackup("jellyfin", "nosuchengine", false); err == nil {
+		t.Error("EstimateBackup with an unknown engine succeeded")
+	}
+	if err := r.StartBackup("jellyfin", "nosuchengine", false); err == nil {
+		t.Error("StartBackup with an unknown engine succeeded")
 	}
 }

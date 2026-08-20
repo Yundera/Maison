@@ -115,6 +115,9 @@ type Provider interface {
 // switching engine strands everything the previous one wrote.
 type Engines interface {
 	Writer() Provider
+	// Get resolves one engine by ID, for a caller that names its target — a manual
+	// backup aimed at an engine other than the default.
+	Get(id string) (Provider, bool)
 	List(ctx context.Context, app string) []Backup
 	// LocateIn finds a backup in one named engine — the shape every user-initiated
 	// restore uses, because the user picked a row and a row belongs to an engine.

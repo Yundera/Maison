@@ -70,6 +70,21 @@ type App struct {
 
 	Links []Link `yaml:"links,omitempty"`
 
+	// Routes are the app's web endpoints, declared in the router's absence: a
+	// service, the name it answers on, and the port behind it. Maison publishes
+	// each one on every domain the deployment carries (see internal/routes), so an
+	// app never names a domain, a proxy, or a TLS setting.
+	//
+	// Deliberately NOT raising SchemaVersion, for the same reason View doesn't —
+	// but the trade is worth stating. A build that predates this field ignores
+	// `routes` and generates nothing, so a label-free app is unreachable on it;
+	// raising the version instead makes that build drop the whole x-compose-app
+	// block, costing the app its folders and hooks as well (see stackup.Load).
+	// Unreachable-but-correctly-built beats half-built. The real guard is the
+	// rollout: a store trimmed of its own labels ships as a *new* store URL, which
+	// only a build that understands routes ever subscribes to.
+	Routes []Route `yaml:"routes,omitempty"`
+
 	// Lifecycle: directories ensured before every `compose up`, and the shell
 	// hooks that bracket install and up. See docs/x-compose-app.md.
 	Folders []Folder `yaml:"folders,omitempty"`
@@ -185,6 +200,84 @@ type Link struct {
 	Name string `yaml:"name,omitempty"`
 	URL  string `yaml:"url,omitempty"`
 	Icon string `yaml:"icon,omitempty"`
+}
+
+// Route is one web endpoint of an app, stated without reference to a reverse
+// proxy: which service serves it, the name it answers on, and the port behind it.
+//
+// It carries no domain. The deployment's domains are applied to every route alike
+// (internal/routes), which is what lets the same app compose run behind this
+// deployment's gateway, behind someone else's, or behind nothing at all.
+//
+// The optional fields exist because three real store apps need them and every
+// reverse proxy has the concept — an upstream that speaks TLS, an upstream whose
+// certificate cannot be verified, a body larger than the proxy's default cap. That
+// is the bar for adding another one: if only one proxy has the concept, it belongs
+// in hand-written labels, not here.
+type Route struct {
+	// Service is the compose service the labels are written onto — which must be
+	// the service that serves the port, since a generated upstream is resolved in
+	// that container's network context. Empty means x-casaos.main, or the app's
+	// only service.
+	Service string `yaml:"service,omitempty"`
+
+	// Name is the host's leading label — `outline` in `outline-${APP_DOMAIN}`.
+	// Empty means the app's id.
+	Name string `yaml:"name,omitempty"`
+
+	// UpstreamPort is the port inside the container. It is *not* WebUIPort, which
+	// is the port in the click URL and is empty for anything behind a gateway on
+	// 443; the two differ for essentially every routed app, which is why this one
+	// is not called `port`.
+	//
+	// A string, decoded through text, so `80` and `"80"` are both accepted: a
+	// store author will write it bare, and a type error here does not cost the app
+	// its routes — it costs it its whole x-compose-app block, and with it the
+	// tile's name, icon and URL (every caller of Parse discards the error).
+	UpstreamPort string `yaml:"upstream-port,omitempty"`
+
+	// UpstreamScheme is how the proxy should reach the container: "http" (default)
+	// or "https", for an app that terminates TLS itself.
+	UpstreamScheme string `yaml:"upstream-scheme,omitempty"`
+
+	// InsecureUpstream skips verification of the upstream's certificate — needed
+	// by apps that serve HTTPS with a self-signed certificate of their own.
+	InsecureUpstream bool `yaml:"insecure-upstream,omitempty"`
+
+	// MaxBody raises the proxy's request-body cap for this route, as a size string
+	// the proxy understands ("10G"). Empty leaves the proxy's default.
+	MaxBody string `yaml:"max-body,omitempty"`
+}
+
+// UnmarshalYAML decodes a route through tolerant scalars, so a port or a size
+// written bare (`upstream-port: 80`, `max-body: 10G`) types as written.
+//
+// Like Folder's, and for a sharper reason: Parse's error is discarded by every
+// caller (apps.mergedMeta, apps.GetConfig), so one mistyped scalar anywhere in
+// this block costs the app its title, icon, category and click URL — not just its
+// routes. A route Maison cannot read is a route it should skip, never an app it
+// refuses to render.
+func (r *Route) UnmarshalYAML(n *yaml.Node) error {
+	var raw struct {
+		Service          text `yaml:"service"`
+		Name             text `yaml:"name"`
+		UpstreamPort     text `yaml:"upstream-port"`
+		UpstreamScheme   text `yaml:"upstream-scheme"`
+		InsecureUpstream bool `yaml:"insecure-upstream"`
+		MaxBody          text `yaml:"max-body"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	*r = Route{
+		Service:          string(raw.Service),
+		Name:             string(raw.Name),
+		UpstreamPort:     string(raw.UpstreamPort),
+		UpstreamScheme:   string(raw.UpstreamScheme),
+		InsecureUpstream: raw.InsecureUpstream,
+		MaxBody:          string(raw.MaxBody),
+	}
+	return nil
 }
 
 // Localized is a value that may be written as a bare string or a locale map.

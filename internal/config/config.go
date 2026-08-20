@@ -45,7 +45,7 @@ type Config struct {
 	StoreURLs []string // app-store zip URLs (multi-store)
 
 	// Domains returns the additional domains every app is published on, beyond the
-	// primary one its compose already routes (see internal/caddyroutes). It is a
+	// primary one its compose already routes (see internal/routes). It is a
 	// function, not a slice, because the operator edits the list at runtime while
 	// Config is a value copied once at boot — reading it live is what lets a
 	// settings change reach the next `docker compose up` without a restart.

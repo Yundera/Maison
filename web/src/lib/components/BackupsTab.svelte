@@ -20,7 +20,8 @@
     type Backup,
     type Estimate,
   } from '../stores/backups'
-  import { fetchBackupStatus } from '../stores/backupengine'
+  import { fetchBackupStatus, type EngineInfo } from '../stores/backupengine'
+  import { engineLabel } from '../stores/backups'
   import { apps } from '../stores/apps'
   import { renderSize } from '../format'
   import { t } from '../i18n'
@@ -46,11 +47,27 @@
    *  swallowed: BackupRows falls back to naming the engine itself, and a status call
    *  that did not answer must not turn a working list of backups into an error. */
   let engineNames = $state<Record<string, string>>({})
+  /** The engines this backup could be written to, and which one is the default. */
+  let engineList = $state<EngineInfo[]>([])
+  let defaultEngine = $state('')
+  /** Where "Back up now" will write. Empty means the default — kept as the empty
+   *  string rather than resolved to an ID so that a box whose default changes while
+   *  this panel is open still follows it. */
+  let target = $state('')
+
+  /** Which engine's backups are being LOOKED at. Deliberately separate from `target`
+   *  above: one is a view, the other is where the next backup goes, and tying them
+   *  together would mean opening a tab quietly re-aimed the button. The picker names
+   *  its destination in full for the same reason. */
+  let tab = $state('')
   fetchBackupStatus()
     .then((s) => {
       engineNames = Object.fromEntries(
         (s.engines ?? []).filter((e) => e.name).map((e) => [e.id, e.name!]),
       )
+      engineList = s.engines ?? []
+      defaultEngine = s.active
+      if (!engineList.some((e) => e.id === tab)) tab = s.active || engineList[0]?.id || ''
     })
     .catch(() => {})
 
@@ -64,9 +81,15 @@
 
   // Re-measure whenever the artefact choice changes: a zip has to budget for the
   // snapshot and the zip at once, so the two answers genuinely differ.
+  // Re-measured when the TARGET changes too, not only the artefact: the answer
+  // depends on where the bytes are going. A remote engine streams and needs no local
+  // room; the local one needs a full second copy, and it is the copy that can fill the
+  // data disk. An estimate left over from the other engine would either refuse a
+  // backup that fits or wave through one that does not.
   $effect(() => {
     const wantZip = zip
-    estimateBackup(id, wantZip)
+    const wantEngine = target
+    estimateBackup(id, wantZip, wantEngine)
       .then((e) => (estimate = e))
       .catch(() => (estimate = null))
   })
@@ -90,7 +113,13 @@
     await load()
   }
 
-  const backup = () => run(() => startBackup(id, zip))
+  /** This app's backups under the engine being viewed. The server sends one flat
+   *  list carrying each row's engine, so the split is a filter rather than a second
+   *  request — and an engine with nothing for this app still gets a tab, which is what
+   *  makes "there is no copy of this app over there" visible instead of absent. */
+  const shown = $derived(backups.filter((b) => (b.engine ?? '') === tab))
+
+  const backup = () => run(() => startBackup(id, zip, target))
   // The engine travels with the row: two engines can hold the same stamp, and each
   // copy is restored and deleted on its own.
   const restore = (b: Backup) => run(() => restoreBackup(id, b.name, b.engine))
@@ -100,6 +129,29 @@
 <p class="hint">{$t('backup_hint')}</p>
 
 <div class="make">
+  <!-- Where this one backup goes. Offered only once there is a choice to make: on a
+       box with a single engine the control would be a select with one option, which
+       tells the user nothing and implies a decision that does not exist.
+
+       This is a target for this run, NOT a preference the app keeps. The nightly run,
+       an uninstall and the update rollback point all keep writing to the default
+       engine — so "back up a copy locally before I try something" cannot quietly
+       become "this app stopped going offsite". -->
+  {#if engineList.length > 1}
+    <label class="opt">
+      <span>{$t('backup_target')}</span>
+      <select bind:value={target} disabled={busy || running}>
+        <option value="">
+          {$t('backup_target_default', {
+            engine: engineLabel(defaultEngine, engineNames[defaultEngine], (k) => $t(k)),
+          })}
+        </option>
+        {#each engineList as e (e.id)}
+          <option value={e.id}>{engineLabel(e.id, e.name, (k) => $t(k))}</option>
+        {/each}
+      </select>
+    </label>
+  {/if}
   <label class="opt">
     <input type="checkbox" bind:checked={zip} disabled={busy || running} />
     <span>{$t('backup_compress')}</span>
@@ -138,10 +190,35 @@
   <p class="hint">{$t('backup_running')}</p>
 {/if}
 
-{#if backups.length}
+<!-- A tab per engine, the same shape as Settings › Backups. Engines are independent
+     repositories, so "this app's backups" is really one list per engine — and seeing
+     them as one merged list was what made a stamp held in two places look like a
+     single backup that was somehow in both. -->
+{#if engineList.length > 1}
+  <div class="tabs" role="tablist">
+    {#each engineList as e (e.id)}
+      <button
+        role="tab"
+        class="tab"
+        class:on={tab === e.id}
+        aria-selected={tab === e.id}
+        onclick={() => (tab = e.id)}
+      >
+        {engineLabel(e.id, e.name, (k) => $t(k))}
+        {#if e.id === defaultEngine}
+          <span class="badge">{$t('backup_engine_active')}</span>
+        {/if}
+      </button>
+    {/each}
+  </div>
+{/if}
+
+{#if shown.length}
+  <!-- showEngine is off: the tab above already names it. -->
   <BackupRows
-    {backups}
+    backups={shown}
     {engineNames}
+    showEngine={false}
     busy={busy || running}
     onrestore={restore}
     ondelete={remove}
@@ -151,6 +228,44 @@
 {/if}
 
 <style>
+  .tabs {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+    margin: 0 0 0.75rem;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 0;
+    background: none;
+    padding: 0.4rem 0.65rem;
+    margin-bottom: -1px;
+    border-bottom: 2px solid transparent;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.on {
+    color: var(--text);
+    border-bottom-color: var(--accent, var(--text));
+  }
+  .badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.05rem 0.38rem;
+  }
   .hint {
     margin: 0 0 0.9rem;
     font-size: 0.85rem;

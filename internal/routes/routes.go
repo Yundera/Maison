@@ -1,28 +1,46 @@
-// Package caddyroutes publishes an app on the deployment's additional domains
-// (see internal/domains) by generating the Caddy labels for them.
+// Package routes publishes an app on the deployment's domains (see
+// internal/domains) by generating the reverse-proxy labels for them.
 //
-// A store app declares one route, on the primary domain:
+// Maison always speaks Compose. It does not always sit behind Caddy, so nothing
+// here knows Caddy's vocabulary: the label grammar is data, supplied by a Dialect
+// the deployment configures (see dialect.go), and Caddy is only its default value.
 //
-//	caddy_0: outline-${APP_DOMAIN}
-//	caddy_0.import: gateway_tls
-//	caddy_0.reverse_proxy: "{{upstreams 80}}"
+// # Two sources, one mechanism
 //
-// For every configured additional domain, Maison clones that group with the
-// domain swapped, and writes the clone into the app's docker-compose.override.yml:
+// An app states its web endpoints without naming a domain, a proxy or a TLS
+// setting — a service, a name, a port (xcomposeapp.Route). For each configured
+// domain, the dialect renders that into labels, which are written into the app's
+// docker-compose.override.yml:
 //
 //	caddy_1: outline-${APP_PUBLIC_IP_DASH}.sslip.io
 //	caddy_1.reverse_proxy: "{{upstreams 80}}"
 //
-// The clone copies the group's directives verbatim — an app's route may be a
-// whole handle_path tree, and it has to keep working on the second domain — with
-// one exception: the TLS directives are dropped and replaced by the domain's own.
-// TLS belongs to the domain, not to the app (the gateway and nip.io hosts use the
-// deployment's custom CA via `import: gateway_tls`; sslip.io deliberately carries
-// nothing and falls through to Let's Encrypt).
+// An app whose routing is genuinely proxy-specific — a handle_path tree, a
+// forward_auth block — cannot be said that way, and is not asked to be. It writes
+// its own labels, and those are *cloned* onto each further domain verbatim. Such
+// an app is bound to its proxy and its own file says so; Maison is not.
+//
+// Both sources feed one reconciliation, sharing one record of which hosts are
+// already routed, so an app can declare some routes and hand-write others.
+//
+// # What belongs to the domain
+//
+// The dialect names the keys a domain owns outright (Group.DomainKeys), and those
+// are stripped from a clone whether or not the domain supplies its own. That is
+// what keeps TLS with the domain rather than the app: the gateway and nip.io hosts
+// are served with the deployment's own CA, while sslip.io deliberately carries
+// nothing and falls through to Let's Encrypt — an absence the domain means, which
+// is why the strip cannot be conditional on the domain having something to say.
+// The app never states any of this, and Maison never learns what `import` means.
+//
+// Every other key follows the more specific source: an app's own label beats the
+// domain's, and the domain's beats a dialect default. So an app that still writes
+// its own routes keeps its own opinions on the domains it is cloned onto, and only
+// gives them up when it stops expressing one.
 //
 // The host is emitted still-templated, so it resolves through ordinary Compose
-// interpolation exactly like the primary route does — and a bare
-// `docker compose up -d` in the app's folder reproduces what Maison runs.
+// interpolation — and a bare `docker compose up -d` in the app's folder reproduces
+// what Maison runs.
 //
 // # Why the override, and how it stays safe
 //
@@ -34,7 +52,7 @@
 // precisely those before writing the new set. Nothing else in the file is read or
 // touched, and it is patched through its node tree, so comments and key order
 // survive.
-package caddyroutes
+package routes
 
 import (
 	"fmt"
@@ -246,8 +264,8 @@ func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain, resolve Reso
 
 				// The domain's own directives lead, as they do in a hand-written store
 				// route (`caddy_0.import` above `caddy_0.reverse_proxy`), then the app's.
-				for _, dk := range sortedKeys(d.Directives) {
-					written = append(written, setLabel(labels, key+"."+dk, d.Directives[dk]))
+				for _, dk := range sortedKeys(d.Labels) {
+					written = append(written, setLabel(labels, key+"."+dk, d.Labels[dk]))
 				}
 				for _, s := range g.subs {
 					if domainOwned(s.key) {

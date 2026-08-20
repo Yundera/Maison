@@ -6,13 +6,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yundera/maison/internal/caddyroutes"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/routes"
 )
 
-// SyncRoutes reconciles the app's generated Caddy routes — the ones publishing it
-// on the deployment's additional domains (Settings › Domains) — into its
+// SyncRoutes reconciles the app's generated routes — the ones publishing it on
+// the deployment's domains (Settings › Domains) — into its
 // docker-compose.override.yml, and returns the compose files to bring the stack up
 // with.
 //
@@ -46,16 +46,16 @@ func SyncRoutes(cfg config.Config, project, dir string, files []string) []string
 	// base variables, then the app's own .env). Without it a route already declared
 	// as `${PUBLIC_IP_DASH}.nip.io` reads as a different host from a domain
 	// configured as `${APP_PUBLIC_IP_DASH}.nip.io`, and the app is published twice
-	// on one name. See caddyroutes.Resolver.
+	// on one name. See routes.Resolver.
 	appEnv, _ := os.ReadFile(filepath.Join(dir, ".env"))
 	resolve := func(host string) string { return envinject.Render(host, cfg, project, appEnv) }
 
-	out, err := caddyroutes.Sync(base, override, doms, resolve)
+	out, err := routes.Sync(base, override, doms, resolve)
 	if err != nil {
 		// A malformed override is the operator's to fix, and they can still see it in
 		// the YAML editor. Failing the up over it would strand the app with no way
 		// back, so carry on with what is on disk.
-		log.Printf("%s: caddy routes: %v", project, err)
+		log.Printf("%s: routes: %v", project, err)
 		return files
 	}
 
@@ -64,11 +64,11 @@ func SyncRoutes(cfg config.Config, project, dir string, files []string) []string
 		// Nothing left in the override — the app had no edits of its own and the last
 		// domain just went away.
 		if err := os.Remove(overridePath); err != nil && !os.IsNotExist(err) {
-			log.Printf("%s: caddy routes: %v", project, err)
+			log.Printf("%s: routes: %v", project, err)
 		}
 	case !bytes.Equal(out, override):
 		if err := os.WriteFile(overridePath, out, 0o644); err != nil {
-			log.Printf("%s: caddy routes: %v", project, err)
+			log.Printf("%s: routes: %v", project, err)
 			return files
 		}
 	}

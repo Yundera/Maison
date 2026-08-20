@@ -108,6 +108,13 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	s.backupSched.RestoreInProgress = func() bool { return s.userData.State().Running }
 	s.backupSched.OnChange = throttle(300*time.Millisecond, s.broadcastApps)
 	s.backupSched.Start(context.Background())
+	// Hand the user their encryption key without waiting to be asked. A key that only
+	// ever leaves the box when someone clicks a button is a key most users never take
+	// a copy of, and the first time that matters is the day the disk is gone. Sent
+	// once per box — see EnsureKeyEmailed for what "once" is anchored on — and in its
+	// own goroutine because it waits on the mail relay coming up, which must not hold
+	// the dashboard's boot.
+	go s.EnsureKeyEmailed()
 
 	// App store + installer (independent of Docker connectivity for browsing).
 	// Persisted store sources (if any) take precedence over the env default.
@@ -187,6 +194,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Put("/backup/config", s.handlePutBackupConfig)
 		r.Post("/backup/run", s.handleRunBackup)
 		r.Post("/backup/email-key", s.handleEmailKey)
+		// POST rather than GET although it only reads: the response body is the
+		// encryption key, and a GET would park it in history and prefetches. See
+		// handleShowKey.
+		r.Post("/backup/key", s.handleShowKey)
 
 		r.Get("/backups", s.handleGlobalBackups)
 		// Static beats {app} in chi, which is what keeps this from being read as a

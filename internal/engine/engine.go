@@ -83,6 +83,16 @@ type Spec struct {
 	Network Network
 	Mounts  []Mount
 
+	// WorkDir is the container's working directory.
+	//
+	// It is not cosmetic. kopia records its cache location in the repository
+	// configuration RELATIVE to that file when the two are siblings, and then resolves
+	// it against the process's working directory — so a container left in the image's
+	// own WORKDIR looks for the cache at /app/cache and fails with "unable to create
+	// cache directory: permission denied" the moment it runs as anything but root.
+	// Pointing the container at the engine's own directory makes the two agree.
+	WorkDir string
+
 	// Args are the engine's own arguments, appended after the image.
 	Args []string
 
@@ -167,6 +177,9 @@ func Argv(s Spec) ([]string, error) {
 	}
 	if s.User != "" {
 		argv = append(argv, "--user", s.User)
+	}
+	if s.WorkDir != "" {
+		argv = append(argv, "-w", s.WorkDir)
 	}
 	for _, m := range s.Mounts {
 		if m.HostPath == "" || m.ContainerPath == "" {

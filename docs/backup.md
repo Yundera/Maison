@@ -9,10 +9,12 @@
 > The user-data set is listable and restorable from the Backups page — both modes, with
 > the guards described in [Restore](#the-user-data-set).
 >
-> **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)),
-> and the host-side `ensure-backup-config.sh` that renders storage credentials onto
-> the box — until that exists, a repository is connected by hand, which is also how
-> this is developed and tested.
+> **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)).
+> The host-side pair that provisions a repository — `ensure-backup-credentials.sh` and
+> `ensure-backup-config.sh` in `template-root` — now exists and is described under
+> [What Maison consumes from the PCS](#what-maison-consumes-from-the-pcs); a
+> hand-connected repository against MinIO or a filesystem path remains how this is
+> developed and tested.
 >
 > Two things changed during implementation and are corrected in place below: there is
 > **no local staging copy** on the remote path (§[Why there is no local staging
@@ -377,13 +379,14 @@ assuming the flags.
 It lives at `AppDataShared/backup/<engine>/repository.password`, mode 0600. It has to
 stay on the box — an unattended nightly backup cannot prompt for it.
 
-The user's only off-box copy is the setup email (below). Stated plainly, because it
+The user takes their own copy: the dashboard shows the key on demand, and Maison
+mails it once on the first boot where it can (see below). Stated plainly, because it
 must be stated plainly to users too:
 
 **the PCS holds it, the user holds a copy, Yundera holds nothing and cannot recover
 it.**
 
-The consequence is accepted rather than mitigated: a user who loses that mail loses
+The consequence is accepted rather than mitigated: a user who keeps no copy loses
 the backups, and no support path exists. Any future softening has to preserve the
 first line — client-side wrapping under a user credential with only ciphertext stored
 server-side is the shape that does; server-side derivation is the shape that does not.
@@ -400,8 +403,8 @@ into failure, one on recovery** — not one per failed run, which becomes noise 
 a filter rule. The sticky-error state already tracked per tile is the right trigger
 source.
 
-**2. Handing the user their encryption key — once, at setup, user-initiated.** This is the
-only reason a copy of the password exists anywhere but the box.
+**2. Handing the user their encryption key.** This is the only reason a copy of the
+password exists anywhere but the box.
 
 > **This one cannot go through the PCS's `smtp` container.** Every PCS runs
 > `ghcr.io/yundera/mail-gateway`, which parses the message and forwards it over HTTPS to
@@ -414,15 +417,37 @@ So the two jobs use different transports:
 | Job | Transport |
 |---|---|
 | Failure alerts | The built-in `smtp` container. Zero config, already working, nothing secret in the body. |
-| **The key** | **Display in the UI once, with a download.** No mail by default. Optionally, user-supplied SMTP credentials — direct from the PCS, bypassing the relay. |
+| **The key** | Both. **Displayed in the dashboard** on demand — nothing leaves the box. **And mailed once**, automatically, on the first boot where a mail server answers. |
 
-Display-and-download is not a workaround, it is the better default: it preserves the security
-property exactly, removes a dependency, and avoids parking a plaintext secret in an inbox where it
-is indexed and retained indefinitely. Whatever the user does with it afterwards is their choice
-to make with full knowledge.
+Display costs nothing and preserves the security property exactly: the key goes to the browser of
+someone already authenticated as the owner and stops there. It is offered first for that reason.
 
-Whichever is chosen, it is **once, user-initiated, and clearly labelled as unrecoverable**. It must
-never be recurring or automatic.
+The automatic mail is a deliberate trade, made against a likelier failure than the one above. A key
+that only leaves the box when someone presses a button is a key most users never copy, and the day
+that matters is the day the disk is gone — at which point a plaintext secret sitting in an inbox is
+the difference between a restore and nothing. Where the relay is Yundera's, the caveat above applies
+in full and is the accepted cost; a deployment that supplies its own SMTP credentials avoids it.
+
+The mail is sent **once per box**, and "once" is anchored on a receipt file rather than on anyone
+remembering:
+
+```
+${StateDir}/backup-key-sent.json     0600   {"sent_at":…, "to":…, "engine":…, "auto":true}
+```
+
+Written *after* a successful send, so a crash mid-send costs a duplicate mail rather than a key that
+is never handed over — the right way round. A malformed receipt reads as *already sent*, for the
+same reason: the failure this file exists to prevent is mailing the key on every restart. Absent, it
+means no copy has ever been mailed, and the settings page says so.
+
+The boot-time send retries for a few minutes before giving up until the next boot — on a PCS the
+mail relay is a sibling container and boot order between the two is not guaranteed, so a single
+attempt at t=0 would fail on exactly the deployments this is for. It gives up rather than retrying
+forever: past that window, "no mail server" is an answer and not a race.
+
+The button remains, unconditionally: a user asking for the key again has a reason, and refusing
+because a receipt exists would leave them with no way to reach a secret that is theirs. Both paths
+are **clearly labelled as unrecoverable**.
 
 ---
 
@@ -593,25 +618,62 @@ retention, but a deliberate choice rather than a surprise.
 
 ## What Maison consumes from the PCS
 
-Maison **never fetches credentials.** A self-check script on the host reads the
-storage credentials out of the PCS secret env and renders them into
-`AppDataShared/backup/<engine>/repository.config`. Maison reads that file and shells
-out to the engine.
+Maison **never fetches credentials.** Two self-check scripts on the host do it:
+`ensure-backup-credentials.sh` exchanges the box's JWT for a scoped, expiring storage
+key and parks it in the PCS secret env, and `ensure-backup-config.sh` turns that into
+a connected repository under `AppDataShared/backup/<engine>/`. Maison reads what it
+finds there and shells out to the engine.
 
 This keeps credential fetch, key rotation and suspended-space handling in the host
-path that already does that work, and keeps Maison's blast radius at *reads a config
-file it does not own*.
+path that already does that work, and keeps Maison's blast radius at *reads files it
+does not own*.
+
+Four of them, and the split between them is the whole design:
+
+| File | Written | Read by Maison |
+|---|---|---|
+| `repository.config` | **once**, at first connect | identity and storage type |
+| `repository.password` | once, with the repository | every invocation |
+| `credentials.env` | on **every** rotation | every invocation, fresh |
+| `state.json` | every host run | writability and credential expiry |
+
+**The storage credentials are deliberately not in `repository.config`.** kopia
+persists whatever it was given at connect time and offers no flag to stop it
+(`--no-persist-credentials` governs the repository *password*). The host script
+therefore blanks the two persisted fields and rotates `credentials.env` alone; kopia
+accepts `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from the environment for every
+ordinary operation and does not write them back.
+
+The reason is identity. Installing a rotated key by re-running `repository connect`
+rewrites the whole configuration file, and a reconnect that omits
+`--override-hostname` / `--override-username` silently refiles the box under the
+engine container's random hostname and `root`. kopia keys snapshots `user@host:path`,
+so that costs a full re-hash of every file and leaves per-source retention pointed at
+a lineage nothing writes to any more, while the new one is covered by no policy at
+all. `snapshot list --all` still shows everything, so none of it is visible from here
+until the storage bill grows. Writing the configuration exactly once removes the
+failure mode rather than documenting it.
 
 Three requirements follow:
 
-- **Tolerate the file being absent.** On a box where the host side has not run, the
+- **Tolerate the files being absent.** On a box where the host side has not run, the
   backup UI degrades to "not configured" — it does not error. This is the same state
   recovery mode builds on.
-- **Tolerate the file being stale.** A rotated credential means a repository
-  re-connect, not a failure.
-- **Never branch on who wrote it.** A hand-written `repository.config` pointing at a
+- **Tolerate them being stale.** A rotated credential is picked up on the next
+  invocation because `credentials.env` is read per run, not at construction.
+- **Never branch on who wrote them.** A hand-written `repository.config` pointing at a
   local MinIO or a filesystem repository must exercise every code path — that is how
-  this is developed and tested before the host side exists.
+  this is developed and tested. A filesystem repository has no `credentials.env` at
+  all, and that is not an error.
+
+The host side also leaves two markers in the same directory, both currently written
+and not yet read:
+
+- `needs-credentials` — the storage refused the key. The credentials script consumes
+  it on the next cycle and mints a fresh one.
+- `needs-recovery` — the backup space already holds a repository and this box has no
+  password, i.e. the box was rebuilt. The host script stops rather than initialising a
+  second repository under the same prefix. This is the seam recovery mode plugs into.
 
 A credential may also arrive marked **not writable** (a storage space suspended for
 quota abuse). That path must degrade correctly rather than error: **restores and

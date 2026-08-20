@@ -66,6 +66,17 @@ export interface RunState {
   last_error?: string
 }
 
+/** When a copy of the encryption key last left the box by mail. Absent means no
+ *  copy has ever been mailed — which the page says out loud, because a key nobody
+ *  has a copy of is the failure this whole section exists to prevent. */
+export interface KeySentRecord {
+  sent_at: string
+  to?: string
+  engine?: string
+  /** True when Maison sent it on its own at boot rather than the user asking. */
+  auto?: boolean
+}
+
 export interface BackupStatus {
   engines?: EngineInfo[]
   active: string
@@ -73,6 +84,10 @@ export interface BackupStatus {
   run: RunState
   config: BackupConfig
   targets?: string[]
+  /** False on a box whose repository has never been provisioned: there is no key to
+   *  show or mail, and the page offers neither. */
+  has_key: boolean
+  key_sent?: KeySentRecord
 }
 
 export function fetchBackupStatus(): Promise<BackupStatus> {
@@ -93,4 +108,12 @@ export function runBackupNow(): Promise<unknown> {
  *  see the warning the settings page shows next to it. */
 export function emailBackupKey(): Promise<unknown> {
   return api.post('/api/backup/email-key')
+}
+
+/** Reads the repository encryption key for display.
+ *
+ *  A POST although it only reads: the response body is the key itself, and a GET
+ *  would leave it in history, prefetches and anything that shares a URL. */
+export function showBackupKey(): Promise<{ key: string }> {
+  return api.post<{ key: string }>('/api/backup/key')
 }

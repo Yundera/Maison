@@ -134,6 +134,10 @@ func (p *Provider) dir() string { return p.cfg.BackupEngineDir(ID) }
 func (p *Provider) configFile() string   { return filepath.Join(p.dir(), "repository.config") }
 func (p *Provider) passwordFile() string { return filepath.Join(p.dir(), "repository.password") }
 
+// credentialsFile holds the storage credentials as KEY=VALUE lines, written and
+// rotated by the host-side ensure-backup-config.sh. See credentials().
+func (p *Provider) credentialsFile() string { return filepath.Join(p.dir(), "credentials.env") }
+
 // repoConfig is the part of kopia's own config file Maison reads. The identity
 // fields are written there by `repository connect --override-hostname/--username`,
 // which is why Maison never has to pass a hostname of its own — and must not, since
@@ -171,6 +175,42 @@ func (p *Provider) password() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(b)), nil
+}
+
+// credentials are the storage credentials, read fresh on every invocation.
+//
+// They are NOT in repository.config, and that is deliberate on the host side: kopia
+// persists whatever it was given at connect time, so installing a rotated key that
+// way means rewriting the whole configuration file — including the identity that
+// every snapshot is filed under. The host script therefore blanks the persisted
+// fields and rotates this file alone, which kopia accepts as the credential source
+// for every ordinary operation.
+//
+// Reading it per run rather than at construction is what makes a rotation take effect
+// on the next backup instead of the next restart. An absent file is not an error: a
+// filesystem repository has no credentials, and a repository whose configuration
+// still carries its own needs none from here.
+func (p *Provider) credentials() (map[string]string, error) {
+	b, err := os.ReadFile(p.credentialsFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return out, nil
 }
 
 // Status reports whether the repository is usable, cached briefly because both the
@@ -246,6 +286,14 @@ func (p *Provider) run(ctx context.Context, emit func(apps.Event), timeout time.
 	if err != nil {
 		return nil, err
 	}
+	secrets := map[string]string{"KOPIA_PASSWORD": pw}
+	creds, err := p.credentials()
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range creds {
+		secrets[k] = v
+	}
 	// A filesystem repository needs no networking at all, which also keeps the tests
 	// hermetic. Anything else reaches a bucket over the default bridge — never a
 	// network Maison's peers are on.
@@ -259,8 +307,9 @@ func (p *Provider) run(ctx context.Context, emit func(apps.Event), timeout time.
 		Hostname: p.hostname(rc),
 		User:     p.cfg.PUID + ":" + p.cfg.PGID,
 		Network:  net,
+		WorkDir:  p.dir(),
 		Mounts:   []engine.Mount{p.runner.DataMount(false)},
-		Secrets:  map[string]string{"KOPIA_PASSWORD": pw},
+		Secrets:  secrets,
 		Args:     append(args, "--config-file="+p.configFile()),
 		Timeout:  timeout,
 	}, func(line string) { emitLine(emit, line) })

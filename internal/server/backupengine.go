@@ -5,16 +5,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
-	"github.com/yundera/maison/internal/notify"
 )
 
 // Backup engines, their configuration, and the schedule.
@@ -88,6 +84,15 @@ type engineStatus struct {
 	Run     backup.RunState     `json:"run"`
 	Config  backupconfig.Config `json:"config"`
 	Targets []string            `json:"targets"`
+
+	// HasKey is whether this box has an encryption key at all — false on a box whose
+	// repository has never been provisioned, where offering to show or mail a key
+	// would be offering something that does not exist.
+	HasKey bool `json:"has_key"`
+	// KeySent is the receipt: when a copy of the key last left the box by mail, and
+	// where to. Absent means no copy has ever been mailed, which is what the page
+	// says out loud rather than leaving the user to wonder.
+	KeySent *keySentRecord `json:"key_sent,omitempty"`
 }
 
 type engineInfo struct {
@@ -106,6 +111,12 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		Active: s.engines.Writer().ID(),
 		Chosen: s.backupConf.Get().Engine,
 		Config: s.backupConf.Get(),
+	}
+	if _, err := readEnginePassword(s.cfg, kopia.ID); err == nil {
+		out.HasKey = true
+	}
+	if rec, sent := readKeySent(s.cfg); sent && !rec.SentAt.IsZero() {
+		out.KeySent = &rec
 	}
 	for _, id := range s.engines.IDs() {
 		p, _ := s.engines.Get(id)
@@ -180,49 +191,4 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
-}
-
-// handleEmailKey mails the repository password to the configured address.
-//
-// This is the only copy of that password that exists off the box, and it is the
-// whole disaster-recovery story: the PCS holds it, the user holds a copy, Yundera
-// holds nothing and cannot recover it.
-//
-// It is user-initiated and sent once. It must not become recurring or automatic —
-// putting a plaintext secret into an inbox is a deliberate trade against an
-// unrecoverable backup, and it stops being a reasonable one if it happens on a
-// schedule.
-func (s *Server) handleEmailKey(w http.ResponseWriter, r *http.Request) {
-	if s.backupConf == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "backups unavailable"})
-		return
-	}
-	conf := s.backupConf.Get()
-	if !conf.SMTP.Configured() {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no mail server configured"})
-		return
-	}
-	pw, err := readEnginePassword(s.cfg, kopia.ID)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no repository password on this box"})
-		return
-	}
-	body := "This is the encryption key for the backups on your server.\n\n" +
-		pw + "\n\n" +
-		"Store it somewhere safe and then delete this email.\n\n" +
-		"Without it your backups cannot be decrypted, by you or by anyone else — " +
-		"including Yundera, which never receives it. If you lose it there is no recovery path.\n"
-	if err := notify.Send(conf.SMTP, "Your backup encryption key", body); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
-}
-
-func readEnginePassword(cfg config.Config, engine string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(cfg.BackupEngineDir(engine), "repository.password"))
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(b)), nil
 }

@@ -147,7 +147,13 @@
   "backup_last_run_ok": "The last backup completed successfully.",
   "backup_last_run_failed": "The last backup failed",
   "backup_key": "Encryption key",
-  "backup_key_hint": "Your backups are encrypted with a key held only on this server. Email yourself a copy and store it somewhere safe — without it, backups cannot be restored, and nobody can recover it for you.",
+  "backup_key_hint": "Your backups are encrypted with a key held only on this server. Save a copy somewhere safe — show it here and store it yourself, or have it emailed to you. Without it, backups cannot be restored, and nobody can recover it for you.",
   "backup_key_send": "Email me the key",
-  "backup_key_sent": "Key sent"
+  "backup_key_sent": "Key sent",
+  "backup_key_show": "Show the key",
+  "backup_key_hide": "Hide the key",
+  "backup_key_sent_on": "A copy was emailed to {to} on {when}.",
+  "backup_key_never_sent": "No copy of this key has been emailed yet.",
+  "copy": "Copy",
+  "copied": "Copied"
 }

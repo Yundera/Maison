@@ -24,6 +24,7 @@
     saveBackupConfig,
     runBackupNow,
     emailBackupKey,
+    showBackupKey,
     type BackupStatus,
     type BackupConfig,
   } from '../../stores/backupengine'
@@ -137,6 +138,50 @@
   const runNow = () => apply(runBackupNow, $t('backup_run_started'))
   const sendKey = () => apply(emailBackupKey, $t('backup_key_sent'))
 
+  // --- the key itself -----------------------------------------------------------
+  // Shown on demand rather than with the rest of the page: this is the one secret on
+  // the box that has no recovery path, and it has no business being on screen behind
+  // whoever walks past while its owner is reading about retention tiers.
+  let key = $state('')
+  let copied = $state(false)
+
+  async function toggleKey() {
+    if (key) {
+      key = ''
+      copied = false
+      return
+    }
+    busy = true
+    error = ''
+    note = ''
+    try {
+      key = (await showBackupKey()).key
+    } catch (e) {
+      error = (e as Error).message
+    } finally {
+      busy = false
+    }
+  }
+
+  // Copying is offered as well as selecting because the key is a long random string
+  // and a half-selected one fails silently — the restore that needs it happens months
+  // later, on a different machine, with no way to tell a wrong key from a lost one.
+  async function copyKey() {
+    try {
+      await navigator.clipboard.writeText(key)
+      copied = true
+    } catch {
+      // Not available on an insecure origin. Selecting the text still works, so this
+      // is a missing convenience rather than a failure worth an error banner.
+      copied = false
+    }
+  }
+
+  /** When a copy of the key was last mailed, for the line under the buttons. */
+  const keySentAt = $derived(
+    status?.key_sent ? new Date(status.key_sent.sent_at).toLocaleString() : '',
+  )
+
   /** An engine the user picked but that has nothing to write to. Backups would fail
    *  rather than quietly land on the data disk, and saying so here is the whole
    *  point — believing your data is offsite when it is not is the worst outcome this
@@ -240,8 +285,31 @@
          user holds a copy, and Yundera holds nothing and cannot help. -->
     <p class="hint">{$t('backup_key_hint')}</p>
     <div class="actions">
+      <!-- Showing it first, mailing it second: reading the key off the screen keeps
+           it on the box, where mailing it puts a plaintext secret in an inbox. Both
+           are offered because the mail is the copy that survives losing the box. -->
+      <button onclick={toggleKey} disabled={busy || status.has_key === false}>
+        {key ? $t('backup_key_hide') : $t('backup_key_show')}
+      </button>
       <button onclick={sendKey} disabled={busy}>{$t('backup_key_send')}</button>
     </div>
+
+    {#if key}
+      <div class="key">
+        <code>{key}</code>
+        <button onclick={copyKey}>{copied ? $t('copied') : $t('copy')}</button>
+      </div>
+    {/if}
+
+    <!-- Whether a copy has ever left the box is the only fact that matters here, so
+         it is stated either way rather than only when reassuring. -->
+    <p class="hint key-state">
+      {#if status.key_sent}
+        {$t('backup_key_sent_on', { when: keySentAt, to: status.key_sent.to ?? '' })}
+      {:else if status.has_key}
+        {$t('backup_key_never_sent')}
+      {/if}
+    </p>
 
     {#if error}<p class="err">{error}</p>{/if}
     {#if note}<p class="ok">{note}</p>{/if}
@@ -455,6 +523,31 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.03em;
+  }
+  /* The key itself: monospaced and selectable in one gesture, because it is
+     transcribed by hand often enough that a proportional font is a real hazard —
+     l/1 and O/0 decide whether a restore works. */
+  .key {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.75rem 0 0;
+    padding: 0.5rem 0.6rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .key code {
+    flex: 1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85rem;
+    word-break: break-all;
+    user-select: all;
+    color: var(--text);
+  }
+  .key-state {
+    margin-top: 0.75rem;
+    margin-bottom: 0;
   }
   .err {
     margin: 0 0 0.9rem;

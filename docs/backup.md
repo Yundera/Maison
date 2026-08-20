@@ -666,6 +666,17 @@ Three requirements follow:
   this is developed and tested. A filesystem repository has no `credentials.env` at
   all, and that is not an error.
 
+**Two more things the engine image dictates, both found by running it rather than
+reading it.** kopia's container bakes `KOPIA_CACHE_DIRECTORY=/app/cache` and
+`KOPIA_LOG_DIR=/app/logs` into its own environment, and those **outrank**
+`--cache-directory` and `--log-dir` on the command line. `/app` belongs to root, so an
+engine running as `PUID` cannot create either and every command fails with
+`unable to create cache directory: mkdir /app/cache: permission denied` before it ever
+reaches the repository — which is why `engine.Spec` carries `Env` (by value) alongside
+`Secrets` (by name). And kopia's `--endpoint` is a `host[:port]`, not a URL: the
+credential API returns a URL because that contract is engine-independent, and the host
+script strips the scheme because only it knows what kopia parses.
+
 The host side also leaves two markers in the same directory, both currently written
 and not yet read:
 

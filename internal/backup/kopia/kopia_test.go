@@ -611,3 +611,25 @@ func TestCredentialsFileParsing(t *testing.T) {
 		t.Errorf("credentials() = %v, want exactly the two keys", got)
 	}
 }
+
+// The kopia image ships KOPIA_CACHE_DIRECTORY=/app/cache and KOPIA_LOG_DIR=/app/logs,
+// and they outrank --cache-directory and --log-dir. /app is root's, so an engine
+// running as PUID cannot create either and every command fails before it reaches the
+// repository. Both must land beside the rest of the engine's state.
+func TestEngineEnvOverridesTheImagesBakedInPaths(t *testing.T) {
+	cfg := config.Config{DataRoot: "/DATA"}
+	p := New(cfg)
+	env := p.engineEnv()
+
+	if got, want := env["KOPIA_CACHE_DIRECTORY"], "/DATA/AppDataShared/backup/kopia/cache"; got != want {
+		t.Errorf("KOPIA_CACHE_DIRECTORY = %q, want %q", got, want)
+	}
+	if got, want := env["KOPIA_LOG_DIR"], "/DATA/AppDataShared/backup/kopia/logs"; got != want {
+		t.Errorf("KOPIA_LOG_DIR = %q, want %q", got, want)
+	}
+	for k, v := range env {
+		if strings.HasPrefix(v, "/app") {
+			t.Errorf("%s still points inside the image at %q", k, v)
+		}
+	}
+}

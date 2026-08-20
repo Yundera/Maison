@@ -285,3 +285,28 @@ func TestRunReportsCancellationDistinctly(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap context.Canceled", err)
 	}
 }
+
+// Env exists to beat environment an image bakes into itself, so the values have to
+// reach argv — unlike Secrets, which appear by name only.
+func TestEnvAppearsByValueAndSecretsDoNot(t *testing.T) {
+	argv, err := Argv(Spec{
+		Image:    "kopia/kopia:0.23.1",
+		Name:     "n",
+		Hostname: "h",
+		Env:      map[string]string{"KOPIA_CACHE_DIRECTORY": "/DATA/AppDataShared/backup/kopia/cache"},
+		Secrets:  map[string]string{"KOPIA_PASSWORD": "hunter2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "-e KOPIA_CACHE_DIRECTORY=/DATA/AppDataShared/backup/kopia/cache") {
+		t.Errorf("Env value missing from argv: %v", argv)
+	}
+	if strings.Contains(joined, "hunter2") {
+		t.Errorf("secret VALUE leaked into argv: %v", argv)
+	}
+	if !strings.Contains(joined, "-e KOPIA_PASSWORD") {
+		t.Errorf("secret name missing from argv: %v", argv)
+	}
+}

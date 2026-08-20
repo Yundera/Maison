@@ -275,6 +275,20 @@ func (p *Provider) Prepare(ctx context.Context, emit func(apps.Event)) error {
 	return nil
 }
 
+// engineEnv overrides the paths the kopia image bakes into its own environment.
+//
+// The image ships KOPIA_CACHE_DIRECTORY=/app/cache and KOPIA_LOG_DIR=/app/logs, and
+// those outrank --cache-directory and --log-dir. /app belongs to root, so an engine
+// running as PUID cannot create either and every command fails before it reaches the
+// repository. Both belong beside the rest of the engine's state, where the user-data
+// set already excludes them by pattern.
+func (p *Provider) engineEnv() map[string]string {
+	return map[string]string{
+		"KOPIA_CACHE_DIRECTORY": filepath.Join(p.dir(), "cache"),
+		"KOPIA_LOG_DIR":         filepath.Join(p.dir(), "logs"),
+	}
+}
+
 // run invokes kopia. Every invocation carries --config-file and the password through
 // the environment; nothing else is global.
 func (p *Provider) run(ctx context.Context, emit func(apps.Event), timeout time.Duration, args ...string) ([]byte, error) {
@@ -307,7 +321,7 @@ func (p *Provider) run(ctx context.Context, emit func(apps.Event), timeout time.
 		Hostname: p.hostname(rc),
 		User:     p.cfg.PUID + ":" + p.cfg.PGID,
 		Network:  net,
-		WorkDir:  p.dir(),
+		Env:      p.engineEnv(),
 		Mounts:   []engine.Mount{p.runner.DataMount(false)},
 		Secrets:  secrets,
 		Args:     append(args, "--config-file="+p.configFile()),

@@ -48,7 +48,7 @@ export interface Backup {
   date: string // YYYY-MM-DD
   zip: boolean // compressed archive rather than a plain renamed folder
   size: number // bytes; only known for zips (0 for folders)
-  tier: 'local' | 'remote' | 'both' // where it is; see stores/backups.ts
+  tier: 'local' | 'remote' // where it is; a backup belongs to one engine — see stores/backups.ts
   engine?: string // which engine holds it
 }
 

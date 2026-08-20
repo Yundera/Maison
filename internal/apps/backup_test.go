@@ -179,7 +179,7 @@ func TestRestoreArchivesTheStateItReplaces(t *testing.T) {
 	// Stamps have one-second resolution, so a restore in the same second as the
 	// backup would collide with it. Real use never does; the test must wait.
 	time.Sleep(time.Second)
-	if err := r.Restore(context.Background(), "jellyfin", name, nil); err != nil {
+	if err := r.Restore(context.Background(), "jellyfin", "", name, nil); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 

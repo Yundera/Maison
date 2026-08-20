@@ -96,7 +96,19 @@ type engineStatus struct {
 }
 
 type engineInfo struct {
-	ID        string `json:"id"`
+	ID string `json:"id"`
+
+	// Name is what to call this engine on screen, when something on the box knows a
+	// better answer than its ID.
+	//
+	// The ID is permanent and is recorded on every backup it writes (apps.Backup.Engine),
+	// which is exactly why it must stay a bare engine name: it is machine identity, and
+	// a deployment's branding has no business in it. The display name comes from the
+	// provisioning side instead — for kopia, the host-written state file — so a PCS can
+	// say "Yundera Backup Storage" while a self-hoster running the same engine against
+	// their own bucket sees no such claim. Empty means nobody named it and the client
+	// falls back to describing the engine itself.
+	Name      string `json:"name,omitempty"`
 	Connected bool   `json:"connected"`
 	Detail    string `json:"detail,omitempty"`
 	Offsite   bool   `json:"offsite"`
@@ -125,7 +137,7 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		info.Connected = true
 		if k, ok := p.(*kopia.Provider); ok {
 			st := k.Status(r.Context())
-			info.Connected, info.Detail = st.Connected, st.Detail
+			info.Connected, info.Detail, info.Name = st.Connected, st.Detail, st.Label
 		}
 		out.Engines = append(out.Engines, info)
 	}

@@ -4,36 +4,45 @@
   // and behaves the same wherever it is reached from — which matters because after
   // an uninstall the global page is the *only* place it can be reached from.
   //
+  // Rows are grouped by the engine that holds them, and that grouping is the whole
+  // model: engines run independently, so a stamp present both on the data disk and
+  // in a repository is TWO backups, restorable and deletable separately. They used to
+  // be folded into one row marked "on this disk + offsite", which could only ever be
+  // right while exactly one engine was offsite.
+  //
   // Both actions confirm inline rather than through a dialog: they are one row's
   // worth of decision, and the row already says which archive it is about.
-  import { type Backup, renderStamp } from '../stores/backups'
+  import { type Backup, renderStamp, engineLabel } from '../stores/backups'
   import { renderSize } from '../format'
   import { t } from '../i18n'
 
   let {
     backups,
+    engineNames = {},
     busy = false,
     onrestore,
     ondelete,
   }: {
     backups: Backup[]
+    /** Engine ID -> the name the deployment provisioned for it, when it has one. */
+    engineNames?: Record<string, string>
     busy?: boolean
     onrestore: (b: Backup) => void
     ondelete: (b: Backup) => void
   } = $props()
 
-  // Which row is asking for confirmation, and for what. One at a time: opening a
-  // second confirmation closes the first, so there is never a choice about which
-  // "Confirm" you are looking at.
-  let pending = $state<{ name: string; action: 'restore' | 'delete' } | null>(null)
+  /** Which row is asking for confirmation, and for what. Keyed by engine AND name,
+   *  because the same stamp can appear under two engines and confirming one must not
+   *  arm the other. One at a time: opening a second confirmation closes the first. */
+  let pending = $state<{ key: string; action: 'restore' | 'delete' } | null>(null)
+
+  /** A row's identity. Not the name alone — two engines can hold the same stamp, and
+   *  a duplicate key is both a Svelte error and the wrong backup being acted on. */
+  const rowKey = (b: Backup) => `${b.engine ?? ''}:${b.name}`
 
   function ask(b: Backup, action: 'restore' | 'delete') {
-    pending = { name: b.name, action }
+    pending = { key: rowKey(b), action }
   }
-
-  // The tiers the server can report. Kept here as data so the guard in the markup is
-  // one list rather than a chain of comparisons.
-  const TIERS = ['local', 'remote', 'both']
 
   function confirm(b: Backup) {
     const action = pending?.action
@@ -41,51 +50,92 @@
     if (action === 'restore') onrestore(b)
     else if (action === 'delete') ondelete(b)
   }
+
+  /** Grouped by engine, in the order the server listed them — registration order,
+   *  so the local engine leads and the sections do not reshuffle between reloads. */
+  const groups = $derived.by(() => {
+    const out: { engine: string; label: string; offsite: boolean; rows: Backup[] }[] = []
+    for (const b of backups) {
+      const id = b.engine ?? ''
+      let g = out.find((x) => x.engine === id)
+      if (!g) {
+        g = {
+          engine: id,
+          label: engineLabel(id, engineNames[id], (k) => $t(k)),
+          // Derived from the row rather than asked of the server: this component is
+          // handed a list, not a status, and the tier is exactly this fact.
+          offsite: b.tier === 'remote',
+          rows: [],
+        }
+        out.push(g)
+      }
+      g.rows.push(b)
+    }
+    return out
+  })
 </script>
 
-<ul class="rows">
-  {#each backups as b (b.name)}
-    <!-- Guarded rather than interpolated straight into the key: t() falls back to the
-         key it was given, so an engine that forgot to set a tier would put the string
-         "backup_tier_" on screen. Nothing is a better label than that. -->
-    {@const where = TIERS.includes(b.tier) ? $t(`backup_tier_${b.tier}`) : ''}
-    <li class="row" class:asking={pending?.name === b.name}>
-      <span class="when">{renderStamp(b.stamp)}</span>
-      <!-- Both surfaces that use this component fetch measured lists, so the size
-           is always real — including 0 B, which is itself worth showing.
+{#each groups as g (g.engine)}
+  <section class="group">
+    <!-- The engine is named here rather than on every row, and it is where the
+         offsite question is answered: a backup's whole value is whether it survives
+         losing this server, and the engine is what decides that. The name comes from
+         the deployment when it provisioned one, so a PCS says "Yundera Backup
+         Storage" while the same engine self-hosted says only what it is. -->
+    <h5 class="engine">
+      {g.label}
+      <span class="tier">{g.offsite ? $t('backup_tier_remote') : $t('backup_tier_local')}</span>
+    </h5>
+    <ul class="rows">
+      {#each g.rows as b (b.engine + ':' + b.name)}
+        <li class="row" class:asking={pending?.key === b.engine + ':' + b.name}>
+          <span class="when">{renderStamp(b.stamp)}</span>
+          <!-- Both surfaces that use this component fetch measured lists, so the size
+               is always real — including 0 B, which is itself worth showing. -->
+          <span class="meta">
+            {b.zip ? $t('backup_zip') : $t('backup_folder')} · {renderSize(b.size)}
+          </span>
 
-           Where it is comes last and is always shown, including for the ordinary
-           local case: a backup's whole value is whether it survives losing this
-           server, and a row that only says "folder · 2 GB" cannot answer that. It
-           is the tier, not the engine name, because "kopia" is an implementation
-           detail and "offsite" is the property the user is buying. -->
-      <span class="meta">
-        {b.zip ? $t('backup_zip') : $t('backup_folder')} · {renderSize(b.size)}{#if where}
-          · <span class="where" title={b.engine ?? ''}>{where}</span>
-        {/if}
-      </span>
-
-      {#if pending?.name === b.name}
-        <span class="warn">
-          {pending.action === 'delete' ? $t('backup_delete_confirm') : $t('backup_restore_confirm')}
-        </span>
-        <button class="btn" onclick={() => (pending = null)}>{$t('cancel')}</button>
-        <button class="btn danger" disabled={busy} onclick={() => confirm(b)}>
-          {$t('confirm')}
-        </button>
-      {:else}
-        <button class="btn" disabled={busy} onclick={() => ask(b, 'restore')}>
-          {$t('restore')}
-        </button>
-        <button class="btn danger" disabled={busy} onclick={() => ask(b, 'delete')}>
-          {$t('delete')}
-        </button>
-      {/if}
-    </li>
-  {/each}
-</ul>
+          {#if pending?.key === b.engine + ':' + b.name}
+            <span class="warn">
+              {pending.action === 'delete' ? $t('backup_delete_confirm') : $t('backup_restore_confirm')}
+            </span>
+            <button class="btn" onclick={() => (pending = null)}>{$t('cancel')}</button>
+            <button class="btn danger" disabled={busy} onclick={() => confirm(b)}>
+              {$t('confirm')}
+            </button>
+          {:else}
+            <button class="btn" disabled={busy} onclick={() => ask(b, 'restore')}>
+              {$t('restore')}
+            </button>
+            <button class="btn danger" disabled={busy} onclick={() => ask(b, 'delete')}>
+              {$t('delete')}
+            </button>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </section>
+{/each}
 
 <style>
+  .group + .group {
+    margin-top: 0.9rem;
+  }
+  .engine {
+    margin: 0 0 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .tier {
+    font-weight: 400;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
   .rows {
     list-style: none;
     margin: 0;
@@ -117,9 +167,6 @@
     color: var(--text-muted);
     flex: 1;
     min-width: 8rem;
-  }
-  .where {
-    white-space: nowrap;
   }
   .warn {
     color: var(--red);

@@ -30,13 +30,13 @@ type Backup struct {
 	Zip   bool   `json:"zip"`   // compressed archive rather than a plain folder
 	Size  int64  `json:"size"`  // bytes; see ListBackups on when it is measured
 
-	// Tier is where this backup actually is: "local" for an archive on disk under
-	// .backups/, "remote" for one that exists only in a backup engine's repository,
-	// "both" when the same (app, stamp) is in each.
+	// Tier is where this backup is: "local" for an archive on disk under .backups/,
+	// "remote" for one in a backup engine's repository.
 	//
-	// Restore and delete dispatch on this, never on which engine is currently
-	// selected — otherwise switching engines would orphan everything the previous
-	// one wrote. See docs/backup.md.
+	// It is a property of the engine that holds it, never a summary across engines:
+	// there used to be a "both" value, from when a stamp present in two engines was
+	// folded into one row, and it described neither copy once a second remote engine
+	// was possible. Backups are listed per engine now — see backup.Set.List.
 	Tier string `json:"tier"`
 
 	// Engine that holds it ("local", "kopia", …). Permanent once shipped: it is how
@@ -49,7 +49,6 @@ type Backup struct {
 const (
 	TierLocal  = "local"
 	TierRemote = "remote"
-	TierBoth   = "both"
 )
 
 // EngineLocal is the built-in engine: archives on the data disk under .backups/.

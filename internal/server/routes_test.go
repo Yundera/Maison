@@ -70,12 +70,23 @@ func TestGlobalBackupRoutesAreReachable(t *testing.T) {
 	}
 
 	// Deleting is name-validated, not registry-backed, so a bad name is a 400
-	// rather than a 404 from the SPA catch-all — proof the route exists.
-	req = httptest.NewRequest(http.MethodDelete, "/api/backups/jellyfin/notes", nil)
+	// rather than a 404 from the SPA catch-all — proof the route exists. The engine is
+	// part of the request now: a backup belongs to one engine, and deleting without
+	// saying which is refused rather than guessed at.
+	req = httptest.NewRequest(http.MethodDelete, "/api/backups/jellyfin/notes?engine=local", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "not a backup name") {
 		t.Errorf("DELETE /api/backups/jellyfin/notes = %d %s; want 400 with a name error",
+			rec.Code, rec.Body.String())
+	}
+
+	// And an omitted engine is its own refusal, not a delete that picks one.
+	req = httptest.NewRequest(http.MethodDelete, "/api/backups/jellyfin/2026-01-01_120000", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "engine is required") {
+		t.Errorf("DELETE with no engine = %d %s; want 400 saying the engine is required",
 			rec.Code, rec.Body.String())
 	}
 }

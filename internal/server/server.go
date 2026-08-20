@@ -142,7 +142,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 			return s.apps.BackupWith(ctx, local, project, false, nil)
 		}
 		s.installer.RollBack = func(ctx context.Context, project, name string) error {
-			return s.apps.Restore(ctx, project, name, nil)
+			return s.apps.Restore(ctx, project, "", name, nil)
 		}
 	}
 	// Rebroadcast the app list as install progress advances so the tile's

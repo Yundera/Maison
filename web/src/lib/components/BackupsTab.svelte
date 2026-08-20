@@ -6,10 +6,11 @@
   // progress bar, exactly like an install or an uninstall — so this panel starts an
   // operation and then gets out of the way.
   //
-  // The list spans every engine, and "Back up now" writes to whichever one is
-  // configured in Settings › Backups. Neither is a choice this tab makes: there is one
-  // backup mechanism and the engine is a setting it reads, so a remote backup shows up
-  // here beside a local one and restores the same way. Each row says where it is.
+  // The list spans every engine, grouped by the one holding each backup, and "Back up
+  // now" writes to whichever engine is the default in Settings › Backups. Neither is a
+  // choice this tab makes: there is one backup mechanism and the engine is a setting it
+  // reads, so a remote backup shows up here beside a local one and restores the same
+  // way.
   import {
     fetchBackups,
     estimateBackup,
@@ -19,6 +20,7 @@
     type Backup,
     type Estimate,
   } from '../stores/backups'
+  import { fetchBackupStatus } from '../stores/backupengine'
   import { apps } from '../stores/apps'
   import { renderSize } from '../format'
   import { t } from '../i18n'
@@ -36,6 +38,21 @@
   // reads it rather than keeping its own flag: a backup started here and one
   // started from another browser tab both disable these buttons.
   const running = $derived($apps.find((a) => a.id === id)?.backing_up ?? false)
+
+  /** Engine ID -> the name the deployment provisioned for it, for the row groups.
+   *
+   *  Fetched once when the tab is opened — it is mounted lazily, so this does not run
+   *  on app load. It is a second request purely for labels, which is why its failure is
+   *  swallowed: BackupRows falls back to naming the engine itself, and a status call
+   *  that did not answer must not turn a working list of backups into an error. */
+  let engineNames = $state<Record<string, string>>({})
+  fetchBackupStatus()
+    .then((s) => {
+      engineNames = Object.fromEntries(
+        (s.engines ?? []).filter((e) => e.name).map((e) => [e.id, e.name!]),
+      )
+    })
+    .catch(() => {})
 
   async function load() {
     try {
@@ -74,8 +91,10 @@
   }
 
   const backup = () => run(() => startBackup(id, zip))
-  const restore = (b: Backup) => run(() => restoreBackup(id, b.name))
-  const remove = (b: Backup) => run(() => deleteBackup(id, b.name))
+  // The engine travels with the row: two engines can hold the same stamp, and each
+  // copy is restored and deleted on its own.
+  const restore = (b: Backup) => run(() => restoreBackup(id, b.name, b.engine))
+  const remove = (b: Backup) => run(() => deleteBackup(id, b.name, b.engine ?? ''))
 </script>
 
 <p class="hint">{$t('backup_hint')}</p>
@@ -120,7 +139,13 @@
 {/if}
 
 {#if backups.length}
-  <BackupRows {backups} busy={busy || running} onrestore={restore} ondelete={remove} />
+  <BackupRows
+    {backups}
+    {engineNames}
+    busy={busy || running}
+    onrestore={restore}
+    ondelete={remove}
+  />
 {:else}
   <p class="empty">{$t('backup_empty')}</p>
 {/if}

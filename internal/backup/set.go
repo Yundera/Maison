@@ -102,11 +102,19 @@ func (s *Set) SetWriter(id string) error {
 	return nil
 }
 
-// List returns every backup of one app across every engine, newest first.
+// List returns every backup of one app, from every engine, newest first.
 //
-// The union is deduped on (app, name): the same backup can exist in more than one
-// engine — an archive kept locally *and* pushed to a repository — and it is one
-// backup, shown once, with Tier reporting that it is in both.
+// **Backups are NOT merged across engines.** A copy in the local archive and a
+// snapshot in a repository are two backups that happen to share a stamp: they were
+// written separately, they can be deleted separately, and restoring one is not
+// restoring the other. Folding them into a single row meant the identity of a backup
+// was (app, stamp), which only holds while exactly one engine is offsite — with two
+// remote engines it silently conflated two unrelated snapshots and reported the pair
+// as "on this disk + offsite", which was true of neither.
+//
+// So the identity of a backup is **(engine, app, stamp)**, and every caller that
+// restores or deletes one says which engine it means. Engines run independently; the
+// selected engine governs writes and nothing else.
 //
 // An engine that cannot answer is skipped rather than fatal — see logRead.
 func (s *Set) List(ctx context.Context, app string) []apps.Backup {
@@ -116,38 +124,27 @@ func (s *Set) List(ctx context.Context, app string) []apps.Backup {
 	if !apps.ValidProjectName(app) {
 		return nil
 	}
-	merged := map[string]apps.Backup{}
+	var out []apps.Backup
 	for _, p := range s.providers() {
 		got, err := p.List(ctx, app)
 		if err != nil {
 			logRead(err, "list "+app, p)
 			continue
 		}
-		mergeInto(merged, got)
+		out = append(out, got...)
 	}
-	return sortedBackups(merged)
+	return sortedBackups(out)
 }
 
-// mergeInto folds one engine's answer into the union, deduping on the backup name.
-func mergeInto(merged map[string]apps.Backup, got []apps.Backup) {
-	for _, b := range got {
-		if prev, dup := merged[b.Name]; dup {
-			merged[b.Name] = mergeTiers(prev, b)
-			continue
-		}
-		merged[b.Name] = b
-	}
-}
-
-// sortedBackups flattens the union, newest first.
-func sortedBackups(merged map[string]apps.Backup) []apps.Backup {
-	out := make([]apps.Backup, 0, len(merged))
-	for _, b := range merged {
-		out = append(out, b)
-	}
+// sortedBackups orders newest first.
+//
+// Stable, and fed in registration order, so two engines holding the same stamp keep a
+// fixed relative order — the local engine first, because it is registered first. A row
+// order that changed between reloads would move the delete button under the cursor.
+func sortedBackups(out []apps.Backup) []apps.Backup {
 	// The stamp is fixed-width and lexically ordered, so comparing names is comparing
 	// times. Name (not Stamp) breaks the tie between "<stamp>" and "<stamp>.zip".
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Stamp != out[j].Stamp {
 			return out[i].Stamp > out[j].Stamp
 		}
@@ -186,9 +183,9 @@ func logRead(err error, what string, p apps.Provider) {
 // needed to measure folder archives, which Measure leaves to the callers that
 // actually display a size.
 func (s *Set) ListAll(ctx context.Context, backupsDir, appsDir string) []apps.AppBackups {
-	// app -> backup name -> backup, so the same (app, stamp) held by two engines merges
-	// into one row exactly as it does in List.
-	merged := map[string]map[string]apps.Backup{}
+	// app -> every engine's backups of it, concatenated in registration order. Not
+	// deduped: see List for why (engine, app, stamp) is the identity.
+	byApp := map[string][]apps.Backup{}
 	for _, p := range s.providers() {
 		got, err := p.ListAll(ctx)
 		if err != nil {
@@ -196,16 +193,13 @@ func (s *Set) ListAll(ctx context.Context, backupsDir, appsDir string) []apps.Ap
 			continue
 		}
 		for app, list := range got {
-			if merged[app] == nil {
-				merged[app] = map[string]apps.Backup{}
-			}
-			mergeInto(merged[app], list)
+			byApp[app] = append(byApp[app], list...)
 		}
 	}
 
-	out := make([]apps.AppBackups, 0, len(merged))
-	for app, byName := range merged {
-		list := apps.Measure(backupsDir, sortedBackups(byName))
+	out := make([]apps.AppBackups, 0, len(byApp))
+	for app, all := range byApp {
+		list := apps.Measure(backupsDir, sortedBackups(all))
 		if len(list) == 0 {
 			continue
 		}
@@ -224,29 +218,37 @@ func (s *Set) ListAll(ctx context.Context, backupsDir, appsDir string) []apps.Ap
 	return out
 }
 
-// mergeTiers folds the same backup seen in two engines into one row.
+// LocateIn finds a backup in ONE named engine.
 //
-// The surviving Engine is the one that can restore it fastest, because that is the
-// engine Locate will pick and the row should say where the restore will actually
-// come from. Size prefers whichever engine measured one, since the local engine
-// deliberately leaves folder archives at 0.
-func mergeTiers(a, b apps.Backup) apps.Backup {
-	out := a
-	if b.Engine == apps.EngineLocal {
-		out = b
+// This is the shape every user-initiated restore and delete uses, because the user
+// picked a row and a row belongs to an engine. Locate below is the weaker form, for
+// the one caller that genuinely has no engine to name.
+func (s *Set) LocateIn(ctx context.Context, engine, app, stamp string) (apps.Provider, apps.Backup, error) {
+	if err := validName(app, stamp); err != nil {
+		return nil, apps.Backup{}, err
 	}
-	out.Tier = apps.TierBoth
-	if out.Size == 0 {
-		if a.Size > b.Size {
-			out.Size = a.Size
-		} else {
-			out.Size = b.Size
+	p, ok := s.Get(engine)
+	if !ok {
+		return nil, apps.Backup{}, fmt.Errorf("unknown backup engine: %s", engine)
+	}
+	got, err := p.List(ctx, app)
+	if err != nil {
+		return nil, apps.Backup{}, err
+	}
+	for _, b := range got {
+		if b.Name == stamp {
+			return p, b, nil
 		}
 	}
-	return out
+	return nil, apps.Backup{}, fmt.Errorf("backup not found in engine %s: %s", engine, stamp)
 }
 
-// Locate finds the engine that should serve a read of (app, stamp).
+// Locate finds *an* engine that can serve a read of (app, stamp), with no engine
+// named.
+//
+// It survives only for the store's install-from-backup path, where the user chose an
+// app rather than a row and there is no engine in the request. Everything reached from
+// the Backups UI goes through LocateIn instead.
 //
 // **Dispatch is on where the backup actually is, never on which engine is
 // selected.** Without this, switching engine orphans every backup the previous one
@@ -283,38 +285,20 @@ func (s *Set) Locate(ctx context.Context, app, stamp string) (apps.Provider, app
 	return best, bestB, nil
 }
 
-// Delete removes a backup from every engine that holds it.
+// Delete removes one backup from ONE engine.
 //
-// It is deliberately not "delete from the engine that owns it": a backup present
-// both locally and in a repository is one backup to the user, shown as one row, and
-// deleting it has to mean what the row says. Partial failure is reported but does
-// not stop the remaining engines — leaving a copy behind because a different engine
-// errored would make the row reappear with no explanation.
-func (s *Set) Delete(ctx context.Context, app, stamp string) error {
-	if err := validName(app, stamp); err != nil {
+// It used to delete from every engine holding the stamp, which followed from rows
+// being merged: one row meant one backup, so deleting it had to remove every copy or
+// the row reappeared. Now that a row *is* an engine's backup, deleting the local
+// archive must leave the offsite snapshot alone — that is the whole point of keeping
+// both, and a delete that quietly took the offsite copy too would destroy the only
+// disaster-recovery copy the user had.
+func (s *Set) Delete(ctx context.Context, engine, app, stamp string) error {
+	p, _, err := s.LocateIn(ctx, engine, app, stamp)
+	if err != nil {
 		return err
 	}
-	found := false
-	var errs []error
-	for _, p := range s.providers() {
-		got, err := p.List(ctx, app)
-		if err != nil {
-			continue
-		}
-		for _, b := range got {
-			if b.Name != stamp {
-				continue
-			}
-			found = true
-			if err := p.Delete(ctx, app, stamp); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", p.ID(), err))
-			}
-		}
-	}
-	if !found {
-		return fmt.Errorf("backup not found: %s", stamp)
-	}
-	return errors.Join(errs...)
+	return p.Delete(ctx, app, stamp)
 }
 
 // validName rejects an app or backup name that is not one, before any engine is

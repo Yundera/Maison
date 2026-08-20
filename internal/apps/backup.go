@@ -161,12 +161,12 @@ func (r *Registry) StartBackup(id string, zip bool) error {
 // lookup is a subprocess against the repository, so a caller that goes away should not
 // leave it running. Nothing has been touched at that point, so refusing is safe. The
 // restore itself is deliberately detached below.
-func (r *Registry) StartRestore(ctx context.Context, id, name string) error {
+func (r *Registry) StartRestore(ctx context.Context, id, engine, name string) error {
 	// Resolve through the engines, not the data disk. Checking .backups/ here would
 	// reject a backup that exists only in a repository — the restore path below
 	// handles it perfectly well via locate() — so the check has to ask the same
 	// question the restore will: does any engine have this backup.
-	if _, _, err := r.locate(ctx, id, name); err != nil {
+	if _, _, err := r.locate(ctx, id, engine, name); err != nil {
 		return err
 	}
 
@@ -180,7 +180,7 @@ func (r *Registry) StartRestore(ctx context.Context, id, name string) error {
 	r.changed()
 
 	go func() {
-		err := r.Restore(context.Background(), id, name, r.trackBackup(id))
+		err := r.Restore(context.Background(), id, engine, name, r.trackBackup(id))
 		r.finishBackup(id, err, "restore")
 	}()
 	return nil
@@ -412,10 +412,17 @@ func (r *Registry) engine() Provider {
 
 // locate finds the engine that holds a backup and the backup itself.
 //
+// An empty engine means "whichever engine has it", which is right for the store's
+// install-from-backup path and wrong everywhere a user picked a row: two engines can
+// hold the same stamp, and restoring the other one is not what was clicked.
+//
 // Dispatch is on where the backup *is*, never on which engine is selected — the
 // rule that keeps a user's existing backups reachable after they switch engines.
-func (r *Registry) locate(ctx context.Context, id, name string) (Provider, Backup, error) {
+func (r *Registry) locate(ctx context.Context, id, engine, name string) (Provider, Backup, error) {
 	if r.Engines != nil {
+		if engine != "" {
+			return r.Engines.LocateIn(ctx, engine, id, name)
+		}
 		return r.Engines.Locate(ctx, id, name)
 	}
 	b, _, err := resolveBackup(r.cfg.BackupsDir(), id, name)
@@ -438,7 +445,7 @@ func (r *Registry) locate(ctx context.Context, id, name string) (Provider, Backu
 //	remote, room       fetch it beside the app, then exactly the above.
 //	remote, no room    write it over the live folder. Not atomic; the undo is a
 //	                   snapshot taken first. See restoreInPlace.
-func (r *Registry) Restore(ctx context.Context, id, name string, emit func(BackupEvent)) error {
+func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit func(BackupEvent)) error {
 	if emit == nil {
 		emit = func(BackupEvent) {}
 	}
@@ -446,7 +453,7 @@ func (r *Registry) Restore(ctx context.Context, id, name string, emit func(Backu
 		return fmt.Errorf("invalid app name: %s", id)
 	}
 	backupsDir := r.cfg.BackupsDir()
-	src, _, err := r.locate(ctx, id, name)
+	src, _, err := r.locate(ctx, id, engine, name)
 	if err != nil {
 		return err
 	}
@@ -617,7 +624,7 @@ func (r *Registry) EstimateRestore(id, name string) (Estimate, error) {
 	if !projectRe.MatchString(id) {
 		return Estimate{}, fmt.Errorf("invalid app name: %s", id)
 	}
-	_, backup, err := r.locate(context.Background(), id, name)
+	_, backup, err := r.locate(context.Background(), id, "", name)
 	if err != nil {
 		return Estimate{}, err
 	}

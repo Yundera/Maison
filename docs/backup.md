@@ -180,7 +180,7 @@ feature from backing up to disk. It is not: everything that triggers a backup ca
 
 They are now one page — destination and schedule above, every backup below — and the
 word "cloud" does not appear in it. `local` and `kopia` are two values of one setting,
-and the row for a backup says where it is (`on this disk`, `offsite`, or both).
+and every backup is listed under the engine that holds it.
 
 What made the split more than cosmetic is that the two halves had drifted apart in the
 code. Writes went through the engine set; **reads did not.** Both listing endpoints
@@ -193,8 +193,8 @@ the scheduler. Every read now goes through the set:
 | Path | Reads through |
 |---|---|
 | Per-app tab, global page | `Set.List`, `Set.ListAll` |
-| Restore (precondition *and* execution) | `Set.Locate` |
-| Delete | `Set.Delete` — from **every** engine holding it, since one row means one backup |
+| Restore (precondition *and* execution) | `Set.LocateIn` — the engine the row belongs to; `Set.Locate` only for the store's install path, which has no row |
+| Delete | `Set.Delete` — from **that one engine**, never across them |
 
 Two writes deliberately stay local, and are exceptions rather than oversights:
 archive-on-uninstall and the update rollback point (`BackupWith`). Both need a rename
@@ -490,9 +490,8 @@ three guards are mandatory rather than best-effort:
 
 Two knock-on changes:
 
-- **Done.** Listing is a union of local and remote entries, deduped by `(app, stamp)`,
-  with the tier on every row — `Set.List` for one app, `Set.ListAll` for the global
-  page. The caching the earlier draft called for turned out to be the wrong fix: the
+- **Done.** Listing is every engine's entries, grouped by engine and **not** deduped —
+  `Set.List` for one app, `Set.ListAll` for the global page. The caching the earlier draft called for turned out to be the wrong fix: the
   cost was never one query, it was one query *per app*. `Provider.ListAll` returns
   every app in a single call instead, so the page costs one subprocess per engine
   however many apps it shows, with nothing stale to invalidate.
@@ -613,6 +612,46 @@ three days".
 Recovery is a **one-way restore, not a merge.** Restoring an older snapshot and then
 letting the nightly run creates a rollback point in the chain — correct under GFS
 retention, but a deliberate choice rather than a surprise.
+
+---
+
+## A backup belongs to one engine
+
+**The identity of a backup is `(engine, app, stamp)`.** Engines run in parallel and
+never coordinate: a stamp present both in `.backups/` and in a repository is two
+backups that happen to share a name. They were written by different runs, they can be
+deleted independently, and restoring one is not restoring the other.
+
+Listing used to fold them into a single row carrying a three-valued tier — `local`,
+`remote`, `both`. That worked only while exactly one engine was offsite. Add a second
+remote engine and two unrelated snapshots merge into one row reported as "on this disk
++ offsite", which is true of neither; `Locate` then picks between them arbitrarily and
+a delete takes both. The tier is now a property of the engine holding the backup —
+`local` or `remote`, never a summary — and `both` is gone.
+
+What follows from it:
+
+- **Delete is per engine, and the engine is required** — no "delete everywhere"
+  default. Clearing space on the data disk must not take the offsite copy with it:
+  that copy is the entire disaster-recovery story, and a delete that silently spanned
+  engines would destroy it while appearing to tidy a local folder.
+- **Restore names its engine.** `Set.LocateIn` is the shape the UI uses, because the
+  user clicked a row and a row belongs to an engine. `Set.Locate` — "whichever engine
+  has it", preferring an instant restore — survives for the store's
+  install-from-backup path, which has an app but no row.
+- **The selected engine still governs writes only.** It decides where the nightly run,
+  an uninstall and "Back up now" put the next backup. It has no bearing on what is
+  listed, restorable or deletable, which is what keeps a user's history reachable after
+  they switch.
+- **Rows are grouped by engine in the UI**, and the group header is where the offsite
+  question is answered, since the engine is what decides it.
+
+Engines are named on screen by the deployment, not by this package: `engineInfo.Name`
+comes from the host-written state file, so a provisioned PCS can call its space
+"Yundera Backup Storage" while the identical engine pointed at a self-hoster's own
+bucket claims nothing of the sort. The engine **ID** stays a bare engine name — it is
+recorded on every backup it writes and is machine identity, so branding has no
+business in it.
 
 ---
 

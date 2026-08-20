@@ -56,24 +56,29 @@ func TestReadingIgnoresTheSelectedEngine(t *testing.T) {
 	}
 }
 
-// The same backup in two engines is one backup to the user: one row, marked as
-// being in both.
-func TestUnionDedupesAndMarksBothTiers(t *testing.T) {
+// A stamp held by two engines is TWO backups, not one seen twice. They were written
+// separately and can be deleted separately, so each gets its own row naming its own
+// engine — the old union folded them together, which only ever worked while exactly
+// one engine was offsite.
+func TestEnginesAreNotMergedIntoOneRow(t *testing.T) {
 	local := backuptest.NewLocalLike(apps.EngineLocal)
 	remote := backuptest.NewRemote("kopia")
 	local.Seed("jellyfin", newer)
 	remote.Seed("jellyfin", newer)
 
 	got := New(local, remote).List(context.Background(), "jellyfin")
-	if len(got) != 1 {
-		t.Fatalf("List returned %d rows for one backup held twice: %v", len(got), names(got))
+	if len(got) != 2 {
+		t.Fatalf("List returned %d rows for one stamp in two engines: %v", len(got), names(got))
 	}
-	if got[0].Tier != apps.TierBoth {
-		t.Errorf("Tier = %q, want %q", got[0].Tier, apps.TierBoth)
+	// Registration order breaks the tie, so the local engine leads and the order is
+	// the same on every reload.
+	if got[0].Engine != apps.EngineLocal || got[1].Engine != "kopia" {
+		t.Errorf("engines = %q, %q; want %q then kopia", got[0].Engine, got[1].Engine, apps.EngineLocal)
 	}
-	// The row should name the engine the restore will actually come from.
-	if got[0].Engine != apps.EngineLocal {
-		t.Errorf("Engine = %q, want the instant-restore engine %q", got[0].Engine, apps.EngineLocal)
+	for _, b := range got {
+		if b.Tier == "both" {
+			t.Errorf("row from engine %s still reports the merged tier %q", b.Engine, b.Tier)
+		}
 	}
 }
 
@@ -123,31 +128,51 @@ func TestBrokenEngineDoesNotBreakListing(t *testing.T) {
 	}
 }
 
-// Deleting a row the user sees once must delete the backup everywhere it is, or the
-// row reappears on the next refresh with no explanation.
-func TestDeleteRemovesFromEveryEngineHoldingIt(t *testing.T) {
+// Deleting the local archive must leave the offsite snapshot alone. This is the
+// safety property of the split: the offsite copy is the disaster-recovery copy, and a
+// delete that spanned engines would destroy it while appearing to free disk space.
+func TestDeleteTouchesOnlyTheNamedEngine(t *testing.T) {
 	local := backuptest.NewLocalLike(apps.EngineLocal)
 	remote := backuptest.NewRemote("kopia")
 	local.Seed("jellyfin", newer)
 	remote.Seed("jellyfin", newer)
 
 	s := New(local, remote)
-	if err := s.Delete(context.Background(), "jellyfin", newer); err != nil {
+	if err := s.Delete(context.Background(), apps.EngineLocal, "jellyfin", newer); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if got := s.List(context.Background(), "jellyfin"); len(got) != 0 {
-		t.Fatalf("after Delete, List = %v, want empty", names(got))
+	got := s.List(context.Background(), "jellyfin")
+	if len(got) != 1 || got[0].Engine != "kopia" {
+		t.Fatalf("after deleting the local copy, List = %v, want the kopia row alone", got)
 	}
-	for _, f := range []*backuptest.Fake{local, remote} {
-		if !strings.Contains(strings.Join(f.Calls, " "), "delete:jellyfin/"+newer) {
-			t.Errorf("engine %s was not asked to delete: calls = %v", f.ID(), f.Calls)
-		}
+	if strings.Contains(strings.Join(remote.Calls, " "), "delete:") {
+		t.Errorf("the offsite engine was asked to delete: calls = %v", remote.Calls)
 	}
+	if !strings.Contains(strings.Join(local.Calls, " "), "delete:jellyfin/"+newer) {
+		t.Errorf("the local engine was not asked to delete: calls = %v", local.Calls)
+	}
+}
+
+// An engine that does not hold the backup is an error, not a silent success — a
+// delete that reported "ok" while the row stayed put would read as a broken page.
+func TestDeleteFromAnEngineThatDoesNotHoldItFails(t *testing.T) {
+	local := backuptest.NewLocalLike(apps.EngineLocal)
+	remote := backuptest.NewRemote("kopia")
+	local.Seed("jellyfin", newer)
+
+	s := New(local, remote)
+	if err := s.Delete(context.Background(), "kopia", "jellyfin", newer); err == nil {
+		t.Fatal("Delete from an engine without the backup succeeded")
+	}
+	if got := s.List(context.Background(), "jellyfin"); len(got) != 1 {
+		t.Errorf("the local copy was disturbed: %v", names(got))
+	}
+	_ = remote
 }
 
 func TestDeleteUnknownBackupIsAnError(t *testing.T) {
 	s := New(backuptest.NewLocalLike(apps.EngineLocal))
-	if err := s.Delete(context.Background(), "jellyfin", newer); err == nil {
+	if err := s.Delete(context.Background(), apps.EngineLocal, "jellyfin", newer); err == nil {
 		t.Fatal("Delete of a backup no engine holds should fail")
 	}
 }
@@ -278,7 +303,10 @@ func TestLocateAndDeleteRefuseNamesThatAreNotNames(t *testing.T) {
 			!strings.Contains(err.Error(), c.want) {
 			t.Errorf("Locate(%q, %q) = %v; want %q", c.app, c.stamp, err, c.want)
 		}
-		if err := s.Delete(context.Background(), c.app, c.stamp); err == nil ||
+		// The guard has to hold on the engine-targeted path too: that is the one every
+		// delete now goes through, so a name that could become a path must be refused
+		// before an engine is handed it.
+		if err := s.Delete(context.Background(), apps.EngineLocal, c.app, c.stamp); err == nil ||
 			!strings.Contains(err.Error(), c.want) {
 			t.Errorf("Delete(%q, %q) = %v; want %q", c.app, c.stamp, err, c.want)
 		}

@@ -116,8 +116,12 @@ type Provider interface {
 type Engines interface {
 	Writer() Provider
 	List(ctx context.Context, app string) []Backup
+	// LocateIn finds a backup in one named engine — the shape every user-initiated
+	// restore uses, because the user picked a row and a row belongs to an engine.
+	LocateIn(ctx context.Context, engine, app, stamp string) (Provider, Backup, error)
+	// Locate is the engine-less form, for the store's install-from-backup path.
 	Locate(ctx context.Context, app, stamp string) (Provider, Backup, error)
-	Delete(ctx context.Context, app, stamp string) error
+	Delete(ctx context.Context, engine, app, stamp string) error
 }
 
 // UserDataRestoreOpts says what to put back from the user-data set, and where.

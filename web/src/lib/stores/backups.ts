@@ -15,10 +15,10 @@ export interface Backup {
   date: string // YYYY-MM-DD, the stamp's day
   zip: boolean // compressed archive rather than a plain folder
   size: number // bytes; see below on when this is measured
-  /** Where it actually is: on the data disk, in a backup engine's repository, or
-   *  both. Restore and delete follow this, not whichever engine is selected now —
-   *  so switching engines never orphans what the previous one wrote. */
-  tier: 'local' | 'remote' | 'both'
+  /** Where it is: on the data disk, or in a backup engine's repository. A property
+   *  of the engine holding it, never a summary across engines — a backup belongs to
+   *  exactly one, and two engines holding the same stamp are two backups. */
+  tier: 'local' | 'remote'
   /** Which engine holds it ("local", "kopia", …). */
   engine?: string
 }
@@ -128,15 +128,35 @@ export function startBackup(app: string, zip: boolean): Promise<void> {
  *  state is archived first, so this is reversible. Also works for an orphan, where
  *  there is simply nothing to archive first — and once the folder lands, the app
  *  has a tile again. */
-export function restoreBackup(app: string, name: string): Promise<void> {
-  return api.post(`/api/backups/${encodeURIComponent(app)}/restore`, { name })
+export function restoreBackup(app: string, name: string, engine?: string): Promise<void> {
+  return api.post(`/api/backups/${encodeURIComponent(app)}/restore`, { name, engine: engine ?? '' })
 }
 
-/** Delete one backup, from every engine that holds it — a backup kept locally *and*
- *  pushed to a repository is one row, so deleting it means both. The only call in
- *  Maison that destroys user data. */
-export function deleteBackup(app: string, name: string): Promise<void> {
-  return api.del(`/api/backups/${encodeURIComponent(app)}/${encodeURIComponent(name)}`)
+/** Delete one backup from ONE engine. The only call in Maison that destroys user
+ *  data, and the engine is required rather than defaulted: clearing space on the data
+ *  disk must not quietly take the offsite copy with it, because that copy is the
+ *  whole reason the offsite engine exists. */
+export function deleteBackup(app: string, name: string, engine: string): Promise<void> {
+  return api.del(
+    `/api/backups/${encodeURIComponent(app)}/${encodeURIComponent(name)}?engine=${encodeURIComponent(engine)}`,
+  )
+}
+
+/** What to call an engine on screen.
+ *
+ *  Three sources, in order: the name the deployment provisioned (a PCS calls its
+ *  space "Yundera Backup Storage"; a self-hoster's identical engine is not given that
+ *  name), then a translation for engines we ship, then the bare ID — which is always
+ *  something rather than an empty label, and is what an engine added later shows
+ *  until it is translated. */
+export function engineLabel(id: string, provided?: string, translate?: (k: string) => string): string {
+  if (provided) return provided
+  if (translate) {
+    const key = `backup_engine_name_${id}`
+    const got = translate(key)
+    if (got && got !== key) return got
+  }
+  return id
 }
 
 /** "2026-07-10 15:30" from a YYYY-MM-DD_HHMMSS stamp.

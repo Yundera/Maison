@@ -90,6 +90,11 @@ type Status struct {
 	Host      string `json:"host,omitempty"`   // the identity snapshots are filed under
 	User      string `json:"user,omitempty"`   // together with Host, what snapshots are keyed by
 	Detail    string `json:"detail,omitempty"` // why it is not connected, for the UI
+
+	// Label is what to call this repository on screen, from the host-written state
+	// file. Empty means nobody named it and the UI should fall back to describing the
+	// engine — see repoState.
+	Label string `json:"label,omitempty"`
 }
 
 // New builds the engine. It performs no I/O: a Provider is constructed on every
@@ -137,6 +142,36 @@ func (p *Provider) passwordFile() string { return filepath.Join(p.dir(), "reposi
 // credentialsFile holds the storage credentials as KEY=VALUE lines, written and
 // rotated by the host-side ensure-backup-config.sh. See credentials().
 func (p *Provider) credentialsFile() string { return filepath.Join(p.dir(), "credentials.env") }
+
+// stateFile is what the host side knows and the engine cannot be asked: what to call
+// this repository, and whether the storage behind it still accepts writes.
+func (p *Provider) stateFile() string { return filepath.Join(p.dir(), "state.json") }
+
+// repoState is the host-written description of the provisioned space.
+//
+// Label is the name a user should see. It lives here rather than in this package
+// because "kopia" is the engine and the label describes the *space* it points at: a
+// PCS provisioned by Yundera says so, and a self-hoster pointing the same engine at
+// their own bucket must not be told they are using someone's branded service. An
+// absent label is the ordinary self-hosted case, not a defect.
+type repoState struct {
+	Label    string `json:"label"`
+	Writable *bool  `json:"writable"`
+	Status   string `json:"status"`
+}
+
+func (p *Provider) readState() repoState {
+	var st repoState
+	b, err := os.ReadFile(p.stateFile())
+	if err != nil {
+		return st
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		log.Printf("kopia: unreadable %s: %v", p.stateFile(), err)
+		return repoState{}
+	}
+	return st
+}
 
 // repoConfig is the part of kopia's own config file Maison reads. The identity
 // fields are written there by `repository connect --override-hostname/--username`,
@@ -233,16 +268,21 @@ func (p *Provider) Status(ctx context.Context) Status {
 }
 
 func (p *Provider) probe(ctx context.Context) Status {
+	// Read before the configuration check: a box that has been issued a space but has
+	// not connected yet should still be able to say whose space it is, so the settings
+	// page names it rather than falling back to "kopia" while it is being set up.
+	label := p.readState().Label
+
 	rc, err := p.readConfig()
 	if err != nil {
-		return Status{Detail: notConfiguredDetail(err)}
+		return Status{Detail: notConfiguredDetail(err), Label: label}
 	}
 	out, err := p.run(ctx, nil, 2*time.Minute, "repository", "status", "--json")
 	if err != nil {
-		return Status{Detail: err.Error(), Host: rc.Hostname, User: rc.Username, Type: rc.Storage.Type}
+		return Status{Detail: err.Error(), Host: rc.Hostname, User: rc.Username, Type: rc.Storage.Type, Label: label}
 	}
 	_ = out
-	return Status{Connected: true, Type: rc.Storage.Type, Host: rc.Hostname, User: rc.Username}
+	return Status{Connected: true, Type: rc.Storage.Type, Host: rc.Hostname, User: rc.Username, Label: label}
 }
 
 func notConfiguredDetail(err error) string {

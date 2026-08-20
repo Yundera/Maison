@@ -162,7 +162,7 @@ func TestStartRestoreAcceptsABackupThatOnlyExistsRemotely(t *testing.T) {
 	fake.Seed("jellyfin", "2026-01-01_120000")
 	r.Engines = backup.New(fake)
 
-	if err := r.StartRestore(context.Background(), "jellyfin", "2026-01-01_120000"); err != nil {
+	if err := r.StartRestore(context.Background(), "jellyfin", "", "2026-01-01_120000"); err != nil {
 		t.Fatalf("StartRestore on a remote-only backup: %v", err)
 	}
 	// StartRestore detaches: the restore outlives the call, and it writes into the tree
@@ -200,7 +200,7 @@ func TestStartRestoreRefusesWhatNoEngineHas(t *testing.T) {
 	r.Engines = backup.New(backuptest.NewRemote("kopia"))
 
 	for _, name := range []string{"2026-01-01_120000", "notes"} {
-		if err := r.StartRestore(context.Background(), "jellyfin", name); err == nil {
+		if err := r.StartRestore(context.Background(), "jellyfin", "", name); err == nil {
 			t.Errorf("StartRestore(%q) succeeded; no engine holds it", name)
 		}
 	}

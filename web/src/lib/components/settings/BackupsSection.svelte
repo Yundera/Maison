@@ -32,6 +32,7 @@
     fetchAllBackups,
     restoreBackup,
     deleteBackup,
+    engineLabel,
     type AppBackups,
     type Backup,
     type UserDataBackups,
@@ -187,6 +188,13 @@
    *  point — believing your data is offsite when it is not is the worst outcome this
    *  page can produce. */
   const activeEngine = $derived(status?.engines?.find((e) => e.id === status?.active))
+
+  /** What "provisioned default" currently means on this box, for the picker's first
+   *  option. Only shown when the user has no override — with one set, the default is
+   *  not what is in force and naming it would be misleading. */
+  const provisionedName = $derived(
+    status?.chosen ? '' : engineLabel(status?.active ?? '', activeEngine?.name, (k) => $t(k)),
+  )
   const misconfigured = $derived(!!activeEngine && !activeEngine.connected)
 
   /** The same-disk warning is only true while the writing engine is not offsite, and
@@ -209,8 +217,16 @@
     await loadArchives()
   }
 
-  const restore = (app: string, b: Backup) => run(() => restoreBackup(app, b.name))
-  const remove = (app: string, b: Backup) => run(() => deleteBackup(app, b.name))
+  // The engine travels with the row: two engines can hold the same stamp, and each
+  // copy is restored and deleted on its own.
+  const restore = (app: string, b: Backup) => run(() => restoreBackup(app, b.name, b.engine))
+  const remove = (app: string, b: Backup) => run(() => deleteBackup(app, b.name, b.engine ?? ''))
+
+  /** Engine ID -> the name the deployment provisioned, for the row groups. This page
+   *  already holds the engine status, so the names come free. */
+  const engineNames = $derived(
+    Object.fromEntries((status?.engines ?? []).filter((e) => e.name).map((e) => [e.id, e.name!])),
+  )
 
   const used = $derived(list.reduce((n, a) => n + a.total, 0))
 </script>
@@ -228,12 +244,26 @@
     <label class="row">
       <span>{$t('backup_engine')}</span>
       <select bind:value={conf.engine} disabled={busy}>
-        <option value="">{$t('backup_engine_default')}</option>
+        <!-- "Provisioned default" is a choice about who decides, not a name, so it
+             says what it currently resolves to — otherwise the one option a user is
+             most likely to leave selected is the only one that never tells them
+             where their backups are going. -->
+        <option value="">
+          {$t('backup_engine_default')}{provisionedName ? ` — ${provisionedName}` : ''}
+        </option>
         {#each status.engines ?? [] as e}
-          <option value={e.id}>{e.id}{e.offsite ? '' : ` — ${$t('backup_engine_not_offsite')}`}</option>
+          <option value={e.id}>
+            {engineLabel(e.id, e.name, (k) => $t(k))}{e.offsite
+              ? ''
+              : ` — ${$t('backup_engine_not_offsite')}`}
+          </option>
         {/each}
       </select>
     </label>
+    <!-- Says what the setting actually governs. Engines run independently and every
+         backup keeps the engine that wrote it, so this is a choice about where the
+         NEXT backup goes — not about which backups exist or can be restored. -->
+    <p class="hint">{$t('backup_engine_hint')}</p>
 
     {#if misconfigured}
       <p class="warn">{$t('backup_engine_unconfigured')} {activeEngine?.detail ?? ''}</p>
@@ -368,6 +398,7 @@
         </h5>
         <BackupRows
           backups={group.backups}
+          {engineNames}
           {busy}
           onrestore={(b) => restore(group.app, b)}
           ondelete={(b) => remove(group.app, b)}

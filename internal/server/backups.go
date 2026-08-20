@@ -87,14 +87,19 @@ func (s *Server) handleStartRestore(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return
 	}
+	// Engine names which copy to restore. Two engines can hold the same stamp — a
+	// local archive and an offsite snapshot are different backups — so the row the
+	// user clicked carries it. Empty still works and means "whichever engine has it",
+	// which is what the store's install path relies on.
 	var body struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Engine string `json:"engine"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if err := s.apps.StartRestore(r.Context(), chi.URLParam(r, "id"), body.Name); err != nil {
+	if err := s.apps.StartRestore(r.Context(), chi.URLParam(r, "id"), body.Engine, body.Name); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -119,7 +124,7 @@ func (s *Server) handleGlobalBackups(w http.ResponseWriter, r *http.Request) {
 	var localUsed int64
 	for _, g := range list {
 		for _, b := range g.Backups {
-			if b.Tier != apps.TierRemote {
+			if b.Engine == apps.EngineLocal {
 				localUsed += b.Size
 			}
 		}
@@ -210,20 +215,25 @@ func (s *Server) handleRestoreUserData(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
-// handleDeleteBackup removes one backup from every engine that holds it. This is the
-// only endpoint in Maison that destroys user data, so it takes the app and the
-// backup by name and validates both: the local engine refuses anything outside the
-// backups tree or that is not an archive name (apps.DeleteBackup), and a remote one
-// re-validates the stamp on the way in.
+// handleDeleteBackup removes one backup from ONE engine. This is the only endpoint in
+// Maison that destroys user data, so it takes the app and the backup by name and
+// validates both: the local engine refuses anything outside the backups tree or that
+// is not an archive name (apps.DeleteBackup), and a remote one re-validates the stamp
+// on the way in.
 //
-// Deleting from every engine rather than from the selected one is what makes the row
-// mean what it says: a backup kept locally *and* pushed to a repository is one row,
-// so deleting it has to remove both — otherwise it reappears on the next load with
-// no explanation.
+// The engine is required, and deliberately has no "delete everywhere" default. A user
+// clearing space on the data disk must not have the offsite copy taken with it — that
+// copy is the entire disaster-recovery story, and a delete that silently spanned
+// engines would destroy it while appearing to tidy a local folder.
 func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	app := chi.URLParam(r, "app")
 	name := chi.URLParam(r, "name")
-	if err := s.engines.Delete(r.Context(), app, name); err != nil {
+	engine := r.URL.Query().Get("engine")
+	if engine == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "engine is required"})
+		return
+	}
+	if err := s.engines.Delete(r.Context(), engine, app, name); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -239,13 +249,14 @@ func (s *Server) handleRestoreOrphan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Engine string `json:"engine"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if err := s.apps.StartRestore(r.Context(), chi.URLParam(r, "app"), body.Name); err != nil {
+	if err := s.apps.StartRestore(r.Context(), chi.URLParam(r, "app"), body.Engine, body.Name); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

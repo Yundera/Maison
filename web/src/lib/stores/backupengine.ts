@@ -7,6 +7,11 @@ import { api } from '../api/client'
  *  after the user switches away from it. */
 export interface EngineInfo {
   id: string
+  /** What to call it on screen, when the deployment provisioned a name. The ID stays
+   *  a bare engine name because it is recorded on every backup and is machine
+   *  identity; the display name describes the *space* the engine points at, so a PCS
+   *  can say "Yundera Backup Storage" while the same engine self-hosted does not. */
+  name?: string
   /** False when the engine has nothing to write to — the normal state of a remote
    *  engine on a box whose provisioning has not run. Not an error. */
   connected: boolean

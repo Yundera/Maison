@@ -61,7 +61,8 @@ func (p *LocalProvider) stagingDir(app, stamp string) string {
 	return filepath.Join(AppBackupDir(p.cfg.BackupsDir(), app), ".staging-"+stamp)
 }
 
-// Snapshot mirrors the app folder into the staging directory.
+// Snapshot mirrors the app folder into the staging directory — except under
+// SnapshotOpts.Consume, where it does nothing and Commit takes the folder instead.
 //
 // Both passes mirror into the *same* staging directory, and that is what makes the
 // second one cheap: mirror skips any file already present with the same size and
@@ -74,6 +75,14 @@ func (p *LocalProvider) Snapshot(ctx context.Context, app, stamp string, opts Sn
 	appDir := filepath.Join(p.cfg.AppsDir(), app)
 	if _, err := os.Stat(appDir); err != nil {
 		return fmt.Errorf("%s has no folder to back up", app)
+	}
+	// Consume: the folder is being destroyed, so this engine takes it rather than
+	// copying it — and takes it in Commit, which is the commit point. Nothing happens
+	// here, deliberately: a crash between this call and Commit must leave the app
+	// exactly as it was, and moving the folder now would instead leave the user's only
+	// copy in a staging directory that nothing lists.
+	if opts.Consume {
+		return nil
 	}
 	staging := p.stagingDir(app, stamp)
 	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
@@ -99,12 +108,30 @@ func (p *LocalProvider) Snapshot(ctx context.Context, app, stamp string, opts Sn
 // filesystem. A zip is written to a dotted temporary and renamed only once whole,
 // so an interrupted compress can never be restored as though it had finished; the
 // staging directory is then scratch and is removed.
+//
+// Under SnapshotOpts.Consume the source is the app folder itself rather than a staged
+// copy — Snapshot deliberately left it there — and the same two operations apply one
+// directory further up. The folder case is then a *single* atomic rename from live app
+// to finished archive, which is what makes an uninstall instant at any size and leaves
+// no window in which the app's only copy sits somewhere nothing lists.
 func (p *LocalProvider) Commit(ctx context.Context, app, stamp string, opts SnapshotOpts, emit func(Event)) (Backup, error) {
 	dir := AppBackupDir(p.cfg.BackupsDir(), app)
-	staging := p.stagingDir(app, stamp)
+	// Snapshot creates this on the staged path; on the consumed path nothing has run
+	// before now, so the first thing Commit needs is somewhere to put the archive.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return Backup{}, fmt.Errorf("create backup dir: %w", err)
+	}
+
+	source := p.stagingDir(app, stamp)
+	if opts.Consume {
+		if !projectRe.MatchString(app) {
+			return Backup{}, fmt.Errorf("invalid app name: %s", app)
+		}
+		source = filepath.Join(p.cfg.AppsDir(), app)
+	}
 
 	if !opts.Zip {
-		if err := os.Rename(staging, filepath.Join(dir, stamp)); err != nil {
+		if err := os.Rename(source, filepath.Join(dir, stamp)); err != nil {
 			return Backup{}, fmt.Errorf("finalise backup: %w", err)
 		}
 		return p.backupFor(app, stamp)
@@ -113,7 +140,7 @@ func (p *LocalProvider) Commit(ctx context.Context, app, stamp string, opts Snap
 	name := stamp + ".zip"
 	tmp := filepath.Join(dir, "."+name+".partial")
 	emitPct(emit, 0, "Compressing "+name)
-	if err := archiveDir(staging, tmp, func(copied, total int64) {
+	if err := archiveDir(source, tmp, func(copied, total int64) {
 		emitPct(emit, pct(copied, total), "Compressing "+name)
 	}); err != nil {
 		_ = os.Remove(tmp)
@@ -123,12 +150,20 @@ func (p *LocalProvider) Commit(ctx context.Context, app, stamp string, opts Snap
 		_ = os.Remove(tmp)
 		return Backup{}, fmt.Errorf("finalise backup: %w", err)
 	}
-	// The zip is the artefact; the staged copy was only its input.
-	_ = os.RemoveAll(staging)
+	// The zip is the artefact; its input was only ever its input — a staged copy on the
+	// ordinary path, and on the consumed path the app folder, which is being removed
+	// anyway. Dropped only now, after the zip is whole and named, so a compress that
+	// fails leaves the app's data where it was.
+	_ = os.RemoveAll(source)
 	return p.backupFor(app, name)
 }
 
 // Abort drops an uncommitted staged copy.
+//
+// It stays correct under SnapshotOpts.Consume without knowing about it, because
+// Snapshot stages nothing there: it removes a staging directory that was never
+// created, and — the part that matters — it cannot reach the app folder, which on that
+// path is still the user's only copy of their data until Commit renames it.
 func (p *LocalProvider) Abort(ctx context.Context, app, stamp string) error {
 	return os.RemoveAll(p.stagingDir(app, stamp))
 }

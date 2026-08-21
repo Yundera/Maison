@@ -26,6 +26,13 @@ func storeZip(t *testing.T, appName string) []byte {
 // use the CasaOS layout.
 func storeZipAt(t *testing.T, appsPath, appName string) []byte {
 	t.Helper()
+	return storeZipNamed(t, appsPath, appName, "")
+}
+
+// storeZipNamed is storeZipAt with a store.json carrying storeName. An empty name
+// ships no store.json at all, which is the store that has to fall back to its URL.
+func storeZipNamed(t *testing.T, appsPath, appName, storeName string) []byte {
+	t.Helper()
 	compose := "name: " + appName + "\n" +
 		"services:\n" +
 		"  app:\n" +
@@ -43,6 +50,15 @@ func storeZipAt(t *testing.T, appsPath, appName string) []byte {
 	}
 	if _, err := w.Write([]byte(compose)); err != nil {
 		t.Fatal(err)
+	}
+	if storeName != "" {
+		mw, err := zw.Create("AppStore-main/store.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mw.Write([]byte(`{"name": "` + storeName + `"}`)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
@@ -328,5 +344,43 @@ func TestGetFromReadsTheAppsFolderTheReferenceNames(t *testing.T) {
 	// not find an app, rather than finding some other one.
 	if _, _, err := m.GetFrom(ctx, NewRef(srv.URL, "", "demo")); err == nil {
 		t.Error("GetFrom with the default folder found an app in a store that has none there")
+	}
+}
+
+// A store says what it is called; Maison does not guess. The label used to be
+// derived as "owner/repo" from the URL path, which is one forge's layout — it
+// means nothing for a store served from anywhere else, and it renders two refs of
+// the same repository identically, which is precisely when a person most needs to
+// know which one they are about to install from.
+func TestStoreNameComesFromTheStoreOrFallsBackToItsURL(t *testing.T) {
+	named := newStoreServer(t, `"v1"`, storeZipNamed(t, DefaultAppsPath, "demo", "Example App Store"))
+	anon := newStoreServer(t, `"v1"`, storeZip(t, "demo"))
+	ctx := context.Background()
+
+	m := New([]string{named.URL}, t.TempDir())
+	if err := m.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got := m.Sources(); len(got) != 1 || got[0].Name != "Example App Store" {
+		t.Errorf("Sources() = %+v, want the name from store.json", got)
+	}
+	if app, _, err := m.GetFrom(ctx, NewRef(named.URL, "", "demo")); err != nil {
+		t.Fatalf("GetFrom: %v", err)
+	} else if app.StoreName != "Example App Store" {
+		t.Errorf("StoreName = %q, want the name from store.json", app.StoreName)
+	}
+
+	// No store.json: named by where it came from, not by a guess at its URL's shape.
+	m2 := New([]string{anon.URL}, t.TempDir())
+	if err := m2.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got := m2.Sources(); len(got) != 1 || got[0].Name != anon.URL {
+		t.Errorf("Sources() = %+v, want the URL %q", got, anon.URL)
+	}
+	if app, _, err := m2.GetFrom(ctx, NewRef(anon.URL, "", "demo")); err != nil {
+		t.Fatalf("GetFrom: %v", err)
+	} else if app.StoreName != anon.URL {
+		t.Errorf("StoreName = %q, want the URL %q", app.StoreName, anon.URL)
 	}
 }

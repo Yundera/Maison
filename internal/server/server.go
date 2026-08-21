@@ -144,6 +144,15 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		s.installer.RollBack = func(ctx context.Context, project, name string) error {
 			return s.apps.Restore(ctx, project, "", name, nil)
 		}
+		// Install-from-backup, which — unlike the rollback point above — goes through
+		// whichever engine holds the backup the user picked. A store reinstall is not a
+		// rollback: it is reached from the catalog, minutes or months later, and the copy
+		// that matters may be the only one left, in a repository.
+		s.installer.FetchBackup = func(ctx context.Context, project, engine, name string, onProgress func(float64, string)) error {
+			return s.apps.RestoreForInstall(ctx, project, engine, name, func(ev apps.Event) {
+				onProgress(ev.Pct, ev.Message)
+			})
+		}
 	}
 	// Rebroadcast the app list as install progress advances so the tile's
 	// Download/Start bars move live. Pull events are frequent, so throttle.
@@ -343,8 +352,9 @@ func overlayUninstalls(list []apps.App, uninstalls []apps.UninstallState) []apps
 			continue
 		}
 		list[i].Uninstalling = st.Phase != apps.PhaseError
-		list[i].Remove = st.Remove
+		list[i].UninstallBackup = st.Backup
 		list[i].Archive = st.Archive
+		list[i].Remove = st.Remove
 		list[i].Phase = st.Phase
 		list[i].UninstallError = st.Error
 	}

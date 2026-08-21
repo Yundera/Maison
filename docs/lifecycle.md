@@ -182,19 +182,34 @@ writes the override and stops there. No Docker call at all.
 
 ## Uninstall
 
-Stop and remove the containers, then **move** the app folder to
-`.backups/<app>/<stamp>` (or zip it). Nothing is deleted, and no hooks run — Maison
-has no `pre_uninstall` / `post_uninstall`, on purpose: a hook that fires while the
-app is being taken away is a hook that can fail and leave the operator unable to
-uninstall. The archive is the safety net instead. See `app-model.md` for the archive
-format and the restore path.
+**Back the app up through the default backup engine, then remove it.** Nothing is
+deleted, and no hooks run — Maison has no `pre_uninstall` / `post_uninstall`, on
+purpose: a hook that fires while the app is being taken away is a hook that can fail
+and leave the operator unable to uninstall. The backup is the safety net instead. See
+`backup.md` §Uninstalling an app for the engine seam, and `app-model.md` for the
+archive format and the restore path.
 
 ```
-1. remove containers   (Remove progress bar — one tick per container, because a
-                        single stop can block for the whole stop-grace period)
-2. archive the folder  (Archive progress bar — instant for a rename, metered by
-                        bytes for a zip)
+1. stop containers     (Backup progress bar — stopped, not removed, so every failure
+                        path below can simply start the app again)
+2. back the app up     (Backup progress bar — a rename on the local engine, an upload
+                        on a remote one; the long step)
+3. finalise            (Archive progress bar — the commit point; instant unless it is
+                        a zip, which is metered by bytes)
+4. remove containers   (Remove progress bar — one tick per container, because a
+   and the folder       single stop can block for the whole stop-grace period)
 ```
+
+**The order is the contract.** Nothing is destroyed until step 3 returns, so a
+repository that cannot be reached fails the uninstall and leaves the app installed and
+running rather than leaving its data nowhere. Which also means an uninstall on a box
+backing up offsite puts that app's data offsite — it did not use to, and the settings
+page said it did.
+
+On the local engine the backup is still a single rename of the app folder into
+`.backups/<app>/<stamp>`, so an uninstall stays instant and free whatever the app's
+size (`SnapshotOpts.Consume`). `zip` is a local-engine option only, and the dialog
+hides it against a remote engine, where a zip would defeat deduplication.
 
 ### Detached, like an install
 
@@ -206,9 +221,12 @@ closes at once instead of blocking the dashboard on a zip that can take minutes.
 Progress rides the live app list exactly the way an install's does — the tracker
 lives in `apps.Registry` (`StartUninstall` / `Uninstalls` / `ClearUninstall`), and
 `server.overlayUninstalls` stamps it onto the app's tile. The tile renders the *same
-single bar as an install, in red*: **Remove**, then **Archive**. There is never a
-placeholder tile to append (unlike an install): the folder is what makes the tile,
-and it only disappears at the last step.
+single bar as an install, in red*: **Backup**, then **Archive**, then **Remove**. The
+bar is keyed on the phase rather than on which counter is still moving — an uninstall
+now opens with a step that can run for minutes, and reporting that as "Removing" would
+name the one thing that has definitely not happened yet. There is never a placeholder
+tile to append (unlike an install): the folder is what makes the tile, and it only
+disappears at the last step.
 
 A failed uninstall **stays visible** as a red `!` on the tile, with the error as its
 tooltip, until it is retried or dismissed (`POST /api/apps/{id}/dismiss`, which also

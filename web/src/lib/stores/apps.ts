@@ -36,18 +36,22 @@ export interface App {
   download?: number
   /** Stack-start progress, 0-100, driven by Docker (only while installing). */
   start?: number
-  /** Current install/uninstall phase: pull | prepare | start | remove |
-   *  archive | done | error. */
+  /** Current install/uninstall phase: pull | prepare | start | backup |
+   *  archive | remove | done | error. */
   phase?: string
   /** Set when an install failed; the tile shows the error until retried. */
   install_error?: string
   /** True while an uninstall is in flight for this app: the tile shows the same
    *  progress bar as an install, in red. */
   uninstalling?: boolean
-  /** Container-removal progress, 0-100 (only while uninstalling). */
-  remove?: number
-  /** Folder-archiving progress, 0-100 (only while uninstalling). */
+  /** Backing the app up through the default engine, 0-100 (only while
+   *  uninstalling) — an upload when that engine is a repository, and the step an
+   *  uninstall now spends nearly all its time in. */
+  uninstall_backup?: number
+  /** Finalising that backup, 0-100: a zip's compression, instant otherwise. */
   archive?: number
+  /** Container- and folder-removal progress, 0-100 (only while uninstalling). */
+  remove?: number
   /** Set when an uninstall failed; the tile shows the error until dismissed. */
   uninstall_error?: string
   /** True while a backup or restore is in flight: the tile shows the same one
@@ -94,8 +98,9 @@ function persistApps(list: App[]): void {
       delete c.phase
       delete c.install_error
       delete c.uninstalling
-      delete c.remove
+      delete c.uninstall_backup
       delete c.archive
+      delete c.remove
       delete c.uninstall_error
       return c
     })
@@ -156,14 +161,16 @@ export async function appAction(id: string, action: 'start' | 'stop' | 'restart'
   await loadApps()
 }
 
-/** Start uninstalling an app. Its folder is always preserved — renamed to
- *  `<app>.<date>.archive` (never deleted). When zip is true it is compressed to
- *  a `.zip` archive instead of a plain rename.
+/** Start uninstalling an app. Its data is always preserved: the app is backed up
+ *  through the default backup engine first, and only removed once that backup is
+ *  committed — so on a box backing up offsite, an uninstalled app's data is offsite.
+ *  `zip` only means anything to the local engine (see UninstallDialog).
  *
  *  The request returns as soon as the uninstall is *accepted*, not when it is
- *  done: from there the tile carries its progress (a red bar, remove then
- *  archive) over the live app list, so nothing has to wait on a zip that can run
- *  for minutes. A rejection (a protected app) still surfaces here, as a throw. */
+ *  done: from there the tile carries its progress (a red bar — backing up, then
+ *  archiving, then removing) over the live app list, so nothing has to wait on an
+ *  upload that can run for minutes. A rejection (a protected app) still surfaces
+ *  here, as a throw. */
 export async function uninstallApp(id: string, zip = false): Promise<void> {
   await api.del<{ status: string }>(`/api/apps/${encodeURIComponent(id)}?zip=${zip}`)
   await loadApps()
@@ -190,8 +197,8 @@ export interface AppProgress {
 
 /** The single progress bar an app shows, or null when nothing is in flight.
  *
- *  The backend measures each operation on two tracks (install: pull then
- *  bring-up; uninstall: containers then folder), but the UI shows **one bar at a
+ *  The backend measures each operation on several tracks (install: pull then
+ *  bring-up; uninstall: back up, finalise, then remove), but the UI shows **one bar at a
  *  time**: the step currently running, in that operation's colour. Both the
  *  dashboard tile and the store's install pill read this, so they can never
  *  disagree about what an app is doing.
@@ -201,12 +208,16 @@ export interface AppProgress {
 export function appProgress(a: App | undefined): AppProgress | null {
   if (!a) return null
   if (a.uninstalling) {
-    const removing = (a.remove ?? 0) < 100
-    return {
-      kind: 'uninstall',
-      pct: removing ? (a.remove ?? 0) : (a.archive ?? 0),
-      label: removing ? 'removing' : 'archiving',
-    }
+    // Keyed on the phase, for the reason the backup branch below spells out: reading
+    // the counters means "no track is still running" has to fall through to some
+    // label, and whichever one it picks is wrong for most of the operation. It also
+    // matters more here than it used to — an uninstall now starts with a backup that
+    // can run for minutes, and reporting that as "Removing" describes the one thing
+    // that has definitely not happened yet.
+    if (a.phase === 'archive')
+      return { kind: 'uninstall', pct: a.archive ?? 0, label: 'archiving' }
+    if (a.phase === 'remove') return { kind: 'uninstall', pct: a.remove ?? 0, label: 'removing' }
+    return { kind: 'uninstall', pct: a.uninstall_backup ?? 0, label: 'backing_up' }
   }
   if (a.installing) {
     const downloading = (a.download ?? 0) < 100

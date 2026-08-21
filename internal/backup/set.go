@@ -118,22 +118,39 @@ func (s *Set) SetWriter(id string) error {
 //
 // An engine that cannot answer is skipped rather than fatal — see logRead.
 func (s *Set) List(ctx context.Context, app string) []apps.Backup {
+	var out []apps.Backup
+	for _, p := range s.providers() {
+		out = append(out, s.ListIn(ctx, p.ID(), app)...)
+	}
+	return sortedBackups(out)
+}
+
+// ListIn returns one app's backups from ONE engine, newest first.
+//
+// This is the shape a caller needs when it presents a group per engine rather than one
+// merged list — the store's install-from-backup picker, which offers the app's backups
+// grouped the way the Backups page tabs them. It exists for the same reason ListAllIn
+// does: a group belongs to an engine, and so does the operation its rows start.
+//
+// An unknown engine lists nothing rather than erroring, which is the same answer the
+// engines that cannot be reached give.
+func (s *Set) ListIn(ctx context.Context, engine, app string) []apps.Backup {
 	// Guarded here, not just in each engine: the name arrives from a URL and reaches a
 	// subprocess argument in a remote engine. Nothing to list is the honest answer for
 	// a name no app can have.
 	if !apps.ValidProjectName(app) {
 		return nil
 	}
-	var out []apps.Backup
-	for _, p := range s.providers() {
-		got, err := p.List(ctx, app)
-		if err != nil {
-			logRead(err, "list "+app, p)
-			continue
-		}
-		out = append(out, got...)
+	p, ok := s.Get(engine)
+	if !ok {
+		return nil
 	}
-	return sortedBackups(out)
+	got, err := p.List(ctx, app)
+	if err != nil {
+		logRead(err, "list "+app, p)
+		return nil
+	}
+	return sortedBackups(got)
 }
 
 // sortedBackups orders newest first.
@@ -268,9 +285,12 @@ func (s *Set) LocateIn(ctx context.Context, engine, app, stamp string) (apps.Pro
 // Locate finds *an* engine that can serve a read of (app, stamp), with no engine
 // named.
 //
-// It survives only for the store's install-from-backup path, where the user chose an
-// app rather than a row and there is no engine in the request. Everything reached from
-// the Backups UI goes through LocateIn instead.
+// It is the compatibility form, not the shape any current UI uses. Every surface that
+// offers a backup now offers it as a row belonging to an engine — the Backups page, and
+// the store's install-from-backup picker, which used to be the one caller with no
+// engine to name — so they all go through LocateIn. This answers the request that
+// still arrives without one, from a client that predates the grouped list, by guessing
+// as well as it can rather than failing.
 //
 // **Dispatch is on where the backup actually is, never on which engine is
 // selected.** Without this, switching engine orphans every backup the previous one

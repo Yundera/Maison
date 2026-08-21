@@ -247,6 +247,23 @@ deliberate: a URL anyone can paste must not be able to install software on a box
 The grammar lives in `internal/appstore/ref.go` (authority) and `web/src/lib/storeref.ts`
 (the SPA's mirror). The API takes the same reference as `?store=` + `?apps_path=` alongside
 a single-segment app id.
+
+### 5.0.1 `store.json` — what a store calls itself
+
+Optional, at the store root, next to `category-list.json`:
+
+```json
+{ "name": "Yundera App Store" }
+```
+
+It is what the source list and the unlisted-store warning show. **A store without one is
+named by its URL** — deliberately, rather than by a name derived from the URL's shape:
+"owner/repo" is one forge's path layout, it means nothing for a store served from anywhere
+else, and it renders two refs of the same repository identically, which is exactly when
+somebody most needs to know which one they are about to install from.
+
+A store that has never been fetched successfully has no name of its own yet, and is listed
+by URL until it has.
 - **Install:** writes the app's project to `${DATA_ROOT}/AppData/<app>/` and brings it up
   through the lifecycle pipeline ([§6.2](#62-the-one-rule)). The store's
   `docker-compose.yml` is copied **byte-for-byte** and never modified — customization goes

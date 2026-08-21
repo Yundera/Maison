@@ -11,6 +11,7 @@ import (
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/appstore"
+	"github.com/yundera/maison/internal/installer"
 )
 
 type storeResponse struct {
@@ -39,8 +40,12 @@ func (s *Server) handleStore(w http.ResponseWriter, _ *http.Request) {
 // the UI must still update — an outright failure gets a non-2xx and an "error"
 // instead (see handleRefreshStoreSource).
 type sourcesResponse struct {
-	Sources []string `json:"sources"`
-	Warning string   `json:"warning,omitempty"`
+	// Each source with the name it gives itself in store.json, falling back to its
+	// URL. A name is never derived from the URL: "owner/repo" is one forge's path
+	// layout, it means nothing for a store served from anywhere else, and it
+	// collapses two refs of the same repository into the same label.
+	Sources []appstore.Source `json:"sources"`
+	Warning string            `json:"warning,omitempty"`
 }
 
 // storeSyncTimeout bounds one download+extract pass over every configured store.
@@ -60,7 +65,7 @@ func (s *Server) handleStoreSources(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.URLs()})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.Sources()})
 }
 
 func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +119,7 @@ func (s *Server) handleRefreshStoreSource(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.URLs()})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.Sources()})
 }
 
 // decodeURL reads the {"url": …} body the source-list endpoints take, and
@@ -154,7 +159,7 @@ func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []str
 	if err := s.store.Refresh(rc); err != nil {
 		resp.Warning = err.Error()
 	}
-	resp.Sources = s.store.URLs()
+	resp.Sources = s.store.Sources()
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -193,10 +198,34 @@ func storeRef(r *http.Request) appstore.Ref {
 	return appstore.NewRef(q.Get("store"), q.Get("apps_path"), chi.URLParam(r, "id"))
 }
 
-// handleStoreBackups lists the uninstall archives of a store app, so the store
-// can offer "install from backup" next to a fresh install. The compose project
-// name is resolved server-side (it can come from the compose file's own `name:`,
-// which the client cannot see).
+// storeBackupEngine is one engine's offer in the store's install-from-backup picker.
+//
+// Grouped by engine rather than merged into one list, for the reason the Backups page
+// is tabbed by engine: a stamp held by two engines is two backups, and a merged row
+// has to invent a vocabulary for "in both places" that every attempt has got wrong. A
+// group needs none — every row in it belongs to that engine, and so does the install
+// it starts.
+type storeBackupEngine struct {
+	Engine string `json:"engine"`
+	// Name is the deployment's name for it, empty when nobody provisioned one — the
+	// client then falls back to describing the engine. See engineInfo.Name.
+	Name    string        `json:"name,omitempty"`
+	Offsite bool          `json:"offsite"`
+	Backups []apps.Backup `json:"backups"`
+}
+
+// handleStoreBackups lists a store app's backups, grouped by the engine holding each,
+// so the store can offer "install from backup" next to a fresh install. The compose
+// project name is resolved server-side (it can come from the compose file's own
+// `name:`, which the client cannot see).
+//
+// It reads through the engine set like every other backup listing. Walking the data
+// disk directly — which this used to do — meant a box whose default engine writes to a
+// repository could not install from anything it had backed up: the picker showed only
+// what predated the switch, and on a box that had always been remote, nothing at all.
+//
+// Sizes are left unmeasured here, unlike the per-app Backups tab: this runs on a click
+// in the catalog, and measuring a folder archive is a tree walk per row.
 func (s *Server) handleStoreBackups(w http.ResponseWriter, r *http.Request) {
 	if s.installer == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "install unavailable"})
@@ -207,11 +236,24 @@ func (s *Server) handleStoreBackups(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	backups := apps.ListBackups(s.cfg.BackupsDir(), project)
-	if backups == nil {
-		backups = []apps.Backup{}
+
+	engines := []storeBackupEngine{}
+	if s.engines != nil {
+		for _, id := range s.engines.IDs() {
+			list := s.engines.ListIn(r.Context(), id, project)
+			// An engine holding nothing for this app contributes no group. The picker is a
+			// dropdown on a catalog row, and an empty heading per configured engine is
+			// noise on every app that has never been installed.
+			if len(list) == 0 {
+				continue
+			}
+			name, offsite := s.engineDisplay(r.Context(), id)
+			engines = append(engines, storeBackupEngine{
+				Engine: id, Name: name, Offsite: offsite, Backups: list,
+			})
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"project": project, "backups": backups})
+	writeJSON(w, http.StatusOK, map[string]any{"project": project, "engines": engines})
 }
 
 // handleInstall starts a detached install and returns immediately. Progress is
@@ -219,8 +261,10 @@ func (s *Server) handleStoreBackups(w http.ResponseWriter, r *http.Request) {
 // closing the store panel never cancels it) and its progress rides the live
 // "apps" channel as Download/Start bars on the app's tile (see appsSnapshot).
 //
-// An optional {"from_backup": "<archive name>"} body reinstalls the app on top of
-// one of its uninstall archives instead of on a clean slate.
+// An optional {"from_backup": "<stamp>", "engine": "<engine>"} body reinstalls the app
+// on top of one of its backups instead of on a clean slate. Engine says which copy,
+// because the picker offers a row per engine and two of them can hold the same stamp;
+// omitting it still works and means "whichever engine has it".
 func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	if s.installer == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "install unavailable"})
@@ -228,11 +272,16 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		FromBackup string `json:"from_backup"`
+		Engine     string `json:"engine"`
 	}
 	// A body is optional here: a plain install posts nothing at all.
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	project, err := s.installer.StartInstall(r.Context(), storeRef(r), strings.TrimSpace(body.FromBackup))
+	from := installer.BackupRef{
+		Name:   strings.TrimSpace(body.FromBackup),
+		Engine: strings.TrimSpace(body.Engine),
+	}
+	project, err := s.installer.StartInstall(r.Context(), storeRef(r), from)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

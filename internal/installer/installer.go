@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/yundera/maison/internal/appenv"
-	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
@@ -35,6 +34,18 @@ type Event struct {
 	Message  string  `json:"message"`  // human-readable detail
 	Download float64 `json:"download"` // image-pull progress, 0-100
 	Start    float64 `json:"start"`    // stack-start progress, 0-100
+}
+
+// BackupRef names the backup an install should land on top of: a stamp, plus the
+// engine holding it.
+//
+// The engine is part of the identity, not a hint. Two engines can hold the same stamp
+// — a local archive and an offsite snapshot of the same app on the same day — and they
+// are separate backups written at separate times; installing on the other one is not
+// what the user clicked. A zero BackupRef means a fresh install.
+type BackupRef struct {
+	Name   string
+	Engine string
 }
 
 var invalidProjectChars = regexp.MustCompile(`[^a-z0-9_-]+`)
@@ -76,6 +87,17 @@ type Installer struct {
 	// behaviour on a box with no Docker.
 	BackupBeforeUpdate func(ctx context.Context, project string) (string, error)
 	RollBack           func(ctx context.Context, project, name string) error
+
+	// FetchBackup puts (project, engine, name) back as the app's folder before an
+	// install runs over it — the store's install-from-backup path.
+	//
+	// A func field for the same reason the two above are: the Installer needs the
+	// operation, not a registry. It has to be one at all rather than the direct
+	// apps.RestoreBackup call it replaces, because that call read the data disk and
+	// only the data disk — so on a box whose backups live in a repository the store
+	// offered a list it could not install from, and mostly an empty one. Nil disables
+	// install-from-backup rather than failing an install that asked for none.
+	FetchBackup func(ctx context.Context, project, engine, name string, onProgress func(pct float64, msg string)) error
 
 	mu       sync.Mutex
 	installs map[string]*InstallState // project name -> live progress
@@ -125,15 +147,15 @@ func (in *Installer) ProjectFor(ctx context.Context, ref appstore.Ref) (string, 
 // away. Idempotent: a second call while the same project is installing is a
 // no-op. Returns the resolved compose project name (the app's tile id).
 //
-// fromBackup, when set, names an uninstall archive of this app (see
-// apps.ListBackups): it is restored as the app's folder before the install runs,
-// so the app comes back with its old data and .env instead of a clean slate.
+// from, when set, names one of this app's backups in the engine that holds it: it is
+// restored as the app's folder before the install runs, so the app comes back with its
+// old data and .env instead of a clean slate.
 //
 // A reference carrying a locator installs the app from that store rather than
 // from the merged catalog — the store need not be a configured source. The whole
 // reference is recorded as the app's update reference, so later updates keep
 // coming from the same store *and* the same folder inside it.
-func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, fromBackup string) (string, error) {
+func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from BackupRef) (string, error) {
 	app, raw, err := in.store.GetFrom(ctx, ref)
 	if err != nil {
 		return "", err
@@ -159,7 +181,7 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, fromBac
 
 	go func() {
 		// Deliberately not the caller's ctx: the install must outlive the request.
-		err := in.Install(context.Background(), ref, fromBackup, func(ev Event) {
+		err := in.Install(context.Background(), ref, from, func(ev Event) {
 			in.mu.Lock()
 			if st := in.installs[project]; st != nil {
 				st.Phase, st.Message, st.Download, st.Start = ev.Phase, ev.Message, ev.Download, ev.Start
@@ -216,9 +238,9 @@ func (in *Installer) notify() {
 // Install fetches app `id`, transforms its compose, writes it, and brings the
 // stack up — emitting progress events (safe to pass a nil emit).
 //
-// fromBackup, when set, restores that uninstall archive as the app's folder first
-// (see StartInstall). A reference carrying a locator pins the app to that store.
-func (in *Installer) Install(ctx context.Context, ref appstore.Ref, fromBackup string, emit func(Event)) error {
+// from, when set, restores that backup as the app's folder first (see StartInstall).
+// A reference carrying a locator pins the app to that store.
+func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupRef, emit func(Event)) error {
 	if emit == nil {
 		emit = func(Event) {}
 	}
@@ -250,9 +272,19 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, fromBackup s
 	// an existing folder, and the install below is deliberately non-destructive on
 	// top of what it finds — the strict docker-compose.yml is refreshed from the
 	// store, while the restored .env and data are left exactly as they were.
-	if fromBackup != "" {
-		emit(Event{Phase: "prepare", Message: "Restoring backup " + fromBackup})
-		if err := apps.RestoreBackup(in.cfg.BackupsDir(), in.cfg.AppsDir(), project, fromBackup); err != nil {
+	if from.Name != "" {
+		if in.FetchBackup == nil {
+			return fmt.Errorf("restore backup: backups are not available on this box")
+		}
+		emit(Event{Phase: "prepare", Message: "Restoring backup " + from.Name})
+		// Reported on the Download track. Restoring from a repository *is* a download,
+		// it happens before the image pull that track normally carries, and an engine
+		// that cannot measure its progress reports PctUnknown — which is negative, and
+		// would render as a bar of negative width, so it floors at zero and the message
+		// carries the detail instead.
+		if err := in.FetchBackup(ctx, project, from.Engine, from.Name, func(pct float64, msg string) {
+			emit(Event{Phase: "prepare", Message: msg, Download: max(pct, 0)})
+		}); err != nil {
 			return fmt.Errorf("restore backup: %w", err)
 		}
 	}

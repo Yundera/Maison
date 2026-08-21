@@ -82,12 +82,18 @@ type App struct {
 	InstallError string  `json:"install_error,omitempty"`
 	// Uninstall progress, the mirror image of the install fields above and
 	// overlaid the same way (see UninstallState). The tile renders the same one
-	// bar, in red — Remove (containers) then Archive (folder) — while
+	// bar, in red — UninstallBackup (backing the app up through the default engine),
+	// then Archive (finalising it), then Remove (containers and folder) — while
 	// Uninstalling is true. Also never set by List() itself.
-	Uninstalling   bool    `json:"uninstalling,omitempty"`
-	Remove         float64 `json:"remove,omitempty"`
-	Archive        float64 `json:"archive,omitempty"`
-	UninstallError string  `json:"uninstall_error,omitempty"`
+	//
+	// UninstallBackup is spelled out rather than reusing Copy below: an uninstall and a
+	// backup are separate overlays with separate booleans, and a tile carrying both
+	// fields under one name could not say which operation a number belonged to.
+	Uninstalling    bool    `json:"uninstalling,omitempty"`
+	UninstallBackup float64 `json:"uninstall_backup,omitempty"`
+	Archive         float64 `json:"archive,omitempty"`
+	Remove          float64 `json:"remove,omitempty"`
+	UninstallError  string  `json:"uninstall_error,omitempty"`
 	// Backup/restore progress, overlaid the same way again (see BackupState). The
 	// tile renders one bar in its own colour, stepping through Copy (the live
 	// pass), Sync (the stopped pass) and Compress, while BackingUp is true. Also

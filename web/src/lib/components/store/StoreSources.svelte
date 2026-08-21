@@ -4,13 +4,14 @@
     addStoreSource,
     removeStoreSource,
     refreshStoreSource,
+    type StoreSource,
   } from '../../stores/store'
   import { clickOutside } from '../../actions'
 
   let { count, onchanged }: { count: number; onchanged: () => void } = $props()
 
   let open = $state(false)
-  let sources = $state<string[]>([])
+  let sources = $state<StoreSource[]>([])
   let adding = $state(false)
   let url = $state('')
   let busy = $state(false)
@@ -33,16 +34,6 @@
   function toggle() {
     open = !open
     if (open) load()
-  }
-
-  function shortName(u: string): string {
-    try {
-      const p = new URL(u)
-      const seg = p.pathname.split('/').filter(Boolean)
-      return seg.length >= 2 ? `${seg[0]}/${seg[1]}` : p.hostname
-    } catch {
-      return u
-    }
   }
 
   async function add() {
@@ -104,22 +95,22 @@
   {#if open}
     <div class="menu" use:clickOutside={() => (open = false)}>
       <div class="head">App store sources</div>
-      {#each sources as u (u)}
+      {#each sources as s (s.url)}
         <div class="row">
-          <span class="name" title={u}>{shortName(u)}</span>
+          <span class="name" title={s.url}>{s.name}</span>
           <button
             class="reload"
-            class:spin={reloading === u}
+            class:spin={reloading === s.url}
             aria-label="Reload"
             title="Reload store"
             disabled={busy || reloading !== ''}
-            onclick={() => reload(u)}>⟳</button
+            onclick={() => reload(s.url)}>⟳</button
           >
           <button
             class="trash"
             aria-label="Remove"
             disabled={busy || sources.length <= 1}
-            onclick={() => remove(u)}>✕</button
+            onclick={() => remove(s.url)}>✕</button
           >
         </div>
       {/each}

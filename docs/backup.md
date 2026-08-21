@@ -20,6 +20,13 @@
 > **no local staging copy** on the remote path (§[Why there is no local staging
 > copy](#why-there-is-no-local-staging-copy)), and restoring an app too large to hold
 > two copies of writes **in place**, which is not atomic (§[Restore](#restore)).
+>
+> A third correction is larger, and reverses what this document used to say: an
+> uninstall now backs the app up **through the default engine** instead of renaming its
+> folder aside and calling that an archive (§[Uninstalling an
+> app](#uninstalling-an-app)). The store's install-from-backup picker reads through the
+> engine set with it, so a backup that exists only in a repository can be reinstalled
+> from.
 
 Its companions:
 
@@ -193,13 +200,27 @@ the scheduler. Every read now goes through the set:
 | Path | Reads through |
 |---|---|
 | Per-app tab, global page | `Set.List`, `Set.ListAll` |
-| Restore (precondition *and* execution) | `Set.LocateIn` — the engine the row belongs to; `Set.Locate` only for the store's install path, which has no row |
+| Store's install-from-backup picker | `Set.ListIn` — a group per engine, like the page's tabs |
+| Restore (precondition *and* execution) | `Set.LocateIn` — the engine the row belongs to |
 | Delete | `Set.Delete` — from **that one engine**, never across them |
 
-Two writes deliberately stay local, and are exceptions rather than oversights:
-archive-on-uninstall and the update rollback point (`BackupWith`). Both need a rename
-they can undo in seconds, and a repository upload is not that. `keep_local` pruning is
-local by definition.
+The store's install-from-backup path was the last one to be moved, and it is worth
+naming because it looked fixed for longer than it was: the Backups page had been
+converted while the store still called `apps.ListBackups` on the data disk. On a box
+that had always been remote its picker was simply empty, which reads as "this app has
+never been backed up" rather than as a bug. `Set.Locate` — the engine-less form the
+picker used to justify — is now the compatibility path for a request that names no
+engine, and nothing in the UI produces one.
+
+**One write deliberately stays local**, and is an exception rather than an oversight:
+the update rollback point (`BackupWith`). It needs a rename it can undo in seconds, and
+a repository upload is not that. `keep_local` pruning is local by definition.
+
+Archive-on-uninstall used to be listed here as the second exception. It is not one, and
+treating it as one was the mistake this document made: an uninstall archive that only
+exists on the box is a recycle bin, not a backup. It dies with the disk — the failure
+the offsite engine exists for — and the user who uninstalled an app to reclaim space is
+exactly the user who then deletes it. See [Uninstalling an app](#uninstalling-an-app).
 
 ---
 
@@ -253,8 +274,8 @@ What it costs:
   **pass-2 timeout**, which turns "the repo is hanging" into "the backup failed, the
   app is up".
 - **No local archive for that app**, so its restores are always a `Materialize`
-  download. The uninstall path is unaffected — it renames `AppData/<app>` into
-  `.backups/<app>/<stamp>`, and a rename costs nothing at any size.
+  download. The uninstall path keeps a rename on the local engine — see
+  [Uninstalling an app](#uninstalling-an-app) — and a rename costs nothing at any size.
 
 The local tier remains available for apps that fit it — instant restore is worth
 having where it is free — but nothing may *require* it. `EstimateBackup` already
@@ -299,6 +320,63 @@ safe, and **it must not be loosened** to accommodate an engine whose native refs
 different. A snapshot ID is a provider-internal detail; `(app, stamp)` is the identity
 the API routes and the frontend already use, and keeping it removes what would
 otherwise be the largest refactor in this work.
+
+---
+
+## Uninstalling an app
+
+**An uninstall is a backup followed by a removal**, written wherever the default engine
+writes. It is not a special case with its own storage rule:
+
+```
+stop      containers stopped, not removed   downtime starts
+backup    Snapshot(Consume) through the default engine
+archive   Commit — the commit point; a zip compresses here
+remove    the containers, then the app folder if the engine did not take it
+```
+
+**Nothing is destroyed before `Commit` returns.** That ordering is the whole design:
+until then, any failure restarts the app and leaves it installed with its data intact.
+It is why the containers are *stopped* rather than removed at the top — removing them
+first would make "put it back" mean re-creating the stack.
+
+### `Consume`: the verb that keeps it free
+
+Routing an uninstall through an engine's ordinary `Snapshot` would have regressed it
+badly. The local engine's snapshot is a full second copy, guarded by `EstimateBackup`'s
+`folderHeadroom`, so an uninstall through it would **refuse any app larger than half the
+free disk** — an app you can install and then cannot remove. That is worse than the
+problem being fixed.
+
+So `SnapshotOpts.Consume` tells the engine the source folder is being destroyed and it
+may *take* the folder rather than read it. The local engine does, and the result is a
+single atomic rename from live app to finished archive — exactly what the old uninstall
+did, now expressed through the seam instead of beside it. An engine streaming to a
+repository ignores it, reads as usual, and the registry removes the source once `Commit`
+has succeeded. Either way the caller's guarantee is the same: after a committed
+`Consume` backup, the app folder is gone.
+
+Two rules make it safe, and neither is optional:
+
+- **An engine that takes the folder must do it in `Commit`, never in `Snapshot`.**
+  Nothing before the commit point is durable — an interrupted backup is aborted — so
+  moving the folder in `Snapshot` would park the user's only copy of their data in a
+  staging directory that nothing lists, for the whole window until `Commit` ran. It also
+  keeps `Abort` unable to reach the app folder, which is the difference between
+  discarding a staged copy and deleting an app.
+- **It implies a single pass, and that pass is `Pass: 2`.** The number identifies the
+  *consistent* pass, not the ordinal; there is no live pass for a stopped app to be
+  incremental against, and committing a `Pass: 1` snapshot would discard it as the torn
+  throwaway it normally is.
+
+### No fallback to local
+
+If the default engine cannot be reached, the uninstall **fails** and the app stays
+installed and running, with the error on its tile. Falling back to a local archive is
+the tempting behaviour and the wrong one: it would put the data somewhere other than
+where the user was told it goes, at the exact moment the tile disappears and stops being
+able to say so. The escape hatch is to point the default engine at this server's disk in
+Settings → Backups and retry.
 
 ---
 
@@ -636,9 +714,10 @@ What follows from it:
   that copy is the entire disaster-recovery story, and a delete that silently spanned
   engines would destroy it while appearing to tidy a local folder.
 - **Restore names its engine.** `Set.LocateIn` is the shape the UI uses, because the
-  user clicked a row and a row belongs to an engine. `Set.Locate` — "whichever engine
-  has it", preferring an instant restore — survives for the store's
-  install-from-backup path, which has an app but no row.
+  user clicked a row and a row belongs to an engine — including in the store's
+  install-from-backup picker, which offers a group per engine for the same reason the
+  page tabs by one. `Set.Locate` — "whichever engine has it", preferring an instant
+  restore — is kept only for a request that arrives without an engine.
 - **The selected engine still governs writes only.** It decides where the nightly run,
   an uninstall and "Back up now" put the next backup. It has no bearing on what is
   listed, restorable or deletable, which is what keeps a user's history reachable after

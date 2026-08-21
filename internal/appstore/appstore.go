@@ -50,8 +50,17 @@ type CatalogApp struct {
 	// back to the client so a pinned install goes to the same place the app was
 	// read from, rather than to whatever the default happens to be.
 	AppsPath string `json:"apps_path,omitempty"`
+	// StoreName is what the store calls itself (store.json), falling back to its
+	// URL. Shown wherever a store has to be named to a person.
+	StoreName string `json:"store_name,omitempty"`
 
 	composePath string // absolute path to the app's compose file
+}
+
+// Source is one configured store, named for display.
+type Source struct {
+	URL  string `json:"url"`
+	Name string `json:"name"`
 }
 
 // Manager holds the merged catalog across all configured stores.
@@ -78,6 +87,10 @@ type Manager struct {
 	order     []string // stable catalog order
 	cats      []string
 	recommend []string
+	// names is what each store called itself at the last refresh, by URL. Cached
+	// rather than read on demand: naming a source otherwise costs a directory walk
+	// to find the store root, per source, every time the menu opens.
+	names map[string]string
 }
 
 // New creates a Manager for the given store URLs, caching under cacheDir.
@@ -86,6 +99,7 @@ func New(urls []string, cacheDir string) *Manager {
 		urls:     canonicalURLs(urls),
 		cacheDir: cacheDir,
 		catalog:  map[string]*CatalogApp{},
+		names:    map[string]string{},
 	}
 }
 
@@ -111,6 +125,25 @@ func canonicalURLs(urls []string) []string {
 		if c := CanonicalURL(u); c != "" {
 			out = append(out, c)
 		}
+	}
+	return out
+}
+
+// Sources returns the configured stores, each named as it names itself. A store
+// that has never been read successfully has no name of its own and is listed by
+// URL — which is also the fallback for one that ships no store.json, since a
+// store with nothing to say about itself is best identified by where it came
+// from rather than by a guess made from its URL's shape.
+func (m *Manager) Sources() []Source {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Source, 0, len(m.urls))
+	for _, u := range m.urls {
+		name := m.names[u]
+		if name == "" {
+			name = u
+		}
+		out = append(out, Source{URL: u, Name: name})
 	}
 	return out
 }
@@ -246,6 +279,7 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	catSet := map[string]bool{}
 	var recommend []string
 	var errs []error
+	names := map[string]string{}
 
 	// A configured source names no apps folder — only a reference can — so the
 	// merged catalog is built from the default layout.
@@ -258,6 +292,9 @@ func (m *Manager) Refresh(ctx context.Context) error {
 			continue // nothing on disk to fall back on either
 		}
 		apps, cats, rec := parseStore(root, u, DefaultAppsPath)
+		if n := readStoreName(root); n != "" {
+			names[u] = n
+		}
 		for _, a := range apps {
 			if _, exists := catalog[a.ID]; exists {
 				continue // first store wins on id collision
@@ -285,6 +322,7 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	m.order = order
 	m.cats = cats
 	m.recommend = recommend
+	m.names = names
 	m.mu.Unlock()
 	return errors.Join(errs...)
 }
@@ -672,6 +710,12 @@ func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, reco
 	if err != nil {
 		return nil, nil, nil
 	}
+	// What the store calls itself, or where it came from. Resolved once here so
+	// every app of one store carries the same answer.
+	storeName := readStoreName(root)
+	if storeName == "" {
+		storeName = storeURL
+	}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -691,7 +735,7 @@ func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, reco
 		if err != nil {
 			continue
 		}
-		apps = append(apps, catalogApp(e.Name(), si, composePath, storeURL, appsPath))
+		apps = append(apps, catalogApp(e.Name(), si, composePath, storeURL, appsPath, storeName))
 	}
 
 	cats = readCategories(root)
@@ -699,7 +743,7 @@ func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, reco
 	return apps, cats, recommend
 }
 
-func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPath string) *CatalogApp {
+func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPath, storeName string) *CatalogApp {
 	name := xcasaos.Localized(si.Title)
 	if name == "" {
 		name = id
@@ -718,8 +762,34 @@ func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPat
 		MinMemory:   si.MinMemory,
 		StoreURL:    storeURL,
 		AppsPath:    appsPath,
+		StoreName:   storeName,
 		composePath: composePath,
 	}
+}
+
+// readStoreName reads what a store calls itself, from store.json at the store
+// root:
+//
+//	{ "name": "Yundera App Store" }
+//
+// Every field is optional and the file itself is optional; an unreadable or
+// unparseable one is simply a store that did not say, and the caller falls back
+// to the URL. A name has to be declared rather than derived, because deriving one
+// means reading a URL's shape — "owner/repo" is a forge's path layout, it is
+// wrong for a store served from anywhere else, and it silently collapses two refs
+// of one repository into the same label.
+func readStoreName(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, "store.json"))
+	if err != nil {
+		return ""
+	}
+	var meta struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(b, &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.Name)
 }
 
 func readCategories(root string) []string {

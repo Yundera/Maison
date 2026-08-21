@@ -9,6 +9,8 @@ package backuptest
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -34,6 +36,13 @@ type Fake struct {
 	DeleteErr    error
 	SnapshotHang time.Duration // block this long in Snapshot, to exercise timeouts
 
+	// MaterializeInto, when set, is the .backups directory this fake writes into when
+	// asked to bring a backup down — enough of a real download for the paths above it
+	// (restore, and the store's install-from-backup) to be exercised end to end against
+	// an engine whose backups are not already on the disk. Left empty, Materialize only
+	// records the call.
+	MaterializeInto string
+
 	mu    sync.Mutex
 	store map[string][]apps.Backup // app -> committed backups
 	// ListAllCalls counts bulk listings. It is a counter rather than a Calls entry
@@ -42,8 +51,9 @@ type Fake struct {
 	// how many apps it shows.
 	ListAllCalls int
 	// Calls records every operation in order, as "verb:app/stamp" (Snapshot carries
-	// its pass, e.g. "snapshot:jellyfin/2026-01-01_000000#2"). Asserting on this is
-	// how a test pins a sequence without reaching into the engine's state.
+	// its pass, e.g. "snapshot:jellyfin/2026-01-01_000000#2", and appends "+consume"
+	// when the caller offered it the app folder outright). Asserting on this is how a
+	// test pins a sequence without reaching into the engine's state.
 	Calls []string
 }
 
@@ -91,8 +101,17 @@ func (f *Fake) record(s string) {
 	f.Calls = append(f.Calls, s)
 }
 
+// Snapshot records the call and stores nothing. It ignores SnapshotOpts.Consume
+// beyond recording it, which is exactly what a streaming engine does: it reads the app
+// folder and leaves it, and the registry removes it after Commit. That makes this fake
+// the remote half of the Consume contract, and the assertion that the registry cleans
+// up after such an engine rather than assuming the folder is gone.
 func (f *Fake) Snapshot(ctx context.Context, app, stamp string, opts apps.SnapshotOpts, emit func(apps.Event)) error {
-	f.record("snapshot:" + app + "/" + stamp + "#" + itoa(opts.Pass))
+	call := "snapshot:" + app + "/" + stamp + "#" + itoa(opts.Pass)
+	if opts.Consume {
+		call += "+consume"
+	}
+	f.record(call)
 	if emit != nil {
 		emit(apps.Event{Pct: 100, Message: "fake snapshot"})
 	}
@@ -155,7 +174,15 @@ func (f *Fake) ListAll(ctx context.Context) (map[string][]apps.Backup, error) {
 
 func (f *Fake) Materialize(ctx context.Context, app, stamp string, emit func(apps.Event)) error {
 	f.record("materialize:" + app + "/" + stamp)
-	return f.MaterialErr
+	if f.MaterialErr != nil || f.MaterializeInto == "" {
+		return f.MaterialErr
+	}
+	dir := filepath.Join(apps.AppBackupDir(f.MaterializeInto, app), stamp)
+	if err := os.MkdirAll(filepath.Join(dir, "db"), 0o755); err != nil {
+		return err
+	}
+	// The same shape the real fixtures use, so what lands is recognisably the app.
+	return os.WriteFile(filepath.Join(dir, "db", "data.sqlite"), []byte("rows"), 0o644)
 }
 
 func (f *Fake) RestoreInPlace(ctx context.Context, app, stamp, dst string, emit func(apps.Event)) error {

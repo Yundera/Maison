@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { fetchStoreApp, fetchStoreSources, type StoreApp } from '../../stores/store'
+  import {
+    fetchStoreApp,
+    fetchStoreSources,
+    type StoreApp,
+    type StoreSource,
+  } from '../../stores/store'
   import { t } from '../../i18n'
   import { renderMarkdown } from '../../markdown'
   import InstallButton from './InstallButton.svelte'
@@ -14,7 +19,7 @@
   let app = $state<StoreApp | null>(null)
   let loading = $state(true)
   let error = $state('')
-  let sources = $state<string[] | null>(null) // null until known — don't warn early
+  let sources = $state<StoreSource[] | null>(null) // null until known — don't warn early
 
   $effect(() => {
     loading = true
@@ -35,18 +40,9 @@
       .catch(() => (sources = []))
   })
 
-  const unlisted = $derived(!!app?.store && !!sources && !sources.includes(app.store))
-
-  // Short "owner/repo" (or host) label for a store URL — mirrors StoreSources.
-  function storeLabel(u: string): string {
-    try {
-      const p = new URL(u)
-      const seg = p.pathname.split('/').filter(Boolean)
-      return seg.length >= 2 ? `${seg[0]}/${seg[1]}` : p.hostname
-    } catch {
-      return u
-    }
-  }
+  const unlisted = $derived(
+    !!app?.store && !!sources && !sources.some((s) => s.url === app!.store),
+  )
 </script>
 
 <div class="detail">
@@ -60,7 +56,7 @@
         <span class="sign">⚠</span>
         <div>
           <strong>{$t('unlisted_store')}</strong>
-          <span class="src" title={app.store}>{storeLabel(app.store)}</span>
+          <span class="src" title={app.store}>{app.store_name || app.store}</span>
           <p class="hint">{$t('unlisted_store_hint')}</p>
         </div>
       </div>
@@ -149,6 +145,9 @@
     margin-left: 0.35rem;
     font-family: monospace;
     font-size: 0.8rem;
+    /* A store that ships no store.json is named by its URL, which is long and has
+       no spaces to break on. Wrapping beats overflowing the warning. */
+    overflow-wrap: anywhere;
   }
   .warning .hint {
     margin: 0.15rem 0 0;

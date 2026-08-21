@@ -62,7 +62,7 @@ func TestStartUninstallArchivesAndClearsItsProgress(t *testing.T) {
 	}
 }
 
-func TestStartUninstallZipReportsProgressOnBothTracks(t *testing.T) {
+func TestStartUninstallZipReportsProgressOnEveryTrack(t *testing.T) {
 	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
@@ -89,19 +89,92 @@ func TestStartUninstallZipReportsProgressOnBothTracks(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	// Both tracks must have been reported, in order, or the tile's bar would
-	// jump straight from empty to gone.
-	if len(phases) < 2 || phases[0] != PhaseRemove {
-		t.Fatalf("phases = %v; want remove first", phases)
+	// The order is the contract, not decoration: the app is backed up, that backup is
+	// committed, and only then is anything removed. A bar that reported "Removing"
+	// first would be describing the one thing that has definitely not happened yet.
+	if !isSubsequence(phases, []string{PhaseBackup, PhaseArchive, PhaseRemove}) {
+		t.Fatalf("phases = %v; want backup, then archive, then remove", phases)
 	}
-	var sawArchive bool
-	for _, p := range phases {
-		if p == PhaseArchive {
-			sawArchive = true
+}
+
+// isSubsequence reports whether want appears in got in order, allowing repeats and
+// other phases in between — the tracks are reported as they progress, so a test that
+// demanded an exact sequence would break on a chattier engine.
+func isSubsequence(got, want []string) bool {
+	i := 0
+	for _, g := range got {
+		if i < len(want) && g == want[i] {
+			i++
 		}
 	}
-	if !sawArchive {
-		t.Errorf("phases = %v; want an archive phase", phases)
+	return i == len(want)
+}
+
+// The local engine must not copy the app in order to uninstall it.
+//
+// Its ordinary snapshot is a full second copy, which is what makes EstimateBackup
+// refuse an app bigger than half the free disk. If an uninstall went through that, an
+// app could be installed and then not removed — so Consume has to reach the engine,
+// and the engine has to answer with a rename rather than a copy.
+func TestUninstallNeverCopiesTheAppOnTheLocalEngine(t *testing.T) {
+	r, appsDir, backupsDir := newTestRegistry(t)
+	appDir := filepath.Join(appsDir, "jellyfin")
+	seedApp(t, appDir)
+
+	if _, err := r.Uninstall(context.Background(), "jellyfin", false, nil); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+
+	if _, err := os.Stat(appDir); !os.IsNotExist(err) {
+		t.Errorf("app folder still present after uninstall")
+	}
+	got := ListBackups(backupsDir, "jellyfin")
+	if len(got) != 1 {
+		t.Fatalf("ListBackups = %+v; want the uninstall backup", got)
+	}
+	// The archive is the app's own inode, moved — so its contents came across without
+	// being read, and nothing was left behind in a staging directory.
+	if body, err := os.ReadFile(filepath.Join(AppBackupDir(backupsDir, "jellyfin"), got[0].Name, "db", "data.sqlite")); err != nil || string(body) != "rows" {
+		t.Errorf("archived data = %q, %v; want the app's own file", body, err)
+	}
+	entries, err := os.ReadDir(AppBackupDir(backupsDir, "jellyfin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("backup dir holds %d entries; want only the archive (a staging copy was left behind)", len(entries))
+	}
+}
+
+// Consume must not let an engine take the folder before the commit point.
+//
+// Snapshot is not durable — an interrupted backup is discarded — so a local engine that
+// moved the app folder in Snapshot would leave the user's only copy of their data in a
+// staging directory that nothing lists, for the whole window until Commit ran.
+func TestLocalConsumeSnapshotLeavesTheAppWhereItIs(t *testing.T) {
+	r, appsDir, backupsDir := newTestRegistry(t)
+	appDir := filepath.Join(appsDir, "jellyfin")
+	seedApp(t, appDir)
+
+	p := NewLocalProvider(r.cfg)
+	opts := SnapshotOpts{Pass: 2, Consume: true}
+	if err := p.Snapshot(context.Background(), "jellyfin", "2026-01-01_120000", opts, nil); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	if _, err := os.Stat(appDir); err != nil {
+		t.Fatalf("app folder was moved by Snapshot, before the commit point: %v", err)
+	}
+	// Abort is what runs on a failure from here, and it must not be able to reach the
+	// app: on this path the app folder is still the only copy of the user's data.
+	if err := p.Abort(context.Background(), "jellyfin", "2026-01-01_120000"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if _, err := os.Stat(appDir); err != nil {
+		t.Fatalf("Abort destroyed the app folder: %v", err)
+	}
+	if got := ListBackups(backupsDir, "jellyfin"); len(got) != 0 {
+		t.Errorf("ListBackups = %+v; an uncommitted snapshot must not be listed", got)
 	}
 }
 

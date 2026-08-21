@@ -219,18 +219,27 @@ the backups tree:
 
 ```
 /DATA/AppData/<app>
-      ↓ uninstall
+      ↓ uninstall — local engine
 /DATA/AppData/.backups/<app>/2026-07-10_153045
+      ↓ uninstall — remote engine
+a snapshot in the repository; nothing is left on this disk
 ```
 
-- The stack is stopped and its containers removed first, then the directory is
-  renamed. The bytes on disk are untouched — only the path changes.
-- **Zip is an option.** When enabled, the folder is compressed to
-  `<stamp>.zip` instead of a plain move. Default is a plain move (fast, no copy).
+- **An uninstall is a backup through the default engine**, and where it lands follows
+  that setting like any other backup (`backup.md` §Uninstalling an app). The stack is
+  stopped, backed up, and only then are the containers and the folder removed.
+- On the **local** engine the backup is a rename of the directory, exactly as above —
+  the bytes on disk are untouched and only the path changes, which is what keeps an
+  uninstall instant at any size.
+- On a **remote** engine the folder is uploaded and then deleted, so an uninstalled
+  app's data survives losing this disk. Nothing is left in `.backups/`.
+- **Zip is an option, and a local-engine one.** When enabled, the folder is compressed
+  to `<stamp>.zip` instead of a plain move. Default is a plain move (fast, no copy). A
+  remote engine ignores it — a zip defeats deduplication — and the dialog hides it.
 - **It runs detached, with progress on the tile.** Confirming the dialog only
   *starts* the uninstall; the dialog closes immediately and the tile carries the
-  same progress bar an install shows, in red (see `lifecycle.md`). A zipped
-  archive of a large app is a multi-minute copy, and nothing waits on it.
+  same progress bar an install shows, in red (see `lifecycle.md`). An upload, or a
+  zipped archive of a large app, runs for minutes and nothing waits on it.
 - The app vanishes from the grid — its folder is gone — but its data is one
   restore away, from the store's install dialog or from Settings → Backups.
 

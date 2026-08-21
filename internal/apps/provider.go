@@ -119,10 +119,13 @@ type Engines interface {
 	// backup aimed at an engine other than the default.
 	Get(id string) (Provider, bool)
 	List(ctx context.Context, app string) []Backup
+	// ListIn is List for one engine — for a caller that presents a group per engine
+	// rather than one merged list.
+	ListIn(ctx context.Context, engine, app string) []Backup
 	// LocateIn finds a backup in one named engine — the shape every user-initiated
 	// restore uses, because the user picked a row and a row belongs to an engine.
 	LocateIn(ctx context.Context, engine, app, stamp string) (Provider, Backup, error)
-	// Locate is the engine-less form, for the store's install-from-backup path.
+	// Locate is the engine-less form, kept for a request that names no engine.
 	Locate(ctx context.Context, app, stamp string) (Provider, Backup, error)
 	Delete(ctx context.Context, engine, app, stamp string) error
 }
@@ -182,6 +185,31 @@ type SnapshotOpts struct {
 	// every byte changes when anything inside it does, which defeats deduplication
 	// and turns every backup into a full upload.
 	Zip bool
+
+	// Consume says the app folder is being destroyed — this is an uninstall, not a
+	// backup of an app that carries on running — so an engine that can take the folder
+	// wholesale may do that instead of reading it.
+	//
+	// It is what keeps an uninstall free at any size. The local engine's ordinary
+	// snapshot is a full second copy, which EstimateBackup guards with headroom; an
+	// uninstall routed through that would refuse any app bigger than half the free
+	// disk, which is an app you can install but cannot remove. With Consume the local
+	// engine renames instead — instant, and it cannot run out of room.
+	//
+	// **An engine that takes the folder must do it in Commit, never in Snapshot.**
+	// Commit is the commit point, so a crash before it must leave the app exactly as it
+	// was; moving the folder in Snapshot would put the user's only copy somewhere
+	// nothing lists, for the whole window until Commit ran.
+	//
+	// An engine that cannot take the folder — anything streaming to a repository —
+	// ignores this and reads as usual. The registry then removes the source itself once
+	// Commit has succeeded, so what the caller can rely on is the same either way:
+	// after a committed Consume backup, the app folder is gone.
+	//
+	// It implies a single pass. There is no live pass for a stopped app to be
+	// incremental against, and that pass is the committed one — so it is Pass 2 (the
+	// *consistent* pass), not Pass 1.
+	Consume bool
 }
 
 // Event is a progress update from a provider. Pct is optional: an engine that can

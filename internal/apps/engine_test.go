@@ -250,3 +250,185 @@ func TestEstimateFollowsTheTargetEngineNotTheDefault(t *testing.T) {
 		t.Error("StartBackup with an unknown engine succeeded")
 	}
 }
+
+// --- Uninstall through the engine seam -------------------------------------
+//
+// An uninstall used to be the one write that never reached an engine: it renamed the
+// app folder into .backups and called that the backup. On a box whose default engine
+// writes offsite that produced nothing offsite — while the settings page said the
+// opposite — so the data an uninstall was supposed to be protecting died with the
+// disk. These pin the sequence that replaced it.
+
+// The whole point: an uninstall is a backup through the default engine, and the app is
+// offered to it wholesale because its folder is about to cease existing.
+func TestUninstallBacksUpThroughTheDefaultEngine(t *testing.T) {
+	r, cfg := newRegistry(t)
+	fake := backuptest.NewRemote("kopia")
+	r.Engines = backup.New(fake)
+
+	name, err := r.Uninstall(context.Background(), "jellyfin", false, nil)
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+
+	// One pass, not two. A stopped app has no live pass to be incremental against, and
+	// the pass that is committed is pass 2 — committing a pass-1 snapshot would discard
+	// it as the torn throwaway it normally is.
+	want := []string{
+		"snapshot:jellyfin/" + name + "#2+consume",
+		"commit:jellyfin/" + name,
+	}
+	if got := strings.Join(fake.Calls, " "); got != strings.Join(want, " ") {
+		t.Errorf("engine calls = %q; want %q", got, strings.Join(want, " "))
+	}
+
+	// A streaming engine reads the folder and leaves it, so removing it is the
+	// registry's job. Skipping that would leave the app's data on the disk the user
+	// just asked to reclaim.
+	if _, err := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin")); !os.IsNotExist(err) {
+		t.Errorf("app folder survived an uninstall through a streaming engine")
+	}
+}
+
+// The ordering rule, from the failure side: until the backup is committed, nothing is
+// destroyed. A failure at either step leaves the app exactly as it was — installed,
+// with its data — because the alternative is an app that is gone and a backup that
+// never happened.
+func TestUninstallLeavesTheAppIntactWhenTheEngineFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*backuptest.Fake)
+	}{
+		{"snapshot fails", func(f *backuptest.Fake) { f.SnapshotErr = errors.New("repository unreachable") }},
+		{"commit fails", func(f *backuptest.Fake) { f.CommitErr = errors.New("upload never confirmed") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, cfg := newRegistry(t)
+			fake := backuptest.NewRemote("kopia")
+			tc.set(fake)
+			r.Engines = backup.New(fake)
+
+			if _, err := r.Uninstall(context.Background(), "jellyfin", false, nil); err == nil {
+				t.Fatal("Uninstall succeeded; the engine failed")
+			}
+			appDir := filepath.Join(cfg.AppsDir(), "jellyfin")
+			if _, err := os.Stat(appDir); err != nil {
+				t.Fatalf("app folder was destroyed after a failed backup: %v", err)
+			}
+			if body, err := os.ReadFile(filepath.Join(appDir, "db", "data.sqlite")); err != nil || string(body) != "rows" {
+				t.Errorf("app data = %q, %v; want it untouched", body, err)
+			}
+			// And nothing durable was left behind that a later list could offer.
+			if got := r.Engines.List(context.Background(), "jellyfin"); len(got) != 0 {
+				t.Errorf("List = %+v; a failed uninstall must leave no backup", got)
+			}
+			if !strings.Contains(strings.Join(fake.Calls, " "), "abort:jellyfin/") {
+				t.Errorf("engine calls = %v; want the incomplete backup aborted", fake.Calls)
+			}
+		})
+	}
+}
+
+// It must not quietly fall back to the local disk when the chosen engine cannot be
+// reached. That is the tempting behaviour and the wrong one: it puts the data somewhere
+// other than where the user was told it goes, at the exact moment the tile disappears
+// and stops being able to say so.
+func TestUninstallDoesNotFallBackToLocalWhenTheEngineFails(t *testing.T) {
+	r, cfg := newRegistry(t)
+	fake := backuptest.NewRemote("kopia")
+	fake.SnapshotErr = errors.New("repository unreachable")
+	set := backup.New(fake, apps.NewLocalProvider(cfg))
+	if err := set.SetWriter("kopia"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	if _, err := r.Uninstall(context.Background(), "jellyfin", false, nil); err == nil {
+		t.Fatal("Uninstall succeeded; the chosen engine failed")
+	}
+	if got := set.ListIn(context.Background(), apps.EngineLocal, "jellyfin"); len(got) != 0 {
+		t.Errorf("local engine holds %+v; a failed offsite uninstall must not silently write here", got)
+	}
+}
+
+// --- The store's install-from-backup path ----------------------------------
+//
+// This path used to read the data disk directly rather than going through the set —
+// the same "writes go through the engine set, reads do not" bug the Backups page had.
+// The effect was that a box whose backups live in a repository could not reinstall an
+// app on top of any of them: the picker was empty, and had it not been, the install
+// would have looked for a folder that was never there.
+
+func TestRestoreForInstallReachesABackupOnlyARepositoryHolds(t *testing.T) {
+	r, cfg := newRegistry(t)
+	fake := backuptest.NewRemote("kopia")
+	fake.MaterializeInto = cfg.BackupsDir()
+	fake.Seed("jellyfin", "2026-01-01_120000")
+	r.Engines = backup.New(fake)
+
+	// The case that matters: the app is not installed. That is what a store reinstall
+	// is, and it is why this cannot go through Restore, which stops a live app and
+	// archives the folder it replaces.
+	appDir := filepath.Join(cfg.AppsDir(), "jellyfin")
+	if err := os.RemoveAll(appDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RestoreForInstall(context.Background(), "jellyfin", "kopia", "2026-01-01_120000", nil); err != nil {
+		t.Fatalf("RestoreForInstall: %v", err)
+	}
+
+	if body, err := os.ReadFile(filepath.Join(appDir, "db", "data.sqlite")); err != nil || string(body) != "rows" {
+		t.Errorf("restored app data = %q, %v; want the repository's copy in place", body, err)
+	}
+	if !strings.Contains(strings.Join(fake.Calls, " "), "materialize:jellyfin/2026-01-01_120000") {
+		t.Errorf("engine calls = %v; want the backup fetched from the repository", fake.Calls)
+	}
+}
+
+// The picker offers a row per engine, so the request names one — and it has to be
+// honoured. Two engines can hold the same stamp and they are different backups;
+// installing the other one is not what was clicked.
+func TestRestoreForInstallUsesTheEngineTheRowNamed(t *testing.T) {
+	r, cfg := newRegistry(t)
+	first := backuptest.NewRemote("kopia")
+	second := backuptest.NewRemote("restic")
+	for _, f := range []*backuptest.Fake{first, second} {
+		f.MaterializeInto = cfg.BackupsDir()
+		f.Seed("jellyfin", "2026-01-01_120000")
+	}
+	r.Engines = backup.New(first, second)
+
+	if err := os.RemoveAll(filepath.Join(cfg.AppsDir(), "jellyfin")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RestoreForInstall(context.Background(), "jellyfin", "restic", "2026-01-01_120000", nil); err != nil {
+		t.Fatalf("RestoreForInstall: %v", err)
+	}
+
+	if strings.Contains(strings.Join(first.Calls, " "), "materialize:") {
+		t.Errorf("kopia was asked for a backup the user picked out of restic: %v", first.Calls)
+	}
+	if !strings.Contains(strings.Join(second.Calls, " "), "materialize:jellyfin/2026-01-01_120000") {
+		t.Errorf("restic calls = %v; want the picked backup fetched from it", second.Calls)
+	}
+}
+
+// And it must refuse rather than write over a live app. RestoreBackup carries that
+// guard; this pins that the install path still goes through it, because the install
+// that follows is deliberately non-destructive on top of what it finds and would
+// otherwise merge a backup into a running app's folder.
+func TestRestoreForInstallRefusesAnAppThatIsInstalled(t *testing.T) {
+	r, cfg := newRegistry(t)
+	fake := backuptest.NewRemote("kopia")
+	fake.MaterializeInto = cfg.BackupsDir()
+	fake.Seed("jellyfin", "2026-01-01_120000")
+	r.Engines = backup.New(fake)
+
+	if err := r.RestoreForInstall(context.Background(), "jellyfin", "kopia", "2026-01-01_120000", nil); err == nil {
+		t.Fatal("RestoreForInstall succeeded over an installed app")
+	}
+	if body, err := os.ReadFile(filepath.Join(cfg.AppsDir(), "jellyfin", ".env")); err != nil || string(body) != "PUID=1000\n" {
+		t.Errorf("live app was modified = %q, %v", body, err)
+	}
+}

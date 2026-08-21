@@ -1,6 +1,8 @@
 <script lang="ts">
   import { uninstallTarget } from '../stores/ui'
   import { uninstallApp } from '../stores/apps'
+  import { fetchBackupStatus } from '../stores/backupengine'
+  import { engineLabel } from '../stores/backups'
   import { t } from '../i18n'
 
   let { target }: { target: { id: string; name: string } } = $props()
@@ -9,20 +11,48 @@
   let busy = $state(false)
   let error = $state('')
 
+  /** Where this uninstall's backup will be written, so the dialog can say so.
+   *
+   *  It has to be named out loud. An uninstall is the one destructive thing a user does
+   *  on purpose, and "your data is safe" is only a true sentence if it says *where* —
+   *  on a box backing up offsite the answer is a repository, and on a default install
+   *  it is the same disk the app was on, which is a rollback and not a safety net.
+   *
+   *  A status call that does not answer leaves the name empty and the copy falls back
+   *  to the generic wording: the uninstall still works, and the server resolves the
+   *  engine itself. */
+  let engineId = $state('')
+  let engineName = $state('')
+  let offsite = $state(false)
+  fetchBackupStatus()
+    .then((s) => {
+      const active = (s.engines ?? []).find((e) => e.id === s.active)
+      engineId = s.active
+      engineName = engineLabel(s.active, active?.name, (k) => $t(k))
+      offsite = active?.offsite ?? false
+    })
+    .catch(() => {})
+
+  // Zipping is a local-engine idea. An engine that deduplicates ignores it — a zip is
+  // one opaque blob whose every byte changes when anything inside it does — so offering
+  // the checkbox against a repository would offer a setting with no effect.
+  const canZip = $derived(engineId !== '' && !offsite)
+
   function close() {
     if (!busy) uninstallTarget.set(null)
   }
 
   // The uninstall itself is NOT awaited here: the request only has to be
-  // accepted, and from then on the app's tile carries the progress (two red
-  // bars) and any failure. So the dialog closes right away instead of holding
-  // the dashboard hostage through a multi-minute zip. `busy` covers just that
-  // hand-off, which is where an up-front refusal (a protected app) surfaces.
+  // accepted, and from then on the app's tile carries the progress (red bars for
+  // backing up, then removing) and any failure. So the dialog closes right away
+  // instead of holding the dashboard hostage through a multi-minute upload. `busy`
+  // covers just that hand-off, which is where an up-front refusal (a protected app)
+  // surfaces.
   async function confirm() {
     busy = true
     error = ''
     try {
-      await uninstallApp(target.id, zip)
+      await uninstallApp(target.id, canZip && zip)
       uninstallTarget.set(null)
     } catch (e) {
       error = String(e)
@@ -35,24 +65,41 @@
   <div class="dialog" onclick={(e) => e.stopPropagation()} role="presentation">
     <h2>{$t('uninstall')} {target.name}?</h2>
     <p class="body">
-      This stops and removes the app's containers. Your data is never deleted — the app's
-      folder is renamed to <code>{target.id}.&lt;date&gt;.archive</code> in <code>AppData/</code>.
-      It runs in the background: the tile shows the progress.
-    </p>
-
-    <label class="check">
-      <input type="checkbox" bind:checked={zip} disabled={busy} />
-      <span>Compress the archive to a <code>.zip</code></span>
-    </label>
-    <p class="note">
-      {#if zip}
-        The folder is zipped to <code>{target.id}.&lt;date&gt;.archive.zip</code>, then the original
-        folder is removed. Restore by unzipping it back to <code>{target.id}</code>.
+      {#if engineName}
+        This backs the app up to <strong>{engineName}</strong>, then stops and removes its
+        containers. Your data is never deleted — the backup is an ordinary one, listed on the
+        Backups page, and the app can be reinstalled on top of it from the App Store. It runs in
+        the background: the tile shows the progress.
       {:else}
-        The folder is renamed (kept as-is). Restore by renaming it back to
-        <code>{target.id}</code>.
+        This backs the app up, then stops and removes its containers. Your data is never deleted —
+        the backup is an ordinary one, listed on the Backups page, and the app can be reinstalled
+        on top of it from the App Store. It runs in the background: the tile shows the progress.
       {/if}
     </p>
+
+    {#if canZip}
+      <label class="check">
+        <input type="checkbox" bind:checked={zip} disabled={busy} />
+        <span>Compress the archive to a <code>.zip</code></span>
+      </label>
+      <p class="note">
+        {#if zip}
+          Smaller on disk, but slower to make and to restore. Without it the app's folder is
+          simply moved into the backups directory, which is instant at any size.
+        {:else}
+          The app's folder is moved into the backups directory as it is — instant, whatever the
+          app's size.
+        {/if}
+      </p>
+    {/if}
+
+    {#if engineName && !offsite}
+      <p class="note warn">
+        {engineName} keeps the backup on this server's own disk, so it protects against a mistaken
+        uninstall but not against losing the disk. Choose a remote engine in Settings → Backups if
+        you need that.
+      </p>
+    {/if}
 
     {#if error}<p class="error">{error}</p>{/if}
 
@@ -101,6 +148,9 @@
     margin: 0.4rem 0 0;
     font-size: 0.78rem;
     color: var(--text-subtle);
+  }
+  .note.warn {
+    margin-top: 0.75rem;
   }
   code {
     background: hsla(208, 16%, 94%, 1);

@@ -142,6 +142,25 @@ type engineBackups struct {
 	Used  int64 `json:"used"`
 }
 
+// engineDisplay is what to call an engine on screen and whether it survives losing the
+// box — the two facts every engine-grouped list needs beside its rows.
+//
+// The name never comes from the ID. The ID is machine identity, recorded on every
+// backup the engine writes, and a deployment's branding has no business in it; the
+// display name comes from the provisioning side instead (see engineInfo.Name). Kopia
+// caches its answer on the provider, so asking for it on a click path costs a
+// subprocess once per half-minute rather than once per click.
+func (s *Server) engineDisplay(ctx context.Context, id string) (name string, offsite bool) {
+	p, ok := s.engines.Get(id)
+	if !ok {
+		return "", false
+	}
+	if k, isKopia := p.(*kopia.Provider); isKopia {
+		name = k.Status(ctx).Label
+	}
+	return name, p.Caps().Offsite
+}
+
 // handleGlobalBackups is the Backups settings page: one entry per engine, each with
 // its apps (orphans marked, local folder archives measured) and its user-data
 // snapshots. Deliberately the expensive read — it is what answers "what is eating the
@@ -153,12 +172,7 @@ func (s *Server) handleGlobalBackups(w http.ResponseWriter, r *http.Request) {
 	if s.engines != nil {
 		for _, id := range s.engines.IDs() {
 			eb := engineBackups{Engine: id, Apps: []apps.AppBackups{}}
-			if p, ok := s.engines.Get(id); ok {
-				eb.Offsite = p.Caps().Offsite
-				if k, isKopia := p.(*kopia.Provider); isKopia {
-					eb.Name = k.Status(r.Context()).Label
-				}
-			}
+			eb.Name, eb.Offsite = s.engineDisplay(r.Context(), id)
 			if list := s.engines.ListAllIn(r.Context(), id, s.cfg.BackupsDir(), s.cfg.AppsDir()); list != nil {
 				eb.Apps = list
 			}

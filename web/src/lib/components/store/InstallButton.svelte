@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { fetchStoreBackups, installApp, type Backup } from '../../stores/store'
+  import { fetchStoreBackups, installApp, type Backup, type BackupEngine } from '../../stores/store'
   import { apps, appProgress } from '../../stores/apps'
+  import { engineLabel, renderStamp } from '../../stores/backups'
   import { sanitizeProject } from '../../project'
   import { t } from '../../i18n'
   import type { StoreRef } from '../../storeref'
@@ -20,10 +21,13 @@
 
   // Backups are fetched on click rather than on mount: the store grid renders one
   // of these per catalog app, and prefetching would fire a request per row for a
-  // list that is almost always empty.
-  let backups = $state<Backup[]>([])
+  // list that is almost always empty. For a remote engine it is also a subprocess
+  // against the repository, which makes prefetching per row worse than slow.
+  let engines = $state<BackupEngine[]>([])
   let picking = $state(false) // the backup picker is open
   let loading = $state(false) // looking for backups after a click
+
+  const hasBackups = $derived(engines.some((e) => e.backups.length > 0))
 
   const projectId = $derived(sanitizeProject(ref.id))
   const entry = $derived($apps.find((a) => a.id === projectId))
@@ -52,19 +56,19 @@
     loading = true
     error = ''
     try {
-      backups = (await fetchStoreBackups(ref)).backups
+      engines = (await fetchStoreBackups(ref)).engines
     } catch {
-      backups = [] // a failed lookup must not block a plain install
+      engines = [] // a failed lookup must not block a plain install
     }
     loading = false
-    if (backups.length === 0) {
+    if (!hasBackups) {
       await install()
       return
     }
     picking = true
   }
 
-  async function install(fromBackup?: string) {
+  async function install(from?: { name: string; engine?: string }) {
     picking = false
     starting = true
     error = ''
@@ -72,7 +76,7 @@
       // The reference pins the install to the store *and folder* this app was
       // shown from — without it a duplicate id in an earlier store would win the
       // merged-catalog lookup.
-      await installApp(ref, fromBackup)
+      await installApp(ref, from)
     } catch (err) {
       error = String(err)
       starting = false
@@ -88,6 +92,20 @@
   function onPickerKey(e: KeyboardEvent) {
     e.stopPropagation()
     if (e.key === 'Escape') picking = false
+  }
+
+  /** What a row is, in a few words.
+   *
+   *  Size first when the engine knows one: it is the fact that distinguishes two rows,
+   *  and a repository reports it. "folder" and "zip" describe how a *local* archive is
+   *  stored — a repository snapshot is neither, and labelling one "folder" was simply
+   *  wrong on screen. Local folder archives are left unmeasured on this path (sizing
+   *  one is a tree walk per row, on a click in the catalog), so they still fall back to
+   *  naming the form. */
+  function describe(b: Backup): string {
+    if (b.zip) return b.size > 0 ? `${$t('backup_zip')} · ${humanSize(b.size)}` : $t('backup_zip')
+    if (b.size > 0) return humanSize(b.size)
+    return $t('backup_folder')
   }
 
   /** "12.4 MB" — only zips carry a size; a folder backup is left unmeasured. */
@@ -150,14 +168,30 @@
         <button class="row fresh" role="menuitem" onclick={() => install()}>
           {$t('fresh_install')}
         </button>
-        <p class="head">{$t('restore_from_backup')}</p>
-        {#each backups as b (b.name)}
-          <button class="row" role="menuitem" onclick={() => install(b.name)} title={b.name}>
-            <span class="date">{b.date}</span>
-            <span class="meta">
-              {b.zip ? `${$t('backup_zip')} · ${humanSize(b.size)}` : $t('backup_folder')}
-            </span>
-          </button>
+        <!-- A heading per engine, not one merged list: a stamp held by two engines is
+             two backups, and the row the user clicks decides which one is fetched. The
+             engine is part of each row's key for the same reason — two engines holding
+             the same stamp would otherwise collide. -->
+        {#each engines as e (e.engine)}
+          {#if e.backups.length > 0}
+            <p class="head">
+              {$t('restore_from_backup')} · {engineLabel(e.engine, e.name, (k) => $t(k))}
+            </p>
+            {#each e.backups as b (b.name)}
+              <button
+                class="row"
+                role="menuitem"
+                onclick={() => install({ name: b.name, engine: e.engine })}
+                title={b.name}
+              >
+                <!-- The time, not just the date: an app backed up nightly and then
+                     uninstalled has two backups on the same day, and two rows reading
+                     "2026-08-21" are a choice the user cannot make. -->
+                <span class="date">{renderStamp(b.stamp)}</span>
+                <span class="meta">{describe(b)}</span>
+              </button>
+            {/each}
+          {/if}
         {/each}
         <p class="note">{$t('restore_from_backup_hint')}</p>
       </div>

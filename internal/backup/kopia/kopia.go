@@ -914,11 +914,41 @@ func (p *Provider) Materialize(ctx context.Context, app, stamp string, emit func
 	// Built from the validated stamp via AppBackupDir, exactly as a local archive's
 	// path is — the name never reaches a path unvalidated.
 	dst := filepath.Join(apps.AppBackupDir(p.cfg.BackupsDir(), app), stamp)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := p.mkdirForEngine(filepath.Dir(dst)); err != nil {
 		return err
 	}
 	_, err = p.run(ctx, emit, 0, "restore", id, dst, "--progress")
 	return err
+}
+
+// mkdirForEngine creates a directory the engine container can write into.
+//
+// This is the one place kopia writes to the data disk rather than to the repository,
+// and the two sides run as different users: Maison is root, the engine is PUID:PGID
+// (see run). A directory created here with the default ownership is therefore one the
+// engine cannot create the snapshot directory inside, and the restore fails with
+// EACCES having downloaded nothing — which is to say a remote backup could not be
+// brought back at all.
+//
+// The chown also repairs the directory on a box that has one already: .backups/<app>
+// is created by whichever path wrote the app's first backup, and until this existed
+// that was always root.
+func (p *Provider) mkdirForEngine(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	uid, uerr := strconv.Atoi(p.cfg.PUID)
+	gid, gerr := strconv.Atoi(p.cfg.PGID)
+	if uerr != nil || gerr != nil {
+		// No usable ids to hand it to. Left as it is rather than guessed at: on a box
+		// where Maison and the engine run as the same user this is already correct, and
+		// guessing an owner for a directory holding backups is worse than not trying.
+		return nil
+	}
+	if err := os.Chown(dir, uid, gid); err != nil {
+		return fmt.Errorf("hand %s to the engine user: %w", dir, err)
+	}
+	return nil
 }
 
 // RestoreInPlace writes a backup straight over the app's folder.

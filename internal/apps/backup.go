@@ -540,7 +540,7 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 	// because the swap that follows is atomic and leaves a local archive behind. When
 	// there is not — the case this whole design exists for — the engine writes over
 	// the live folder instead.
-	est, err := r.EstimateRestore(id, name)
+	est, err := r.EstimateRestore(id, engine, name)
 	if err != nil {
 		return err
 	}
@@ -558,6 +558,64 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 			id, humanBytes(est.Needed), humanBytes(est.Free), src.ID())
 	}
 	return r.restoreInPlace(downCtx, src, id, name, appDir, emit)
+}
+
+// RestoreForInstall puts a backup back as the app's folder for an app that is **not
+// installed** — the store's install-from-backup path, where the user picked an app in
+// the catalog and one of its backups and there is nothing on disk yet. The install
+// then runs over what this leaves, keeping the restored .env and data.
+//
+// It is deliberately not Restore. Restore is for an app that is *live*: it stops the
+// app, archives the folder it is about to replace so a mis-click is undoable, and
+// falls back to writing over that folder when there is no room for two copies. None of
+// that applies here — there is no folder and nothing is running — so this is the short
+// path. RestoreBackup still refuses to overwrite a folder, so an app that appeared
+// between the click and now fails loudly rather than being written over.
+//
+// What it replaces is a direct apps.RestoreBackup call, which read the data disk and
+// nothing else. That was the same "writes go through the engine set, reads do not" bug
+// the Backups page had: on a box whose backups live in a repository the store could
+// neither list them nor install from them, and the seam to do it already existed.
+func (r *Registry) RestoreForInstall(ctx context.Context, id, engine, name string, emit func(Event)) error {
+	if !projectRe.MatchString(id) {
+		return fmt.Errorf("invalid app name: %s", id)
+	}
+	if emit == nil {
+		emit = func(Event) {}
+	}
+
+	r.enter(id)
+	defer r.leave(id)
+
+	// The engine comes from the row the user clicked — the store lists a group per
+	// engine — so this resolves through LocateIn. Empty still means "whichever engine
+	// has it", which is what a client that predates the grouped list sends.
+	src, _, err := r.locate(ctx, id, engine, name)
+	if err != nil {
+		return err
+	}
+
+	// A local archive is already where RestoreBackup looks, so there is nothing to
+	// fetch and no space to check: what follows it is a rename. Only a backup that
+	// lives in a repository has to come down first.
+	if _, _, err := resolveBackup(r.cfg.BackupsDir(), id, name); err != nil {
+		est, err := r.EstimateRestore(id, engine, name)
+		if err != nil {
+			return err
+		}
+		// No in-place fallback, unlike Restore. In-place exists to write over a live
+		// folder that is too big to duplicate; here there is no folder to write over and
+		// no app to keep running, so refusing early is the whole answer.
+		if !est.Enough {
+			return fmt.Errorf("not enough free space to install %s from its backup: %s needed, %s available",
+				id, humanBytes(est.Needed), humanBytes(est.Free))
+		}
+		emit(Event{Pct: PctUnknown, Message: "Fetching " + name})
+		if err := src.Materialize(ctx, id, name, emit); err != nil {
+			return fmt.Errorf("fetch backup: %w", err)
+		}
+	}
+	return RestoreBackup(r.cfg.BackupsDir(), r.cfg.AppsDir(), id, name)
 }
 
 // restoreBySwap is the original restore: archive the live folder by renaming it —
@@ -663,11 +721,16 @@ func (r *Registry) RestoreInterrupted(id string) bool {
 // It is the mirror of EstimateBackup and exists for the same reason: downloading a
 // backup beside the app needs space the app itself may already be occupying. It is
 // what chooses between the two restore paths.
-func (r *Registry) EstimateRestore(id, name string) (Estimate, error) {
+//
+// engine names which copy is being sized, on the same rule as everything else that
+// reads a picked row: two engines can hold the same stamp, and a local archive and an
+// offsite snapshot of it are not the same number of bytes to bring down. Empty means
+// "whichever engine has it", which is only right for a caller that has none to name.
+func (r *Registry) EstimateRestore(id, engine, name string) (Estimate, error) {
 	if !projectRe.MatchString(id) {
 		return Estimate{}, fmt.Errorf("invalid app name: %s", id)
 	}
-	_, backup, err := r.locate(context.Background(), id, "", name)
+	_, backup, err := r.locate(context.Background(), id, engine, name)
 	if err != nil {
 		return Estimate{}, err
 	}

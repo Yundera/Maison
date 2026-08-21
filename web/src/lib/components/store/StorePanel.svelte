@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { storeApp } from '../../stores/ui'
   import { backToCatalog, closeStore, openStoreApp } from '../../route'
+  import { refOf } from '../../storeref'
   import { fetchStore, type StoreApp, type StoreData } from '../../stores/store'
   import { apps } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
@@ -105,9 +106,8 @@
            may not be in `data` at all and installed-ness comes from the tiles. -->
       {#if selected}
         <AppDetail
-          id={selected.app}
-          store={selected.store}
-          installed={installedIds.has(sanitizeProject(selected.app))}
+          ref={selected}
+          installed={installedIds.has(sanitizeProject(selected.id))}
           onback={backToCatalog}
         />
       {:else if loading}
@@ -158,7 +158,7 @@
 </div>
 
 {#snippet hero(app: StoreApp)}
-  <div class="hero" onclick={() => openStoreApp(app.id, app.store)} role="presentation">
+  <div class="hero" onclick={() => openStoreApp(refOf(app))} role="presentation">
     <div class="thumb" style:background-image={app.thumbnail ? `url(${app.thumbnail})` : undefined}></div>
     <div class="hero-body">
       <img class="plate" src={app.icon} alt="" loading="lazy" />
@@ -166,13 +166,13 @@
         <span class="name one-line">{app.name}</span>
         <span class="tag one-line">{app.tagline}</span>
       </div>
-      <InstallButton id={app.id} store={app.store} installed={isInstalled(app)} />
+      <InstallButton ref={refOf(app)} installed={isInstalled(app)} />
     </div>
   </div>
 {/snippet}
 
 {#snippet card(app: StoreApp)}
-  <div class="app-item" onclick={() => openStoreApp(app.id, app.store)} role="presentation">
+  <div class="app-item" onclick={() => openStoreApp(refOf(app))} role="presentation">
     <div class="row1">
       <img class="plate" src={app.icon} alt="" loading="lazy" />
       <div class="meta">
@@ -186,7 +186,7 @@
     <!-- Install pill sits on its own row below the app; while installing it
          shows a compact progress pill (the two-bar detail lives on the tile). -->
     <div class="installbar">
-      <InstallButton id={app.id} store={app.store} installed={isInstalled(app)} />
+      <InstallButton ref={refOf(app)} installed={isInstalled(app)} />
     </div>
   </div>
 {/snippet}

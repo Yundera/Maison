@@ -56,7 +56,14 @@ byte-identical to the store):
 x-compose-app:
   store: https://github.com/Yundera/AppStore/archive/refs/heads/main.zip  # reference store
   store-app-id: jellyfin                                                  # catalog id within it
+  store-apps-path: catalog/apps        # apps folder, only when it is not the default Apps/
 ```
+
+`store-apps-path` is written only when the app came from a store that keeps its apps
+somewhere other than `Apps/` — an app installed before the field existed reads back with
+the default, which is what it was installed from. Together the three fields are the store
+reference the store panel uses (`internal/appstore/ref.go`), so an update resolves to the
+same store *and* the same folder the install came from.
 
 The same block carries the manifest of the **Caddy routes Maison generates** to
 publish the app on the deployment's additional domains (`generated-routes`) — the
@@ -65,7 +72,8 @@ never touch the operator's. See [`docs/domains.md`](./domains.md).
 
 The per-app **Update** tab uses this to:
 
-1. fetch the store's current listing for `store-app-id` from `store`,
+1. fetch the store's current listing for `store-app-id` from `store` (in
+   `store-apps-path`, when set),
 2. apply the same PCS transform used at install time, and
 3. compare it byte-for-byte with the installed `docker-compose.yml`.
 

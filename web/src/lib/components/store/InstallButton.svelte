@@ -3,13 +3,13 @@
   import { apps, appProgress } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
   import { t } from '../../i18n'
+  import type { StoreRef } from '../../storeref'
 
   let {
-    id,
-    store = '',
+    ref,
     installed = false,
     size = 'small',
-  }: { id: string; store?: string; installed?: boolean; size?: 'small' | 'normal' } = $props()
+  }: { ref: StoreRef; installed?: boolean; size?: 'small' | 'normal' } = $props()
 
   // Progress is not owned here — it rides the live "apps" channel, the same
   // source the dashboard tile reads. This button just kicks the install off and
@@ -25,7 +25,7 @@
   let picking = $state(false) // the backup picker is open
   let loading = $state(false) // looking for backups after a click
 
-  const projectId = $derived(sanitizeProject(id))
+  const projectId = $derived(sanitizeProject(ref.id))
   const entry = $derived($apps.find((a) => a.id === projectId))
   // The one bar, from the same helper the dashboard tile uses: the step running
   // now, in its operation's colour. It also covers an uninstall started from the
@@ -52,7 +52,7 @@
     loading = true
     error = ''
     try {
-      backups = (await fetchStoreBackups(id, store)).backups
+      backups = (await fetchStoreBackups(ref)).backups
     } catch {
       backups = [] // a failed lookup must not block a plain install
     }
@@ -69,9 +69,10 @@
     starting = true
     error = ''
     try {
-      // `store` pins the install to the store this app was shown from — without it
-      // a duplicate id in an earlier store would win the merged-catalog lookup.
-      await installApp(id, store, fromBackup)
+      // The reference pins the install to the store *and folder* this app was
+      // shown from — without it a duplicate id in an earlier store would win the
+      // merged-catalog lookup.
+      await installApp(ref, fromBackup)
     } catch (err) {
       error = String(err)
       starting = false

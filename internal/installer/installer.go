@@ -105,10 +105,10 @@ func New(cfg config.Config, store *appstore.Manager, dx *dockerx.Client) *Instal
 // itself: projectName prefers the compose file's own `name:`, which only the
 // server has.
 //
-// storeURL, when set, pins the lookup to that store instead of the merged
-// catalog (see appstore.Manager.GetFrom).
-func (in *Installer) ProjectFor(ctx context.Context, storeURL, id string) (string, error) {
-	_, raw, err := in.store.GetFrom(ctx, storeURL, id)
+// A reference carrying a locator pins the lookup to that store instead of the
+// merged catalog (see appstore.Manager.GetFrom).
+func (in *Installer) ProjectFor(ctx context.Context, ref appstore.Ref) (string, error) {
+	_, raw, err := in.store.GetFrom(ctx, ref)
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +116,7 @@ func (in *Installer) ProjectFor(ctx context.Context, storeURL, id string) (strin
 	if err != nil {
 		return "", fmt.Errorf("parse compose: %w", err)
 	}
-	return projectName(f.Name, id), nil
+	return projectName(f.Name, ref.ID), nil
 }
 
 // StartInstall launches a detached install of store app `id` and tracks its
@@ -129,11 +129,12 @@ func (in *Installer) ProjectFor(ctx context.Context, storeURL, id string) (strin
 // apps.ListBackups): it is restored as the app's folder before the install runs,
 // so the app comes back with its old data and .env instead of a clean slate.
 //
-// storeURL, when set, installs the app from that store rather than from the
-// merged catalog — the store need not be a configured source. It is recorded as
-// the app's update reference, so later updates keep coming from the same store.
-func (in *Installer) StartInstall(ctx context.Context, storeURL, id, fromBackup string) (string, error) {
-	app, raw, err := in.store.GetFrom(ctx, storeURL, id)
+// A reference carrying a locator installs the app from that store rather than
+// from the merged catalog — the store need not be a configured source. The whole
+// reference is recorded as the app's update reference, so later updates keep
+// coming from the same store *and* the same folder inside it.
+func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, fromBackup string) (string, error) {
+	app, raw, err := in.store.GetFrom(ctx, ref)
 	if err != nil {
 		return "", err
 	}
@@ -141,7 +142,7 @@ func (in *Installer) StartInstall(ctx context.Context, storeURL, id, fromBackup 
 	if err != nil {
 		return "", fmt.Errorf("parse compose: %w", err)
 	}
-	project := projectName(f.Name, id)
+	project := projectName(f.Name, ref.ID)
 
 	in.mu.Lock()
 	if _, running := in.installs[project]; running {
@@ -150,7 +151,7 @@ func (in *Installer) StartInstall(ctx context.Context, storeURL, id, fromBackup 
 	}
 	name := app.Name
 	if name == "" {
-		name = id
+		name = ref.ID
 	}
 	in.installs[project] = &InstallState{ID: project, Name: name, Icon: app.Icon, Phase: "pull", Message: "Queued"}
 	in.mu.Unlock()
@@ -158,7 +159,7 @@ func (in *Installer) StartInstall(ctx context.Context, storeURL, id, fromBackup 
 
 	go func() {
 		// Deliberately not the caller's ctx: the install must outlive the request.
-		err := in.Install(context.Background(), storeURL, id, fromBackup, func(ev Event) {
+		err := in.Install(context.Background(), ref, fromBackup, func(ev Event) {
 			in.mu.Lock()
 			if st := in.installs[project]; st != nil {
 				st.Phase, st.Message, st.Download, st.Start = ev.Phase, ev.Message, ev.Download, ev.Start
@@ -216,13 +217,13 @@ func (in *Installer) notify() {
 // stack up — emitting progress events (safe to pass a nil emit).
 //
 // fromBackup, when set, restores that uninstall archive as the app's folder first
-// (see StartInstall). storeURL, when set, pins the app to that store.
-func (in *Installer) Install(ctx context.Context, storeURL, id, fromBackup string, emit func(Event)) error {
+// (see StartInstall). A reference carrying a locator pins the app to that store.
+func (in *Installer) Install(ctx context.Context, ref appstore.Ref, fromBackup string, emit func(Event)) error {
 	if emit == nil {
 		emit = func(Event) {}
 	}
 
-	app, raw, err := in.store.GetFrom(ctx, storeURL, id)
+	app, raw, err := in.store.GetFrom(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -236,7 +237,7 @@ func (in *Installer) Install(ctx context.Context, storeURL, id, fromBackup strin
 		main = si.Main
 	}
 
-	project := projectName(f.Name, id)
+	project := projectName(f.Name, ref.ID)
 
 	transformed, err := envinject.Transform(raw, in.cfg, main)
 	if err != nil {
@@ -276,7 +277,7 @@ func (in *Installer) Install(ctx context.Context, storeURL, id, fromBackup strin
 	// Record where this app came from so the per-app Update tab can pull a fresher
 	// docker-compose.yml from the same store later. The reference lives in the
 	// override's x-compose-app block (see docs/app-model.md and update.go).
-	if err := writeUpdateRef(appDir, app.StoreURL, id); err != nil {
+	if err := writeUpdateRef(appDir, appstore.Ref{URL: app.StoreURL, AppsPath: app.AppsPath, ID: ref.ID}); err != nil {
 		return err
 	}
 

@@ -1,7 +1,12 @@
-// Package appstore fetches CasaOS-compatible app stores (GitHub zip archives),
-// extracts them, and builds a merged catalog of installable apps keyed by app
-// id. Layout ported from casa-img: <root>/Apps/<name>/docker-compose.yml plus
-// category-list.json and recommend-list.json.
+// Package appstore fetches CasaOS-compatible app stores (zip archives over
+// HTTP), extracts them, and builds a merged catalog of installable apps keyed by
+// app id. Layout ported from casa-img: <root>/<apps>/<name>/docker-compose.yml
+// plus category-list.json and recommend-list.json.
+//
+// <apps> is named by the store reference (ref.go) and defaults to Apps, so where
+// a store keeps its apps is the store's business rather than a constant in here.
+// Nothing in this package knows which forge a store is hosted on, with the single
+// exception of storeZipCandidates — see the note on it.
 package appstore
 
 import (
@@ -29,7 +34,7 @@ import (
 
 // CatalogApp is one installable app from a store.
 type CatalogApp struct {
-	ID          string   `json:"id"`   // compose project name (Apps/<name>)
+	ID          string   `json:"id"`   // catalog id: the app's directory name
 	Name        string   `json:"name"` // display title
 	Tagline     string   `json:"tagline"`
 	Description string   `json:"description"`
@@ -41,6 +46,10 @@ type CatalogApp struct {
 	Author      string   `json:"author"`
 	MinMemory   int      `json:"min_memory,omitempty"`
 	StoreURL    string   `json:"store"`
+	// AppsPath is the folder inside the archive this app was found in. It rides
+	// back to the client so a pinned install goes to the same place the app was
+	// read from, rather than to whatever the default happens to be.
+	AppsPath string `json:"apps_path,omitempty"`
 
 	composePath string // absolute path to the app's compose file
 }
@@ -74,7 +83,7 @@ type Manager struct {
 // New creates a Manager for the given store URLs, caching under cacheDir.
 func New(urls []string, cacheDir string) *Manager {
 	return &Manager{
-		urls:     urls,
+		urls:     canonicalURLs(urls),
 		cacheDir: cacheDir,
 		catalog:  map[string]*CatalogApp{},
 	}
@@ -90,8 +99,20 @@ func (m *Manager) URLs() []string {
 // SetURLs replaces the store URL list (caller should Refresh afterwards).
 func (m *Manager) SetURLs(urls []string) {
 	m.mu.Lock()
-	m.urls = append([]string(nil), urls...)
+	m.urls = canonicalURLs(urls)
 	m.mu.Unlock()
+}
+
+// canonicalURLs normalises a source list at the boundary, so one store cannot
+// enter the manager under two spellings and get two cache directories.
+func canonicalURLs(urls []string) []string {
+	out := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if c := CanonicalURL(u); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Catalog returns all apps sorted by name.
@@ -136,11 +157,11 @@ func (m *Manager) Get(id string) (*CatalogApp, []byte, error) {
 	return app, raw, nil
 }
 
-// GetFrom returns app id as it stands in store storeURL, along with its raw
-// compose bytes. The app need not be in the merged catalog at all — storeURL may
-// be a store the user has never added — which is what lets a deep link
-// (/store/<id>?store=<url>) address an app in an unlisted store. When storeURL is
-// empty the merged catalog answers (Get).
+// GetFrom returns the app named by ref, along with its raw compose bytes. The
+// app need not be in the merged catalog at all — the reference may name a store
+// the user has never added — which is what lets a deep link
+// (/store/<locator>/-/<apps>/<id>) address an app in an unlisted store. A
+// reference with no locator is answered by the merged catalog (Get).
 //
 // An already-extracted copy of the store answers as-is — including "no such app",
 // so a bad id fails fast; only a store that has never been fetched is downloaded
@@ -149,55 +170,55 @@ func (m *Manager) Get(id string) (*CatalogApp, []byte, error) {
 // fresh by the hourly Refresh; an unlisted store is fetched once, on the first
 // deep link that names it, and thereafter refreshed only on demand (RefreshStore)
 // or when the update flow syncs it (AppComposeFrom).
-func (m *Manager) GetFrom(ctx context.Context, storeURL, id string) (*CatalogApp, []byte, error) {
-	if strings.TrimSpace(storeURL) == "" {
-		return m.Get(id)
+func (m *Manager) GetFrom(ctx context.Context, ref Ref) (*CatalogApp, []byte, error) {
+	if ref.Merged() {
+		return m.Get(ref.ID)
 	}
-	root, err := findAppsRoot(m.workdir(storeURL))
+	root, err := findStoreRoot(m.workdir(ref.URL), ref.Apps())
 	if err != nil {
 		m.syncMu.Lock()
-		root, err = m.syncStore(ctx, storeURL)
+		root, err = m.syncStore(ctx, ref.URL, ref.Apps())
 		m.syncMu.Unlock()
 		// root != "" with a non-nil err means a cached copy was served; there is
-		// none here (findAppsRoot just failed), but branch on root so this stays
+		// none here (findStoreRoot just failed), but branch on root so this stays
 		// correct if that ever changes.
 		if root == "" {
 			return nil, nil, err
 		}
 	}
-	return m.appIn(root, storeURL, id)
+	return m.appIn(root, ref)
 }
 
-// AppComposeFrom returns the raw docker-compose.yml bytes for app id as it
-// currently stands in store storeURL. Unlike GetFrom it always syncs the store
+// AppComposeFrom returns the raw docker-compose.yml bytes for the app named by
+// ref as it currently stands in its store. Unlike GetFrom it always syncs the store
 // first: the update flow diffs the store's live version against what's installed,
 // so a stale extracted copy would report "up to date" when it isn't. That is also
 // why an unreachable origin is an error here even when a cached copy exists —
 // "couldn't check" must not render as "up to date".
-func (m *Manager) AppComposeFrom(ctx context.Context, storeURL, id string) ([]byte, error) {
-	if strings.TrimSpace(storeURL) == "" {
-		_, raw, err := m.Get(id)
+func (m *Manager) AppComposeFrom(ctx context.Context, ref Ref) ([]byte, error) {
+	if ref.Merged() {
+		_, raw, err := m.Get(ref.ID)
 		return raw, err
 	}
 	m.syncMu.Lock()
-	root, err := m.syncStore(ctx, storeURL)
+	root, err := m.syncStore(ctx, ref.URL, ref.Apps())
 	m.syncMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	_, raw, err := m.appIn(root, storeURL, id)
+	_, raw, err := m.appIn(root, ref)
 	return raw, err
 }
 
 // appIn finds app id in an extracted store root and reads its compose file. It
 // walks the tree on disk, so it runs under filesMu like any other reader.
-func (m *Manager) appIn(root, storeURL, id string) (*CatalogApp, []byte, error) {
+func (m *Manager) appIn(root string, ref Ref) (*CatalogApp, []byte, error) {
 	m.filesMu.RLock()
 	defer m.filesMu.RUnlock()
 
-	apps, _, _ := parseStore(root, storeURL)
+	apps, _, _ := parseStore(root, ref.URL, ref.Apps())
 	for _, a := range apps {
-		if a.ID == id {
+		if a.ID == ref.ID {
 			raw, err := os.ReadFile(a.composePath)
 			if err != nil {
 				return nil, nil, err
@@ -205,7 +226,7 @@ func (m *Manager) appIn(root, storeURL, id string) (*CatalogApp, []byte, error) 
 			return a, raw, nil
 		}
 	}
-	return nil, nil, fmt.Errorf("app %q not found in store %s", id, storeURL)
+	return nil, nil, fmt.Errorf("app %q not found in %s/ of store %s", ref.ID, ref.Apps(), ref.URL)
 }
 
 // Refresh downloads and reparses every configured store.
@@ -226,15 +247,17 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	var recommend []string
 	var errs []error
 
+	// A configured source names no apps folder — only a reference can — so the
+	// merged catalog is built from the default layout.
 	for _, u := range m.URLs() {
-		root, err := m.syncStore(ctx, u)
+		root, err := m.syncStore(ctx, u, DefaultAppsPath)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", u, err))
 		}
 		if root == "" {
 			continue // nothing on disk to fall back on either
 		}
-		apps, cats, rec := parseStore(root, u)
+		apps, cats, rec := parseStore(root, u, DefaultAppsPath)
 		for _, a := range apps {
 			if _, exists := catalog[a.ID]; exists {
 				continue // first store wins on id collision
@@ -274,13 +297,14 @@ func (m *Manager) Refresh(ctx context.Context) error {
 // Only storeURL's own outcome is reported. Refresh reports every store's, and a
 // second, unrelated broken source must not make this store's reload look failed.
 func (m *Manager) RefreshStore(ctx context.Context, storeURL string) error {
+	storeURL = CanonicalURL(storeURL)
 	clearValidators(m.workdir(storeURL))
 
 	// Sync the named store on its own first so its error is the one that surfaces.
 	// This costs no extra download: on success the validators are back on disk, so
 	// the Refresh below re-checks this store with a conditional GET that 304s.
 	m.syncMu.Lock()
-	_, err := m.syncStore(ctx, storeURL)
+	_, err := m.syncStore(ctx, storeURL, DefaultAppsPath)
 	m.syncMu.Unlock()
 
 	_ = m.Refresh(ctx)
@@ -321,7 +345,7 @@ func untilNext(now time.Time, hour, minute int) time.Duration {
 }
 
 // syncStore brings the extracted copy of a store up to date and returns its
-// store root (the parent of the Apps/ folder). An unchanged store costs one
+// store root (the directory holding appsPath). An unchanged store costs one
 // conditional GET that comes back 304 with no body — see fetch.
 //
 // When every download candidate fails, a previously extracted copy is returned
@@ -331,12 +355,12 @@ func untilNext(now time.Time, hour, minute int) time.Duration {
 // "nothing to show", not on err != nil.
 //
 // The caller must hold syncMu.
-func (m *Manager) syncStore(ctx context.Context, storeURL string) (string, error) {
+func (m *Manager) syncStore(ctx context.Context, storeURL, appsPath string) (string, error) {
 	workdir := m.workdir(storeURL)
 
 	var lastErr error
 	for _, dl := range storeZipCandidates(storeURL) {
-		root, err := m.fetch(ctx, dl, workdir)
+		root, err := m.fetch(ctx, dl, workdir, appsPath)
 		if err != nil {
 			lastErr = err
 			continue
@@ -344,7 +368,7 @@ func (m *Manager) syncStore(ctx context.Context, storeURL string) (string, error
 		return root, nil
 	}
 	// Every candidate failed: fall back to any previously extracted copy.
-	if root, ferr := findAppsRoot(workdir); ferr == nil {
+	if root, ferr := findStoreRoot(workdir, appsPath); ferr == nil {
 		return root, lastErr
 	}
 	return "", lastErr
@@ -364,7 +388,7 @@ func (m *Manager) syncStore(ctx context.Context, storeURL string) (string, error
 // memory instead would cost ~2x the zip (tens of MB per store) on every refresh,
 // which on a small host is the difference between an 18 MB resident process and
 // a 300 MB spike.
-func (m *Manager) fetch(ctx context.Context, u, workdir string) (string, error) {
+func (m *Manager) fetch(ctx context.Context, u, workdir, appsPath string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", err
@@ -372,7 +396,7 @@ func (m *Manager) fetch(ctx context.Context, u, workdir string) (string, error) 
 
 	// Only make the request conditional when there is actually a copy on disk to
 	// fall back on, so a 304 can always be honoured by reusing it.
-	if _, err := findAppsRoot(workdir); err == nil {
+	if _, err := findStoreRoot(workdir, appsPath); err == nil {
 		if v := readValidators(workdir); v.ETag != "" || v.LastModified != "" {
 			if v.ETag != "" {
 				req.Header.Set("If-None-Match", v.ETag)
@@ -390,7 +414,7 @@ func (m *Manager) fetch(ctx context.Context, u, workdir string) (string, error) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
-		return findAppsRoot(workdir)
+		return findStoreRoot(workdir, appsPath)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("store %s: http %d", u, resp.StatusCode)
@@ -403,7 +427,7 @@ func (m *Manager) fetch(ctx context.Context, u, workdir string) (string, error) 
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
 	})
-	return findAppsRoot(workdir)
+	return findStoreRoot(workdir, appsPath)
 }
 
 // extractStream spools r (a zip) to a temp file and extracts it into dest,
@@ -512,6 +536,19 @@ func clearValidators(workdir string) { _ = os.Remove(validatorPath(workdir)) }
 // Non-GitHub hosts and URLs already ending in .zip are passed through untouched.
 // When the branch is implicit both "main" and "master" archives are returned so
 // the repository's default branch is auto-detected at download time.
+// storeZipCandidates expands a convenience spelling of a store URL into the
+// archive URLs to try.
+//
+// This is the ONLY forge-specific code in Maison, and it is deliberately confined
+// to convenience at the point a human pastes a URL into the add-source box: it
+// turns a GitHub repo or /tree/<branch> link into the archive URL that link
+// implies. It is not part of the addressing vocabulary — a store reference always
+// carries a real locator — and it must not grow: any shorthand that expands to an
+// archive URL is knowledge of one forge's path shapes, and Maison should not need
+// to be taught a new one to host a store.
+//
+// A URL that already names an archive, or lives anywhere but github.com, is
+// passed through untouched.
 func storeZipCandidates(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	u, err := url.Parse(raw)
@@ -553,6 +590,7 @@ func storeZipCandidates(raw string) []string {
 }
 
 func (m *Manager) workdir(storeURL string) string {
+	storeURL = CanonicalURL(storeURL)
 	u, err := url.Parse(storeURL)
 	if err != nil {
 		sum := md5.Sum([]byte(storeURL))
@@ -596,26 +634,40 @@ func extractZip(zr *zip.Reader, dest string) error {
 	return nil
 }
 
-// findAppsRoot locates the directory containing an "Apps" subfolder.
-func findAppsRoot(dir string) (string, error) {
+// findStoreRoot locates the store root inside an extracted archive: the
+// directory holding appsPath. The root is searched for rather than assumed
+// because every forge wraps an archive in a directory whose name encodes the
+// repo and the ref, and that name is not ours to predict.
+//
+// appsPath may itself be nested ("catalog/apps"), so the match is on the trailing
+// segments of the walked path rather than on a single directory name.
+func findStoreRoot(dir, appsPath string) (string, error) {
+	want := filepath.FromSlash(strings.Trim(appsPath, "/"))
+	if want == "" {
+		want = DefaultAppsPath
+	}
+	suffix := string(os.PathSeparator) + want
 	var found string
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil || found != "" {
 			return nil
 		}
-		if d.IsDir() && d.Name() == "Apps" {
-			found = filepath.Dir(path)
+		if d.IsDir() && strings.HasSuffix(p, suffix) {
+			found = strings.TrimSuffix(p, suffix)
 		}
 		return nil
 	})
 	if found == "" {
-		return "", fmt.Errorf("no Apps/ directory under %s", dir)
+		return "", fmt.Errorf("no %s/ directory under %s", filepath.ToSlash(want), dir)
 	}
 	return found, nil
 }
 
-func parseStore(root, storeURL string) (apps []*CatalogApp, cats, recommend []string) {
-	appsDir := filepath.Join(root, "Apps")
+func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, recommend []string) {
+	if strings.TrimSpace(appsPath) == "" {
+		appsPath = DefaultAppsPath
+	}
+	appsDir := filepath.Join(root, filepath.FromSlash(appsPath))
 	entries, err := os.ReadDir(appsDir)
 	if err != nil {
 		return nil, nil, nil
@@ -639,7 +691,7 @@ func parseStore(root, storeURL string) (apps []*CatalogApp, cats, recommend []st
 		if err != nil {
 			continue
 		}
-		apps = append(apps, catalogApp(e.Name(), si, composePath, storeURL))
+		apps = append(apps, catalogApp(e.Name(), si, composePath, storeURL, appsPath))
 	}
 
 	cats = readCategories(root)
@@ -647,7 +699,7 @@ func parseStore(root, storeURL string) (apps []*CatalogApp, cats, recommend []st
 	return apps, cats, recommend
 }
 
-func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL string) *CatalogApp {
+func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPath string) *CatalogApp {
 	name := xcasaos.Localized(si.Title)
 	if name == "" {
 		name = id
@@ -665,6 +717,7 @@ func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL string) 
 		Author:      si.Author,
 		MinMemory:   si.MinMemory,
 		StoreURL:    storeURL,
+		AppsPath:    appsPath,
 		composePath: composePath,
 	}
 }

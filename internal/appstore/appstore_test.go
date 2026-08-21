@@ -10,14 +10,21 @@ import (
 	"time"
 )
 
-// storeZip builds a minimal store archive: a top-level folder (as GitHub's
-// codeload archives have) containing an Apps/ directory, which is what
-// findAppsRoot looks for.
+// storeZip builds a minimal store archive in the default layout: a top-level
+// folder (as a forge's archives have) containing an Apps/ directory, which is
+// what findStoreRoot looks for.
 //
 // The compose file carries an x-casaos block because parseStore drops any app
 // without one — a fixture of bare `services: {}` extracts fine but yields an
 // empty catalog, which silently passes any test that only counts HTTP transfers.
 func storeZip(t *testing.T, appName string) []byte {
+	t.Helper()
+	return storeZipAt(t, DefaultAppsPath, appName)
+}
+
+// storeZipAt is storeZip with the apps folder chosen, for the stores that do not
+// use the CasaOS layout.
+func storeZipAt(t *testing.T, appsPath, appName string) []byte {
 	t.Helper()
 	compose := "name: " + appName + "\n" +
 		"services:\n" +
@@ -30,7 +37,7 @@ func storeZip(t *testing.T, appName string) []byte {
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, err := zw.Create("AppStore-main/Apps/" + appName + "/docker-compose.yml")
+	w, err := zw.Create("AppStore-main/" + appsPath + "/" + appName + "/docker-compose.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,5 +298,35 @@ func TestConcurrentRefreshKeepsCatalogReadable(t *testing.T) {
 		if _, _, err := m.Get("jellyfin"); err != nil {
 			t.Fatalf("app unreadable mid-swap: %v", err)
 		}
+	}
+}
+
+// A store is free to keep its apps somewhere other than Apps/, and a reference
+// says where. Without this the folder in a deep link would be parsed, sent, and
+// then quietly ignored in favour of the default — which resolves a different app
+// than the one the link named, or none at all.
+func TestGetFromReadsTheAppsFolderTheReferenceNames(t *testing.T) {
+	srv := newStoreServer(t, `"v1"`, storeZipAt(t, "catalog/apps", "demo"))
+	m := New(nil, t.TempDir())
+	ctx := context.Background()
+
+	app, raw, err := m.GetFrom(ctx, NewRef(srv.URL, "catalog/apps", "demo"))
+	if err != nil {
+		t.Fatalf("GetFrom: %v", err)
+	}
+	if app.ID != "demo" {
+		t.Errorf("ID = %q, want demo", app.ID)
+	}
+	if app.AppsPath != "catalog/apps" {
+		t.Errorf("AppsPath = %q, want catalog/apps — the client needs it back to pin an install", app.AppsPath)
+	}
+	if !bytes.Contains(raw, []byte("image: example/demo:1")) {
+		t.Errorf("compose bytes are not the app's: %s", raw)
+	}
+
+	// The default is still the default: the same store read without a folder must
+	// not find an app, rather than finding some other one.
+	if _, _, err := m.GetFrom(ctx, NewRef(srv.URL, "", "demo")); err == nil {
+		t.Error("GetFrom with the default folder found an app in a store that has none there")
 	}
 }

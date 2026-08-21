@@ -117,6 +117,11 @@ func (s *Server) handleRefreshStoreSource(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.URLs()})
 }
 
+// decodeURL reads the {"url": …} body the source-list endpoints take, and
+// canonicalises it — the single boundary where a hand-typed source enters.
+// Without that, adding a store already on the list under a different spelling
+// appends a duplicate that then downloads and parses a second time, and removing
+// one by the spelling on screen would not match what was stored.
 func decodeURL(w http.ResponseWriter, r *http.Request) (string, bool) {
 	var body struct {
 		URL string `json:"url"`
@@ -125,7 +130,7 @@ func decodeURL(w http.ResponseWriter, r *http.Request) (string, bool) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url required"})
 		return "", false
 	}
-	return strings.TrimSpace(body.URL), true
+	return appstore.CanonicalURL(body.URL), true
 }
 
 // applySources updates the store URLs, persists them, refreshes the catalog, and
@@ -153,16 +158,16 @@ func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []str
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleStoreApp returns one store app. The optional ?store=<zip url> pins the
-// lookup to that store — which need not be a configured source, so a deep link
-// can address an app in a store the user has never added (the UI warns before
-// installing one). Without it, the merged catalog answers: first store wins.
+// handleStoreApp returns one store app. The optional ?store= pins the lookup to
+// that store — which need not be a configured source, so a deep link can address
+// an app in a store the user has never added (the UI warns before installing
+// one). Without it, the merged catalog answers: first store wins.
 func (s *Server) handleStoreApp(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
 	}
-	app, _, err := s.store.GetFrom(r.Context(), storeParam(r), chi.URLParam(r, "id"))
+	app, _, err := s.store.GetFrom(r.Context(), storeRef(r))
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -170,10 +175,22 @@ func (s *Server) handleStoreApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, app)
 }
 
-// storeParam reads the optional ?store=<zip url> pin shared by the store app,
-// backups and install endpoints. Empty means "use the merged catalog".
-func storeParam(r *http.Request) string {
-	return strings.TrimSpace(r.URL.Query().Get("store"))
+// storeRef builds the store reference addressed by a request: the {id} path
+// param, plus the optional ?store= locator and ?apps_path= folder shared by the
+// store app, backups and install endpoints. No locator means "use the merged
+// catalog"; no apps path means the default layout.
+//
+// The locator's scheme may be omitted — CanonicalURL supplies https — so the
+// readable form the SPA puts in a deep link is the form the API accepts.
+//
+// The endpoints keep a single-segment {id} rather than a wildcard: two of the
+// three have path segments after it (/backups, /install), where a path-shaped id
+// could not be told apart from the segments that follow. The URL grammar that
+// carries the apps folder inline is a presentation concern, and it is parsed in
+// web/src/lib/route.ts.
+func storeRef(r *http.Request) appstore.Ref {
+	q := r.URL.Query()
+	return appstore.NewRef(q.Get("store"), q.Get("apps_path"), chi.URLParam(r, "id"))
 }
 
 // handleStoreBackups lists the uninstall archives of a store app, so the store
@@ -185,7 +202,7 @@ func (s *Server) handleStoreBackups(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "install unavailable"})
 		return
 	}
-	project, err := s.installer.ProjectFor(r.Context(), storeParam(r), chi.URLParam(r, "id"))
+	project, err := s.installer.ProjectFor(r.Context(), storeRef(r))
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -215,7 +232,7 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	// A body is optional here: a plain install posts nothing at all.
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	project, err := s.installer.StartInstall(r.Context(), storeParam(r), chi.URLParam(r, "id"), strings.TrimSpace(body.FromBackup))
+	project, err := s.installer.StartInstall(r.Context(), storeRef(r), strings.TrimSpace(body.FromBackup))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

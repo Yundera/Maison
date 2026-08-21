@@ -1,12 +1,15 @@
 import { writable } from 'svelte/store'
 
+import type { StoreRef } from '../storeref'
+
 // Whether the App Store modal is open. StorePanel (M3) renders when true.
 export const storeOpen = writable(false)
 
-// The store app whose detail page is open (null = browsing the catalog).
-// `store` is the optional store URL the app is pinned to (from /store/<app>?store=<url>);
-// empty means "whichever store the merged catalog resolves the id to". See lib/route.ts.
-export const storeApp = writable<{ store: string; app: string } | null>(null)
+// The store app whose detail page is open (null = browsing the catalog), as a
+// store reference: the app's id, plus the store and apps folder it is pinned to
+// (from /store/<locator>/-/<apps>/<id>). An empty `url` means "whichever store the
+// merged catalog resolves the id to". See lib/route.ts and lib/storeref.ts.
+export const storeApp = writable<StoreRef | null>(null)
 
 // Whether the (box-wide) settings page is open, and which of its sections is
 // showing. Both are driven by lib/route.ts — the page is deep-linkable at

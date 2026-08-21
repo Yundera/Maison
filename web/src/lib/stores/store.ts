@@ -1,4 +1,5 @@
 import { api } from '../api/client'
+import { refQuery, type StoreRef } from '../storeref'
 
 export interface StoreApp {
   id: string
@@ -13,6 +14,7 @@ export interface StoreApp {
   author: string
   min_memory?: number
   store: string
+  apps_path?: string
 }
 
 export interface StoreData {
@@ -25,14 +27,12 @@ export function fetchStore(): Promise<StoreData> {
   return api.get<StoreData>('/api/store')
 }
 
-/** `?store=<url>` pins a lookup to one store — which may be a store the user has
- *  not added (deep links can carry one). Omitted, the merged catalog answers. */
-function storeQuery(store?: string): string {
-  return store ? `?store=${encodeURIComponent(store)}` : ''
-}
-
-export function fetchStoreApp(id: string, store?: string): Promise<StoreApp> {
-  return api.get<StoreApp>(`/api/store/app/${encodeURIComponent(id)}${storeQuery(store)}`)
+/** A reference's locator pins a lookup to one store — which may be a store the
+ *  user has not added (deep links can carry one). Without one the merged catalog
+ *  answers. The id stays a single path segment and the rest of the reference rides
+ *  in the query, because two of these endpoints have segments after the id. */
+export function fetchStoreApp(ref: StoreRef): Promise<StoreApp> {
+  return api.get<StoreApp>(`/api/store/app/${encodeURIComponent(ref.id)}${refQuery(ref)}`)
 }
 
 /** One archive of an app, as offered when installing over existing data. Maison
@@ -56,11 +56,10 @@ export interface Backup {
  *  can come from the compose file's own `name:`), so this is not derivable client-
  *  side from the catalog id alone. */
 export function fetchStoreBackups(
-  id: string,
-  store?: string,
+  ref: StoreRef,
 ): Promise<{ project: string; backups: Backup[] }> {
   return api.get<{ project: string; backups: Backup[] }>(
-    `/api/store/${encodeURIComponent(id)}/backups${storeQuery(store)}`,
+    `/api/store/${encodeURIComponent(ref.id)}/backups${refQuery(ref)}`,
   )
 }
 
@@ -72,12 +71,11 @@ export function fetchStoreBackups(
  *  restored as the app's folder first, so the app returns with its old data and
  *  .env instead of a clean slate. */
 export function installApp(
-  id: string,
-  store?: string,
+  ref: StoreRef,
   fromBackup?: string,
 ): Promise<{ status: string; id: string }> {
   return api.post<{ status: string; id: string }>(
-    `/api/store/${encodeURIComponent(id)}/install${storeQuery(store)}`,
+    `/api/store/${encodeURIComponent(ref.id)}/install${refQuery(ref)}`,
     fromBackup ? { from_backup: fromBackup } : undefined,
   )
 }

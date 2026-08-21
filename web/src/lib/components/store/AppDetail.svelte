@@ -3,13 +3,13 @@
   import { t } from '../../i18n'
   import { renderMarkdown } from '../../markdown'
   import InstallButton from './InstallButton.svelte'
+  import { refOf, type StoreRef } from '../../storeref'
 
   let {
-    id,
-    store = '',
+    ref,
     installed = false,
     onback,
-  }: { id: string; store?: string; installed?: boolean; onback: () => void } = $props()
+  }: { ref: StoreRef; installed?: boolean; onback: () => void } = $props()
 
   let app = $state<StoreApp | null>(null)
   let loading = $state(true)
@@ -18,9 +18,10 @@
 
   $effect(() => {
     loading = true
-    // `store` (from /store/<id>?store=<url>) pins the lookup to one store, which
-    // may be a store the user has not added; without it the merged catalog answers.
-    fetchStoreApp(id, store)
+    // A reference with a locator (from /store/<locator>/-/<apps>/<id>) pins the
+    // lookup to one store, which may be a store the user has not added; without
+    // one the merged catalog answers.
+    fetchStoreApp(ref)
       .then((a) => (app = a))
       .catch((e) => (error = String(e)))
       .finally(() => (loading = false))
@@ -70,7 +71,7 @@
       <div class="meta">
         <h1>{app.name}</h1>
         <p class="tagline">{app.tagline}</p>
-        <InstallButton {id} store={app.store} {installed} size="normal" />
+        <InstallButton ref={refOf(app)} {installed} size="normal" />
       </div>
     </header>
 

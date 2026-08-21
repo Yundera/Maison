@@ -64,9 +64,13 @@ type App struct {
 	// Update reference: where this app was installed from, so Maison can pull a
 	// fresher docker-compose.yml from the same store and re-apply it. Written into
 	// the override's x-compose-app block at install time (see installer). Store is
-	// the reference store URL; StoreAppID is the catalog id within that store.
-	Store      string `yaml:"store,omitempty"`
-	StoreAppID string `yaml:"store-app-id,omitempty"`
+	// the reference store URL; StoreAppID is the catalog id within that store;
+	// StoreAppsPath is the folder inside the archive it was found in, absent when
+	// the store uses the default layout — an app installed from a store that keeps
+	// its apps somewhere else must be able to find them again at update time.
+	Store         string `yaml:"store,omitempty"`
+	StoreAppID    string `yaml:"store-app-id,omitempty"`
+	StoreAppsPath string `yaml:"store-apps-path,omitempty"`
 
 	Links []Link `yaml:"links,omitempty"`
 

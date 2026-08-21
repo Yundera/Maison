@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/stackup"
@@ -25,9 +26,11 @@ type UpdateStatus struct {
 	HasRef bool `json:"has_ref"`
 	// Available is true when the store's compose differs from the installed one.
 	Available bool `json:"available"`
-	// Store is the reference store URL; StoreAppID the catalog id within it.
-	Store      string `json:"store"`
-	StoreAppID string `json:"store_app_id"`
+	// Store is the reference store URL; StoreAppID the catalog id within it;
+	// StoreAppsPath the folder inside the archive, when it is not the default.
+	Store         string `json:"store"`
+	StoreAppID    string `json:"store_app_id"`
+	StoreAppsPath string `json:"store_apps_path,omitempty"`
 	// Error carries a non-fatal lookup failure (store unreachable, app pulled from
 	// the catalog, …) so the UI can explain why a check couldn't complete.
 	Error string `json:"error,omitempty"`
@@ -44,13 +47,13 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 		return UpdateStatus{}, err // not a managed app (no strict base on disk)
 	}
 
-	storeURL, storeAppID := in.readUpdateRef(project)
-	if storeAppID == "" {
+	ref := in.readUpdateRef(project)
+	if ref.ID == "" {
 		return UpdateStatus{HasRef: false}, nil
 	}
-	st := UpdateStatus{HasRef: true, Store: storeURL, StoreAppID: storeAppID}
+	st := UpdateStatus{HasRef: true, Store: ref.URL, StoreAppID: ref.ID, StoreAppsPath: ref.AppsPath}
 
-	newBase, err := in.storeCompose(ctx, storeURL, storeAppID)
+	newBase, err := in.storeCompose(ctx, ref)
 	if err != nil {
 		st.Error = err.Error()
 		return st, nil
@@ -90,12 +93,12 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 		return res, err
 	}
 
-	storeURL, storeAppID := in.readUpdateRef(project)
-	if storeAppID == "" {
+	ref := in.readUpdateRef(project)
+	if ref.ID == "" {
 		return res, fmt.Errorf("no update reference recorded for %q", project)
 	}
 
-	newBase, err := in.storeCompose(ctx, storeURL, storeAppID)
+	newBase, err := in.storeCompose(ctx, ref)
 	if err != nil {
 		return res, err
 	}
@@ -166,11 +169,11 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 	return res, fmt.Errorf("update failed and was rolled back: %w", cause)
 }
 
-// storeCompose fetches app storeAppID from storeURL and applies the same PCS
-// transform used at install time, yielding the exact bytes that would be written
-// as the app's docker-compose.yml — so it is byte-comparable with the on-disk base.
-func (in *Installer) storeCompose(ctx context.Context, storeURL, storeAppID string) ([]byte, error) {
-	raw, err := in.store.AppComposeFrom(ctx, storeURL, storeAppID)
+// storeCompose fetches the app named by ref and applies the same PCS transform
+// used at install time, yielding the exact bytes that would be written as the
+// app's docker-compose.yml — so it is byte-comparable with the on-disk base.
+func (in *Installer) storeCompose(ctx context.Context, ref appstore.Ref) ([]byte, error) {
+	raw, err := in.store.AppComposeFrom(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -186,25 +189,29 @@ func (in *Installer) storeCompose(ctx context.Context, storeURL, storeAppID stri
 }
 
 // readUpdateRef reads the store reference recorded in the app's override
-// x-compose-app block. Returns empty strings when the app has no reference.
-func (in *Installer) readUpdateRef(project string) (storeURL, storeAppID string) {
+// x-compose-app block. A zero ID means the app has no reference.
+//
+// An app installed before store-apps-path existed records no folder, and reads
+// back with the default — which is what it was installed from, since the default
+// was the only thing there was.
+func (in *Installer) readUpdateRef(project string) appstore.Ref {
 	dir := filepath.Join(in.cfg.AppsDir(), project)
 	f, err := composefile.Load(filepath.Join(dir, "docker-compose.override.yml"))
 	if err != nil {
-		return "", ""
+		return appstore.Ref{}
 	}
 	ca, err := f.ComposeApp()
 	if err != nil {
-		return "", ""
+		return appstore.Ref{}
 	}
-	return ca.Store, ca.StoreAppID
+	return appstore.Ref{URL: ca.Store, AppsPath: ca.StoreAppsPath, ID: ca.StoreAppID}
 }
 
 // writeUpdateRef merges the store reference into the app's override x-compose-app
 // block, preserving any existing override content (user edits, webui-* fields).
 // This is what lets the Update tab find a newer version later.
-func writeUpdateRef(dir, storeURL, storeAppID string) error {
-	if storeAppID == "" {
+func writeUpdateRef(dir string, ref appstore.Ref) error {
+	if ref.ID == "" {
 		return nil // nothing to reference (e.g. a manual/unmanaged install)
 	}
 	overridePath := filepath.Join(dir, "docker-compose.override.yml")
@@ -221,10 +228,15 @@ func writeUpdateRef(dir, storeURL, storeAppID string) error {
 	if xca == nil {
 		xca = map[string]any{}
 	}
-	if storeURL != "" {
-		xca["store"] = storeURL
+	if ref.URL != "" {
+		xca["store"] = ref.URL
 	}
-	xca["store-app-id"] = storeAppID
+	xca["store-app-id"] = ref.ID
+	// Only when it differs from the default, so the common app's override stays as
+	// short as it was.
+	if ref.AppsPath != "" && ref.AppsPath != appstore.DefaultAppsPath {
+		xca["store-apps-path"] = ref.AppsPath
+	}
 	doc["x-compose-app"] = xca
 
 	out, err := yaml.Marshal(doc)

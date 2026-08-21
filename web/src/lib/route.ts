@@ -1,19 +1,26 @@
 // Minimal path router for the URLs Maison exposes:
 //
-//   /                        the dashboard
-//   /store                   the store, browsing the catalog
-//   /store/<app>             the store, on that app's detail page
-//   /store/<app>?store=<url> ...pinned to one store, which may be a store the
-//                            user has not added (AppDetail warns before install)
-//   /settings/<section>      the settings page, on that section
+//   /                          the dashboard
+//   /store                     the store, browsing the catalog
+//   /store/<app>               the store, on that app's detail page (merged catalog)
+//   /store/<ref>               ...where <ref> is a full store reference —
+//                              `<locator>/-/<apps>/<app>` — pinning the app to one
+//                              store, which may be a store the user has not added
+//                              (AppDetail warns before install). See lib/storeref.ts.
+//   /settings/<section>        the settings page, on that section
+//
+// e.g. /store/git.example.org/appstore/archive/main.zip/-/Apps/FileBrowser
 //
 // The server serves index.html for any unknown path (internal/server/spa.go), so
 // these deep links load the SPA directly. The legacy `#store` / `#settings:<id>`
-// hash links still work — App.svelte reads them once at mount.
+// hash links still work — App.svelte reads them once at mount — and so does the
+// older `/store/<app>?store=<url>` form, which start() rewrites into the path
+// grammar on arrival.
 //
 // State lives in the `storeOpen` / `storeApp` / `settingsOpen` / `settingsSection`
 // ui stores; this module is the only place that reads or writes the URL.
 import { storeOpen, storeApp, settingsOpen, settingsSection } from './stores/ui'
+import { CATALOG, parseRef, refPath, type StoreRef } from './storeref'
 
 // The settings sections, in the order the page's rail lists them. This is the URL
 // vocabulary, so it lives here rather than in the component — which means the rail
@@ -29,22 +36,22 @@ export type View = 'dashboard' | 'store' | 'settings'
 
 export interface Route {
   view: View
-  app: string // store: '' = catalog
-  storeURL: string // store: '' = merged catalog
+  ref: StoreRef // store: ref.id === '' = the catalog
   section: SettingsSection // settings: which section is showing
 }
 
-const DASHBOARD: Route = { view: 'dashboard', app: '', storeURL: '', section: 'domain' }
+const DASHBOARD: Route = { view: 'dashboard', ref: CATALOG, section: 'domain' }
 
 export function parse(url: URL): Route {
   const seg = url.pathname.split('/').filter(Boolean)
   if (seg[0] === 'store') {
-    return {
-      ...DASHBOARD,
-      view: 'store',
-      app: seg[1] ? decodeURIComponent(seg[1]) : '',
-      storeURL: seg[1] ? (url.searchParams.get('store') ?? '') : '',
-    }
+    const ref = parseRef(seg.slice(1).map(decodeURIComponent).join('/'))
+    // The older form carried the locator in a query parameter. Honour it when the
+    // path did not name one, so a link written against it still resolves — href()
+    // then re-renders the address in the path grammar.
+    const legacy = url.searchParams.get('store') ?? ''
+    const pinned = ref.url || !legacy ? ref : { ...ref, url: legacy }
+    return { ...DASHBOARD, view: 'store', ref: pinned }
   }
   if (seg[0] === 'settings') {
     // A bare /settings, or a section from a link written against a later version,
@@ -57,15 +64,17 @@ export function parse(url: URL): Route {
 export function href(r: Route): string {
   if (r.view === 'settings') return `/settings/${r.section}`
   if (r.view !== 'store') return '/'
-  if (!r.app) return '/store'
-  const q = r.storeURL ? `?store=${encodeURIComponent(r.storeURL)}` : ''
-  return `/store/${encodeURIComponent(r.app)}${q}`
+  if (!r.ref.id) return '/store'
+  // Deliberately not encodeURIComponent'd as a whole: `/`, `:` and `@` are legal
+  // in a path and escaping them is what turned this address into soup. Only the
+  // characters that would end the path or start a query are escaped.
+  return `/store/${refPath(r.ref).replace(/[?#%]/g, encodeURIComponent)}`
 }
 
 /** Apply a route to the ui stores (does not touch the URL). */
 function apply(r: Route) {
   storeOpen.set(r.view === 'store')
-  storeApp.set(r.view === 'store' && r.app ? { store: r.storeURL, app: r.app } : null)
+  storeApp.set(r.view === 'store' && r.ref.id ? r.ref : null)
   settingsOpen.set(r.view === 'settings')
   if (r.view === 'settings') settingsSection.set(r.section)
 }
@@ -87,7 +96,7 @@ export function go(r: Route) {
 }
 
 export const openStore = () => go({ ...DASHBOARD, view: 'store' })
-export const openStoreApp = (app: string, storeURL = '') => go({ ...DASHBOARD, view: 'store', app, storeURL })
+export const openStoreApp = (ref: StoreRef) => go({ ...DASHBOARD, view: 'store', ref })
 export const closeStore = () => go(DASHBOARD)
 
 export const openSettings = (section: SettingsSection = SETTINGS_SECTIONS[0]) =>

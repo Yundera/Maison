@@ -204,15 +204,49 @@ widget visibility, and the **app-store source URLs** (multi-store).
 
 ## 5. App Store (CasaOS-compatible)
 
-- **Source:** a GitHub zip of Compose listings, identical to `casa-img`'s:
-  `https://github.com/Yundera/AppStore/archive/refs/heads/main.zip`. Set `APPSTORE_URL` to
-  a **comma-separated** list for multiple stores. Catalogs are cached under
+- **Source:** a zip of Compose listings over HTTP, laid out as `casa-img`'s:
+  `https://github.com/Yundera/AppStore/archive/refs/heads/main.zip`. Any host serving a zip
+  will do — nothing in Maison is specific to one forge. Set `APPSTORE_URL` to a
+  **comma-separated** list for multiple stores. Catalogs are cached under
   `${DATA_ROOT}/AppData/maison/appstore` and refreshed hourly.
 - **App format:** standard `docker-compose.yml` + the CasaOS **`x-casaos`** block (title,
   icon, tagline, category, screenshots, main port/scheme/path). Read and honoured
   unchanged.
 - **Store UI:** category browse, featured/most-popular, in-store search, and an app detail
-  page (screenshots, description, developer, install). Deep-linkable at `/store/<app>`.
+  page (screenshots, description, developer, install). Deep-linkable — see below.
+
+### 5.0 Store references (deep links)
+
+A **store reference** addresses one app in one store, and is what `/store/…` carries:
+
+```
+/store/<locator>/-/<apps folder>/<app>
+/store/git.example.org/appstore/archive/main.zip/-/Apps/FileBrowser
+```
+
+- The **locator** is the store's zip URL with the scheme left off (`https` is implied;
+  write `http://` out in full if you mean it). It need **not** be a configured source —
+  this is what lets a link show an app from a store the box has never added, and the detail
+  page warns before installing one. Nothing is written to the source list.
+- The **apps folder** is named by the link rather than assumed, so a store is free to keep
+  its apps somewhere other than `Apps/`.
+- `/store/<app>` with no `/-/` still means "this app, from the merged catalog", exactly as
+  before, and the older `/store/<app>?store=<url>` form is still read (and rewritten into
+  the grammar above on arrival).
+
+The separator is GitLab's `/-/`, split on the **last** occurrence — a GitLab-hosted store's
+own archive URL contains one:
+
+```
+/store/git.example.org/group/project/-/archive/main/project-main.zip/-/Apps/FileBrowser
+```
+
+A deep link only **fetches and shows** an app. Installing is still a click, and that is
+deliberate: a URL anyone can paste must not be able to install software on a box.
+
+The grammar lives in `internal/appstore/ref.go` (authority) and `web/src/lib/storeref.ts`
+(the SPA's mirror). The API takes the same reference as `?store=` + `?apps_path=` alongside
+a single-segment app id.
 - **Install:** writes the app's project to `${DATA_ROOT}/AppData/<app>/` and brings it up
   through the lifecycle pipeline ([§6.2](#62-the-one-rule)). The store's
   `docker-compose.yml` is copied **byte-for-byte** and never modified — customization goes

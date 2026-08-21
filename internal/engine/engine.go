@@ -56,6 +56,17 @@ type Mount struct {
 	ReadOnly      bool
 }
 
+// Caps is a container's Linux capability set: what to drop, then what to add back.
+//
+// It only means anything for a container running as root. Docker has no
+// --ambient-cap, so a process started under --user with a non-zero uid gets an empty
+// effective set and --cap-add is silently inert — Argv refuses that pair rather than
+// letting a spec read as though it had been granted an access it does not have.
+type Caps struct {
+	Drop []string // e.g. []string{"ALL"}
+	Add  []string // e.g. []string{"DAC_READ_SEARCH"}
+}
+
 // Spec is one engine invocation.
 type Spec struct {
 	// Image is the pinned engine image, e.g. "kopia/kopia:0.23.1". Never a floating
@@ -75,10 +86,34 @@ type Spec struct {
 	// this mandatory rather than cosmetic.
 	Hostname string
 
-	// User is the uid:gid the engine runs as. Restored files must land owned like the
-	// rest of the data; running as root silently fixes ownership upward in a way
-	// nothing later undoes.
+	// User is the uid:gid the engine runs as, or empty for the image's own default.
+	//
+	// It is root, and it has to be. A snapshot must read every file the app owns, and
+	// an app writes its data as its own container's uid with private modes — postgres
+	// leaves <app>/pgdata as 0700 uid 70. An engine running as PUID cannot open that,
+	// kopia calls it a fatal error and exits non-zero, and the uninstall that asked for
+	// the backup aborts with nothing archived. That is every app with a bundled
+	// database.
+	//
+	// Restore wants root from the other side: kopia records the real uid/gid and, run
+	// as root, puts them back — pgdata returns as uid 70 and the app starts again.
+	// Restoring as PUID lands every file owned by PUID, which is precisely what a
+	// bundled database cannot survive. The reading this replaces — that root "fixes
+	// ownership upward" — had it backwards: root restores the *recorded* owner, PUID
+	// overwrites it.
+	//
+	// Running the engine as root grants nothing new. Maison is root already, and holds
+	// the Docker socket, which is root-equivalent (see Secrets). Caps is what narrows
+	// it back down.
 	User string
+
+	// Caps narrows what that root can do. It is the only lever available once User is
+	// root — and, per the type's own note, no substitute for it.
+	Caps Caps
+
+	// NoNewPrivileges sets --security-opt no-new-privileges, so nothing the engine
+	// execs can regain what Caps dropped.
+	NoNewPrivileges bool
 
 	Network Network
 	Mounts  []Mount
@@ -87,10 +122,9 @@ type Spec struct {
 	//
 	// It exists because an engine image can carry environment of its own that outranks
 	// the command line. kopia's image bakes KOPIA_CACHE_DIRECTORY=/app/cache and
-	// KOPIA_LOG_DIR=/app/logs, and those beat --cache-directory / --log-dir — so an
-	// engine running as PUID rather than root fails with "unable to create cache
-	// directory: mkdir /app/cache: permission denied" no matter what it is passed on
-	// the command line. Overriding them here is the only thing that works.
+	// KOPIA_LOG_DIR=/app/logs, and those beat --cache-directory / --log-dir — so a path
+	// that must land on the data disk cannot be asked for on the command line at all.
+	// Overriding them here is the only thing that works.
 	//
 	// Values are visible in argv, which is exactly why this is separate from Secrets.
 	Env map[string]string
@@ -180,6 +214,23 @@ func Argv(s Spec) ([]string, error) {
 	if s.User != "" {
 		argv = append(argv, "--user", s.User)
 	}
+	// Capabilities are the only way to narrow a root engine, and no way at all to
+	// widen a non-root one: Docker has no --ambient-cap, so --cap-add under a non-zero
+	// --user leaves the effective set empty and changes nothing. Refusing the pair is
+	// what stops someone "fixing" a permission-denied backup by adding
+	// DAC_READ_SEARCH and shipping a spec that still cannot read the file.
+	if len(s.Caps.Add) > 0 && s.User != "" && !isRootUser(s.User) {
+		return nil, fmt.Errorf("engine: --cap-add is inert under --user %s — Docker has no ambient capabilities, so a non-root uid gets an empty effective set", s.User)
+	}
+	for _, c := range s.Caps.Drop {
+		argv = append(argv, "--cap-drop", c)
+	}
+	for _, c := range s.Caps.Add {
+		argv = append(argv, "--cap-add", c)
+	}
+	if s.NoNewPrivileges {
+		argv = append(argv, "--security-opt", "no-new-privileges")
+	}
 	for _, m := range s.Mounts {
 		if m.HostPath == "" || m.ContainerPath == "" {
 			return nil, fmt.Errorf("engine: incomplete mount %+v", m)
@@ -200,6 +251,13 @@ func Argv(s Spec) ([]string, error) {
 	}
 	argv = append(argv, s.Image)
 	return append(argv, s.Args...), nil
+}
+
+// isRootUser reports whether a `--user` value names uid 0. Only the uid is consulted:
+// a root process holds its capabilities whatever its gid.
+func isRootUser(user string) bool {
+	uid, _, _ := strings.Cut(user, ":")
+	return uid == "0" || uid == "root"
 }
 
 func sortedKeys(m map[string]string) []string {

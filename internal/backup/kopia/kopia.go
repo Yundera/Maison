@@ -318,10 +318,11 @@ func (p *Provider) Prepare(ctx context.Context, emit func(apps.Event)) error {
 // engineEnv overrides the paths the kopia image bakes into its own environment.
 //
 // The image ships KOPIA_CACHE_DIRECTORY=/app/cache and KOPIA_LOG_DIR=/app/logs, and
-// those outrank --cache-directory and --log-dir. /app belongs to root, so an engine
-// running as PUID cannot create either and every command fails before it reaches the
-// repository. Both belong beside the rest of the engine's state, where the user-data
-// set already excludes them by pattern.
+// those outrank --cache-directory and --log-dir. Both point inside the container, so
+// under --rm every run would start from a cold cache and discard its log — and against
+// a remote repository a cold cache means refetching indexes before any real work can
+// start. Both belong beside the rest of the engine's state, where the user-data set
+// already excludes them by pattern.
 func (p *Provider) engineEnv() map[string]string {
 	return map[string]string{
 		"KOPIA_CACHE_DIRECTORY": filepath.Join(p.dir(), "cache"),
@@ -348,6 +349,30 @@ func (p *Provider) run(ctx context.Context, emit func(apps.Event), timeout time.
 	for k, v := range creds {
 		secrets[k] = v
 	}
+	return p.runner.Run(ctx, p.spec(rc, secrets, args, timeout), func(line string) { emitLine(emit, line) })
+}
+
+// engineCaps is what the engine keeps of root.
+//
+// DAC_READ_SEARCH and DAC_OVERRIDE are the two sides of the same requirement: read
+// every file an app owns, and write back into directories it does not. CHOWN, FOWNER
+// and FSETID are what let a restore put the recorded owner, mode and setuid bits back
+// — which is what makes a restored database start rather than come back as a
+// directory postgres refuses.
+//
+// Everything else goes. The engine binds no port, changes uid never, and reaches at
+// most one repository; a capability nobody can name a use for is one an image
+// compromise inherits for free.
+var engineCaps = engine.Caps{
+	Drop: []string{"ALL"},
+	Add:  []string{"DAC_READ_SEARCH", "DAC_OVERRIDE", "CHOWN", "FOWNER", "FSETID"},
+}
+
+// spec builds one engine invocation.
+//
+// It is separate from run, and takes everything it needs as arguments, so the
+// privilege decisions below can be asserted without a daemon or a repository.
+func (p *Provider) spec(rc repoConfig, secrets map[string]string, args []string, timeout time.Duration) engine.Spec {
 	// A filesystem repository needs no networking at all, which also keeps the tests
 	// hermetic. Anything else reaches a bucket over the default bridge — never a
 	// network Maison's peers are on.
@@ -355,18 +380,24 @@ func (p *Provider) run(ctx context.Context, emit func(apps.Event), timeout time.
 	if rc.Storage.Type == "filesystem" || rc.Storage.Type == "" {
 		net = engine.NetworkNone
 	}
-	return p.runner.Run(ctx, engine.Spec{
+	return engine.Spec{
 		Image:    p.image,
 		Name:     containerName(args),
 		Hostname: p.hostname(rc),
-		User:     p.cfg.PUID + ":" + p.cfg.PGID,
-		Network:  net,
-		Env:      p.engineEnv(),
-		Mounts:   []engine.Mount{p.runner.DataMount(false)},
-		Secrets:  secrets,
-		Args:     append(args, "--config-file="+p.configFile()),
-		Timeout:  timeout,
-	}, func(line string) { emitLine(emit, line) })
+		// Root, narrowed by engineCaps — PUID:PGID cannot read an app's own private
+		// data directories, and the backup an uninstall depends on fails outright. The
+		// full reasoning, and why capabilities are not an alternative, is on
+		// engine.Spec.User.
+		User:            "0:0",
+		Caps:            engineCaps,
+		NoNewPrivileges: true,
+		Network:         net,
+		Env:             p.engineEnv(),
+		Mounts:          []engine.Mount{p.runner.DataMount(false)},
+		Secrets:         secrets,
+		Args:            append(args, "--config-file="+p.configFile()),
+		Timeout:         timeout,
+	}
 }
 
 // hostname is the identity snapshots are filed under.
@@ -921,18 +952,14 @@ func (p *Provider) Materialize(ctx context.Context, app, stamp string, emit func
 	return err
 }
 
-// mkdirForEngine creates a directory the engine container can write into.
+// mkdirForEngine creates a directory the engine container writes into, owned by the
+// data user.
 //
-// This is the one place kopia writes to the data disk rather than to the repository,
-// and the two sides run as different users: Maison is root, the engine is PUID:PGID
-// (see run). A directory created here with the default ownership is therefore one the
-// engine cannot create the snapshot directory inside, and the restore fails with
-// EACCES having downloaded nothing — which is to say a remote backup could not be
-// brought back at all.
-//
-// The chown also repairs the directory on a box that has one already: .backups/<app>
-// is created by whichever path wrote the app's first backup, and until this existed
-// that was always root.
+// This is the one place kopia writes to the data disk rather than to the repository.
+// The engine runs as root now (see spec), so the chown is no longer what makes the
+// write succeed — it is what keeps .backups/<app> looking like the rest of the data
+// disk instead of a root-owned island the user cannot manage from an app. It also
+// repairs a directory an older Maison left behind.
 func (p *Provider) mkdirForEngine(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err

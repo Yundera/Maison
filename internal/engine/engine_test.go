@@ -103,6 +103,63 @@ func TestArgvRequiresNameAndHostname(t *testing.T) {
 	}
 }
 
+// Capabilities under a non-root --user are inert: Docker has no --ambient-cap, so the
+// effective set of a process that starts under a non-zero uid is empty. Accepting the
+// pair would let a spec read as though it could open a file it cannot — which is the
+// shape of the bug that made backing up any app with a bundled database impossible.
+// Verified against Docker 28: --user 1000:1000 --cap-add DAC_READ_SEARCH still gets
+// EACCES on a 0700 directory owned by another uid.
+func TestArgvRefusesCapabilitiesUnderANonRootUser(t *testing.T) {
+	s := baseSpec()
+	s.User = "1000:1000"
+	s.Caps = Caps{Drop: []string{"ALL"}, Add: []string{"DAC_READ_SEARCH"}}
+	if _, err := Argv(s); err == nil {
+		t.Fatal("Argv accepted --cap-add under a non-root --user, where it does nothing")
+	}
+	// Dropping capabilities from a non-root container is not the same mistake: it
+	// takes away rather than pretending to give, and stays allowed.
+	only := baseSpec()
+	only.User = "1000:1000"
+	only.Caps = Caps{Drop: []string{"ALL"}}
+	if _, err := Argv(only); err != nil {
+		t.Fatalf("Argv rejected a --cap-drop-only spec: %v", err)
+	}
+	// Every spelling of uid 0 is root, whatever the gid.
+	for _, user := range []string{"0:0", "0", "root:root", ""} {
+		ok := baseSpec()
+		ok.User = user
+		ok.Caps = Caps{Add: []string{"DAC_READ_SEARCH"}}
+		if _, err := Argv(ok); err != nil {
+			t.Errorf("Argv rejected capabilities under --user %q: %v", user, err)
+		}
+	}
+}
+
+// Drops come before adds, and no-new-privileges is what stops anything the engine
+// execs from regaining them.
+func TestArgvRendersCapabilitiesAndNoNewPrivileges(t *testing.T) {
+	s := baseSpec()
+	s.User = "0:0"
+	s.Caps = Caps{Drop: []string{"ALL"}, Add: []string{"DAC_READ_SEARCH", "CHOWN"}}
+	s.NoNewPrivileges = true
+
+	got := argvString(t, s)
+	for _, want := range []string{
+		"--user 0:0",
+		"--cap-drop ALL --cap-add DAC_READ_SEARCH --cap-add CHOWN",
+		"--security-opt no-new-privileges",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("argv = %s\nwant it to contain %q", got, want)
+		}
+	}
+	// A spec that asks for neither must not grow flags it did not ask for.
+	bare := argvString(t, baseSpec())
+	if strings.Contains(bare, "--cap-") || strings.Contains(bare, "--security-opt") {
+		t.Errorf("argv = %s\nwant no capability flags on a spec that set none", bare)
+	}
+}
+
 // A repository password must not be readable in the process table.
 func TestSecretsAppearByNameOnlyInArgv(t *testing.T) {
 	s := baseSpec()

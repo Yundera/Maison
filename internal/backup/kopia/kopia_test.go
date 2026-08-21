@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -612,10 +613,48 @@ func TestCredentialsFileParsing(t *testing.T) {
 	}
 }
 
+// The engine must run as root. An app writes its data as its own container's uid with
+// private modes — postgres leaves <app>/pgdata as 0700 uid 70 — so a snapshot taken as
+// PUID hits "permission denied", kopia exits non-zero, and the uninstall that asked for
+// the backup aborts having archived nothing. That was every app with a bundled
+// database. Capabilities cannot substitute for root here (see engine.Argv); they only
+// narrow it, which is what the rest of this asserts.
+//
+// It needs no daemon: spec() is pure, which is why it is separate from run().
+func TestTheEngineRunsAsRootWithNarrowedCapabilities(t *testing.T) {
+	cfg := config.Config{DataRoot: "/DATA", DataHostPath: "/DATA", PUID: "1000", PGID: "1000"}
+	spec := New(cfg).spec(repoConfig{Hostname: "pcs-test"}, nil, []string{"snapshot", "create", "/DATA/AppData/hubs"}, 0)
+
+	if spec.User != "0:0" {
+		t.Errorf("engine user = %q, want root — PUID cannot read an app's own private data", spec.User)
+	}
+	if strings.Contains(spec.User, cfg.PUID) {
+		t.Errorf("engine user = %q, want it not to be derived from PUID", spec.User)
+	}
+	if !spec.NoNewPrivileges {
+		t.Error("want --security-opt no-new-privileges on a root engine")
+	}
+	if len(spec.Caps.Drop) != 1 || spec.Caps.Drop[0] != "ALL" {
+		t.Errorf("caps drop = %v, want everything dropped before anything is added back", spec.Caps.Drop)
+	}
+	// The snapshot side, the restore side, and the ownership a restored database
+	// needs back. Asserted by name because dropping one of them fails only on the
+	// apps that motivated the change.
+	for _, want := range []string{"DAC_READ_SEARCH", "DAC_OVERRIDE", "CHOWN", "FOWNER", "FSETID"} {
+		if !slices.Contains(spec.Caps.Add, want) {
+			t.Errorf("caps add = %v, want it to include %s", spec.Caps.Add, want)
+		}
+	}
+	// And the pair has to be one docker will actually honour.
+	if _, err := engine.Argv(spec); err != nil {
+		t.Fatalf("Argv rejected the engine's own spec: %v", err)
+	}
+}
+
 // The kopia image ships KOPIA_CACHE_DIRECTORY=/app/cache and KOPIA_LOG_DIR=/app/logs,
-// and they outrank --cache-directory and --log-dir. /app is root's, so an engine
-// running as PUID cannot create either and every command fails before it reaches the
-// repository. Both must land beside the rest of the engine's state.
+// and they outrank --cache-directory and --log-dir. Both are inside the container, so
+// under --rm every run would start from a cold cache and throw its log away. Both must
+// land beside the rest of the engine's state.
 func TestEngineEnvOverridesTheImagesBakedInPaths(t *testing.T) {
 	cfg := config.Config{DataRoot: "/DATA"}
 	p := New(cfg)

@@ -123,11 +123,13 @@ func Load(cfg config.Config) map[string]string {
 // Neither file's ordering matters, and a key Maison does not forward is never
 // touched — an app's .env is free to carry the operator's own variables.
 //
-// This is what keeps an installed app startable after the deployment moves. The
-// app's compose refers to its surroundings only through ${APP_NET}, ${DATA_ROOT},
-// ${APP_DOMAIN}, … — never a baked literal (see envinject.Transform) — so a new
-// network, data root, domain or IP is picked up on the next start rather than
-// stranding the app until it is reinstalled.
+// This is what keeps an installed app startable after the deployment moves. A
+// store app refers to its surroundings only through ${APP_NET}, ${DATA_ROOT},
+// ${APP_DOMAIN}, … — never a baked literal — so a new network, data root, domain
+// or IP is picked up on the next start rather than stranding the app until it is
+// reinstalled. Maison supplies those values here, in the app's .env, and leaves
+// its compose alone; it used to rewrite the compose instead, which is what made a
+// hand-run `docker compose up` differ from an install.
 //
 // Writing the values into the .env, rather than relying on the environment
 // `docker compose` inherits from Maison, is the point: a `docker compose up -d`

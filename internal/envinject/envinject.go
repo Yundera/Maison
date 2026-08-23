@@ -1,10 +1,13 @@
-// Package envinject reproduces CasaOS/casa-img's environment and template
-// handling for store apps: the base interpolation variables (consumed by
-// `docker compose` interpolation) and the PCS structural transforms
-// (DATA_ROOT volume rewrite, external APP_NET attach, PUID:PGID user).
+// Package envinject supplies the variables an app's compose file is interpolated
+// with, and maps paths between this container and the Docker host.
 //
-// Ported from casa-img CasaOS-AppManagement: service/compose_service.go
-// (baseInterpolationMap) and route/v2/appstore_pcs.go (modifyServices).
+// It does not touch an app's compose file. A store's docker-compose.yml is copied
+// to disk byte-for-byte and read from there unchanged; everything the deployment
+// contributes — the data root, the app network, the domain — reaches the app as a
+// ${VAR} the app's own compose already references, resolved by `docker compose`
+// against the .env that appenv.Sync keeps current. Maison used to rewrite the file
+// instead, which is what made a hand-run `docker compose up` differ from an
+// install.
 package envinject
 
 import (
@@ -12,8 +15,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/yundera/maison/internal/config"
 )
@@ -162,41 +163,6 @@ func EnvFileVars(b []byte) map[string]string {
 	return out
 }
 
-// Transform applies the PCS structural rewrites to a store compose file:
-//   - rewrite volume sources under /DATA to ${DATA_ROOT}
-//   - attach the main service to the external ${APP_NET} network (if set)
-//
-// Both are written as *references*, never as the resolved value. That is what lets
-// an app survive a change to Maison's own deployment: the compose file says
-// "wherever the data root is" and "whatever the app network is", and every
-// `docker compose up` resolves that afresh against the .env SyncBaseVars keeps
-// current. Baking the values in — as Maison once did — froze the app to the
-// deployment it happened to be installed on, and left it unstartable, with
-// reinstall as the only way out, the moment that deployment moved.
-//
-// It is therefore idempotent, and running it over an already-transformed file is
-// how a stale one heals: a compose still carrying baked literals from an older
-// Maison comes back in reference form. stackup.Normalize does exactly that,
-// before every up.
-//
-// ${VAR} interpolation itself is left to `docker compose`.
-func Transform(raw []byte, cfg config.Config, mainService string) ([]byte, error) {
-	var doc map[string]any
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, err
-	}
-
-	services, _ := doc["services"].(map[string]any)
-
-	rewriteDataRoot(services, cfg)
-
-	if cfg.AppNet() != "" && services != nil {
-		attachExternalNetwork(doc, services, mainService)
-	}
-
-	return yaml.Marshal(doc)
-}
-
 // ContainerPath maps a host-side data path (the form written into an app's
 // compose: `/DATA/...`, `${DATA_ROOT}/...`, or the literal host path) to the
 // same location as seen INSIDE this container, so Maison can create it through
@@ -245,204 +211,4 @@ func RewriteToHostPath(s string, cfg config.Config) string {
 		"$DATA_ROOT", cfg.DataHostPath,
 		"/DATA", cfg.DataHostPath,
 	).Replace(s)
-}
-
-func addIf(m map[string]string, k, v string) {
-	if v != "" {
-		m[k] = v
-	}
-}
-
-// rewriteDataRoot points every data-root volume source at ${DATA_ROOT}, so the
-// host path is resolved by `docker compose` at up time rather than frozen into the
-// file.
-func rewriteDataRoot(services map[string]any, cfg config.Config) {
-	for _, s := range services {
-		svc, ok := s.(map[string]any)
-		if !ok {
-			continue
-		}
-		vols, ok := svc["volumes"].([]any)
-		if !ok {
-			continue
-		}
-		for i, v := range vols {
-			switch vol := v.(type) {
-			case string:
-				vols[i] = refDataRoot(vol, cfg)
-			case map[string]any:
-				if src, ok := vol["source"].(string); ok {
-					vol["source"] = refDataRoot(src, cfg)
-				}
-			}
-		}
-	}
-}
-
-// refDataRoot rewrites one bind source to the ${DATA_ROOT} form. It accepts the
-// store spelling (/DATA/...) and the resolved host spelling a previous Transform
-// under *this* config would have written — which is what makes Transform
-// idempotent. A source under neither (/etc/localtime, a named volume) is returned
-// untouched.
-//
-// A compose baked by a previous Maison whose DataHostPath differed from the
-// current one cannot be recognised here: the old prefix is not something this
-// process can know. Such a file is re-materialised from the store instead (see
-// installer.ApplyUpdate), which is a one-time cost — no compose written from here
-// on carries a literal to go stale.
-func refDataRoot(src string, cfg config.Config) string {
-	const ref = "${DATA_ROOT}"
-	if strings.HasPrefix(src, ref) || strings.HasPrefix(src, "$DATA_ROOT") {
-		return src // already a reference
-	}
-	if rest, ok := strings.CutPrefix(src, "/DATA"); ok {
-		return ref + rest
-	}
-	if h := cfg.DataHostPath; h != "" && h != "/DATA" {
-		if rest, ok := strings.CutPrefix(src, h); ok {
-			return ref + rest
-		}
-	}
-	return src
-}
-
-// AppNetKey is the compose-local key of the external network Maison attaches an
-// app's main service to. It is deliberately *not* the network's name: the name is
-// the deployment's (${APP_NET}, resolved at up time), while the key is a fixed
-// handle inside the project, so that changing the network the deployment uses does
-// not have to rewrite every service's `networks:` list.
-const AppNetKey = "appnet"
-
-// attachExternalNetwork joins the main service to the deployment's external
-// network, referenced as ${APP_NET} rather than by its current name.
-//
-// It also drops the network a previous Maison attached, recognisable by its
-// exact signature — an external network whose compose key *is* its name, which is
-// what `networks[refNet] = {name: refNet, external: true}` used to produce. That
-// entry names a network that may no longer exist (it names the one the app was
-// installed against), and leaving it behind would keep the stack unstartable even
-// once the right network is attached, since compose insists every declared
-// external network exists.
-func attachExternalNetwork(doc, services map[string]any, mainService string) {
-	networks, _ := doc["networks"].(map[string]any)
-	if networks == nil {
-		networks = map[string]any{}
-		doc["networks"] = networks
-	}
-
-	for _, key := range staleNetworks(networks) {
-		delete(networks, key)
-		detachNetwork(services, key)
-	}
-
-	networks[AppNetKey] = map[string]any{"name": "${APP_NET}", "external": true}
-
-	// Default the main service to the first one if unspecified.
-	if mainService == "" {
-		names := make([]string, 0, len(services))
-		for name := range services {
-			names = append(names, name)
-		}
-		sort.Strings(names) // map order is random; the choice must not be
-		if len(names) == 0 {
-			return
-		}
-		mainService = names[0]
-	}
-	svc, ok := services[mainService].(map[string]any)
-	if !ok {
-		return
-	}
-	switch nets := svc["networks"].(type) {
-	case []any:
-		for _, n := range nets {
-			if s, ok := n.(string); ok && s == AppNetKey {
-				return // already attached — avoid a duplicate list entry
-			}
-		}
-		svc["networks"] = append(nets, AppNetKey)
-	case map[string]any:
-		nets[AppNetKey] = nil // idempotent
-	default:
-		svc["networks"] = []any{AppNetKey}
-	}
-}
-
-// staleNetworks names the external networks a previous Maison attached, which
-// must be dropped before the current one is added. Left behind, they name a network
-// that may no longer exist — and compose insists every declared external network
-// does — so the stack would stay unstartable even once the right network is
-// attached.
-//
-// The discrimination that matters is against an external network the *store app*
-// declared, which we must never touch. It rests on how compose reads `name`: for an
-// external network, an omitted `name` means "the network is called after the key".
-// So a store app joining an existing network writes just
-//
-//	networks: {traefik: {external: true}}          → no `name` → not ours
-//
-// whereas every external network Maison has ever generated writes `name`
-// explicitly, and in one of exactly two shapes:
-//
-//	name: pcs                                      → the key, resolved (the original bug)
-//	name: ${APP_NET}  /  name: ${REF_NET}          → a reference (REF_NET being the old spelling)
-//
-// Hence: ours iff `name` is present and is either the key itself or an
-// interpolation reference. A store app that both names its external network *and*
-// names it after its own key would be misread — but that spelling is redundant, and
-// no CasaOS store app writes it.
-func staleNetworks(networks map[string]any) []string {
-	var stale []string
-	for key, n := range networks {
-		if key == AppNetKey {
-			continue // the one we are about to (re)write
-		}
-		net, ok := n.(map[string]any)
-		if !ok {
-			continue
-		}
-		if ext, _ := net["external"].(bool); !ext {
-			continue
-		}
-		name, named := net["name"].(string)
-		if !named {
-			continue // the store app's own — it never sets `name`
-		}
-		if name == key || strings.HasPrefix(name, "${") {
-			stale = append(stale, key)
-		}
-	}
-	sort.Strings(stale) // map order is random; the rewrite must not be
-	return stale
-}
-
-// detachNetwork removes key from every service's `networks:`, so a network we drop
-// leaves no dangling reference behind.
-func detachNetwork(services map[string]any, key string) {
-	for _, s := range services {
-		svc, ok := s.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch nets := svc["networks"].(type) {
-		case []any:
-			kept := make([]any, 0, len(nets))
-			for _, n := range nets {
-				if s, ok := n.(string); ok && s == key {
-					continue
-				}
-				kept = append(kept, n)
-			}
-			if len(kept) == 0 {
-				delete(svc, "networks")
-			} else {
-				svc["networks"] = kept
-			}
-		case map[string]any:
-			delete(nets, key)
-			if len(nets) == 0 {
-				delete(svc, "networks")
-			}
-		}
-	}
 }

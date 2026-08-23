@@ -81,10 +81,6 @@ func (c Config) appEnv() map[string]string {
 // in which case apps simply have no reachable web address.
 func (c Config) AppDomain() string { return c.appEnv()["APP_DOMAIN"] }
 
-// AppNet is the external Docker network Maison attaches every app's main service
-// to (.env.app's APP_NET). Empty means no network is attached.
-func (c Config) AppNet() string { return c.appEnv()["APP_NET"] }
-
 // FromEnv builds a Config from environment variables with sensible defaults.
 func FromEnv() Config {
 	dataRoot := envOr("DATA_ROOT", "/DATA")

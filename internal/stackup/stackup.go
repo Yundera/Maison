@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/yundera/maison/internal/appenv"
 	"github.com/yundera/maison/internal/composecmd"
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
@@ -93,14 +94,24 @@ func merge(base, over map[string]any) map[string]any {
 // swallowed: the stack is already running and tearing it back down would be worse
 // than a broken after-the-fact tweak.
 //
-// The app's compose, .env and generated Caddy routes are reconciled with the
-// current deployment first, so every path into the stack — install, start, store
-// update, a config or .env save, an added domain — brings the app up against the
-// deployment as it is now, not as it was when the app was installed. See Normalize
-// and SyncRoutes.
+// The app's .env and its generated Caddy routes are reconciled with the current
+// deployment first, so every path into the stack — install, start, store update, a
+// config or .env save, an added domain — brings the app up against the deployment
+// as it is now, not as it was when the app was installed. See SyncRoutes and
+// appenv.Sync.
+//
+// What is *not* reconciled is the app's docker-compose.yml. It is the store's file,
+// byte-for-byte, and Maison never writes to it: the deployment reaches the app
+// through the ${VAR}s that file already references — ${APP_NET}, ${DATA_ROOT},
+// ${APP_DOMAIN} — resolved afresh by `docker compose` on every up against the .env
+// below. That is what makes a hand-run `docker compose up -d` in the app's folder
+// do exactly what this function does.
 func Up(ctx context.Context, cfg config.Config, project, dir string, files []string) error {
 	files = SyncRoutes(cfg, project, dir, files)
-	Normalize(cfg, project, dir) // after SyncRoutes: the vars Maison owns win over its seeds
+	// After SyncRoutes: the vars Maison owns win over its seeds.
+	if err := appenv.Sync(cfg, project, dir); err != nil {
+		log.Printf("%s: sync .env: %v", project, err)
+	}
 	spec := Load(files)
 
 	if err := Prepare(cfg, project, dir, spec); err != nil {

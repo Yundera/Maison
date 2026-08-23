@@ -16,9 +16,10 @@ production PCS (`yundera-root/packages/template-root`) wires them.
 | `dex` | `ghcr.io/dexidp/dex` | OIDC provider at `https://auth-<DOMAIN>`. |
 | `auth-registrar` | `ghcr.io/yundera/mesh-auth` | Apps POST their redirect URI here on first login and get an OIDC `client_id`/`secret` back (registered into Dex over gRPC). |
 
-All four run on the **`pcs`** network — the same external network store apps
-declare (`networks: pcs external: true`) — and Maison is configured with
-`REF_NET=pcs`, so every app it installs joins `pcs` too.
+All four run on the **`pcs`** network — the same external network store apps declare
+for themselves (`name: ${APP_NET:-pcs}`, `external: true`). The stack's `.env.app`
+sets `APP_NET=pcs`, which is what those declarations resolve against; Maison attaches
+nothing itself.
 
 ### The one deliberate difference from prod
 

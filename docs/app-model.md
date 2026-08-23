@@ -73,9 +73,12 @@ never touch the operator's. See [`docs/domains.md`](./domains.md).
 The per-app **Update** tab uses this to:
 
 1. fetch the store's current listing for `store-app-id` from `store` (in
-   `store-apps-path`, when set),
-2. apply the same PCS transform used at install time, and
-3. compare it byte-for-byte with the installed `docker-compose.yml`.
+   `store-apps-path`, when set), and
+2. compare it byte-for-byte with the installed `docker-compose.yml`.
+
+The comparison is that simple only because the base is the store's bytes and nothing
+else. Maison once transformed the store's file on the way in, so both sides of this
+comparison had to be transformed identically for it to mean anything.
 
 When they differ, **Update now** overwrites the strict base with the store's
 version and runs `docker compose up -d` (base + override). The override and

@@ -1,7 +1,7 @@
-// Package installer installs a store app: it applies CasaOS env/template rules,
-// writes the compose project under the data root, and brings it up through
-// internal/stackup (folders → pre_up → `docker compose up -d` → post_up). The
-// install-only hooks (pre_install / post_install, x-compose-app or the x-casaos
+// Package installer installs a store app: it writes the store's docker-compose.yml
+// under the data root unchanged, prefills the app's .env from the deployment's
+// .env.app, and brings the stack up through internal/stackup (folders → pre_up →
+// `docker compose up -d` → post_up). The install-only hooks (pre_install / post_install, x-compose-app or the x-casaos
 // commands they generalise) are run here, around that — they fire once, when the
 // app is first installed.
 package installer
@@ -22,7 +22,6 @@ import (
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
-	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/stackup"
 )
 
@@ -254,17 +253,8 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	if err != nil {
 		return fmt.Errorf("parse compose: %w", err)
 	}
-	main := ""
-	if si, _ := f.StoreInfo(); si != nil {
-		main = si.Main
-	}
 
 	project := projectName(f.Name, ref.ID)
-
-	transformed, err := envinject.Transform(raw, in.cfg, main)
-	if err != nil {
-		return fmt.Errorf("transform: %w", err)
-	}
 
 	appDir := filepath.Join(in.cfg.AppsDir(), project)
 
@@ -292,8 +282,10 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return err
 	}
+	// The store's bytes, unchanged. Maison does not rewrite an app's compose — see
+	// the package doc of internal/envinject and docs/app-model.md.
 	composePath := filepath.Join(appDir, "docker-compose.yml")
-	if err := os.WriteFile(composePath, transformed, 0o644); err != nil {
+	if err := os.WriteFile(composePath, raw, 0o644); err != nil {
 		return err
 	}
 

@@ -12,7 +12,6 @@ import (
 
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/composefile"
-	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/stackup"
 )
 
@@ -53,7 +52,7 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 	}
 	st := UpdateStatus{HasRef: true, Store: ref.URL, StoreAppID: ref.ID, StoreAppsPath: ref.AppsPath}
 
-	newBase, err := in.storeCompose(ctx, ref)
+	newBase, err := in.store.AppComposeFrom(ctx, ref)
 	if err != nil {
 		st.Error = err.Error()
 		return st, nil
@@ -98,7 +97,7 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 		return res, fmt.Errorf("no update reference recorded for %q", project)
 	}
 
-	newBase, err := in.storeCompose(ctx, ref)
+	newBase, err := in.store.AppComposeFrom(ctx, ref)
 	if err != nil {
 		return res, err
 	}
@@ -167,25 +166,6 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 	}
 	res.RolledBack = true
 	return res, fmt.Errorf("update failed and was rolled back: %w", cause)
-}
-
-// storeCompose fetches the app named by ref and applies the same PCS transform
-// used at install time, yielding the exact bytes that would be written as the
-// app's docker-compose.yml — so it is byte-comparable with the on-disk base.
-func (in *Installer) storeCompose(ctx context.Context, ref appstore.Ref) ([]byte, error) {
-	raw, err := in.store.AppComposeFrom(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	f, err := composefile.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parse store compose: %w", err)
-	}
-	main := ""
-	if si, _ := f.StoreInfo(); si != nil {
-		main = si.Main
-	}
-	return envinject.Transform(raw, in.cfg, main)
 }
 
 // readUpdateRef reads the store reference recorded in the app's override

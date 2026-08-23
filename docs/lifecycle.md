@@ -71,25 +71,25 @@ that knows the app is being installed for the *first* time.
 
 ```
  1. fetch the app's compose from the store
- 2. transform it            (PCS rewrites: /DATA → host path, attach REF_NET)
- 3. restore backup          (only when installing from an archive — see app-model.md)
- 4. write docker-compose.yml   (strict base — overwritten on every install/update)
- 5. write .env                 (prefilled, and NEVER clobbered if one already exists)
- 6. write the update reference into the override's x-compose-app
- 7. ensure folders             ← early, because pre_install seeds files into them
- 8. pull images                (Download progress bar, 0 → 100)
- 9. pre_install hook           ← fatal on failure
-10. ┌ stackup.Up ─────────────────────────────────────┐
+ 2. restore backup          (only when installing from an archive — see app-model.md)
+ 3. write docker-compose.yml   (the store's bytes, unchanged — overwritten on every
+                                install/update, never otherwise)
+ 4. write .env                 (prefilled, and NEVER clobbered if one already exists)
+ 5. write the update reference into the override's x-compose-app
+ 6. ensure folders             ← early, because pre_install seeds files into them
+ 7. pull images                (Download progress bar, 0 → 100)
+ 8. pre_install hook           ← fatal on failure
+ 9. ┌ stackup.Up ─────────────────────────────────────┐
     │ ensure folders (again, idempotent)              │   (Start progress bar)
     │ pre_up → compose up -d → post_up                │
     └─────────────────────────────────────────────────┘
-11. post_install hook          ← logged, not fatal
-12. await readiness            (poll Docker until running + healthy, ~30s)
+10. post_install hook          ← logged, not fatal
+11. await readiness            (poll Docker until running + healthy, ~30s)
 ```
 
-Folders are ensured **twice** — at step 7 and again inside step 10. That is not
-redundancy to clean up: step 7 is what makes them exist before the `pre_install`
-hook and the image pull, and step 10 is what makes them exist for every *later*
+Folders are ensured **twice** — at step 6 and again inside step 9. That is not
+redundancy to clean up: step 6 is what makes them exist before the `pre_install`
+hook and the image pull, and step 9 is what makes them exist for every *later*
 start, when there is no installer in the picture at all.
 
 Steps 4–5 are the non-destructive contract that makes "install from backup" work
@@ -133,12 +133,11 @@ install time (`store` + `store-app-id`).
 
 ```
 1. fetch the store's current compose for store-app-id
-2. apply the same transform used at install → byte-comparable with what's on disk
-3. equal? → nothing to do, report "up to date"
-4. back up the app  ← the rollback point, taken before anything is written
-5. overwrite docker-compose.yml (the strict base only)
-6. stackup.Up  → folders (including any the new version introduces) → pre_up → up → post_up
-7. Up failed? → restore the rollback point and report both failures
+2. equal to what's on disk, byte for byte? → nothing to do, report "up to date"
+3. back up the app  ← the rollback point, taken before anything is written
+4. overwrite docker-compose.yml (the strict base only)
+5. stackup.Up  → folders (including any the new version introduces) → pre_up → up → post_up
+6. Up failed? → restore the rollback point and report both failures
 ```
 
 Step 4 is **always the local engine**, whatever engine is configured for scheduled

@@ -268,10 +268,12 @@ by URL until it has.
   through the lifecycle pipeline ([§6.2](#62-the-one-rule)). The store's
   `docker-compose.yml` is copied **byte-for-byte** and never modified — customization goes
   in the override file, which is what lets updates stay clean.
-- **Env / template injection:** the CasaOS/`casa-img` variables resolve as they do
-  upstream — `DATA_ROOT`, `REF_NET`, `REF_PORT`, `REF_DOMAIN`, `REF_SCHEME`,
-  `REF_SEPARATOR`, plus base vars (`PUID`, `PGID`, `TZ`, `AppID`) and the app's own `.env`.
-  Exact rules: `casa-img/docs/environment-variable-injection.md`.
+- **Variables, not rewrites:** everything the deployment contributes reaches an app as a
+  `${VAR}` its own compose already references — `APP_NET`, `DATA_ROOT`, `APP_DOMAIN`, the
+  rest of `.env.app`, plus the base vars Maison computes (`PUID`, `PGID`, `TZ`, `AppID`).
+  They are written into the app's `.env` and resolved by `docker compose` on every up, so
+  a `docker compose up -d` you run by hand in the app's folder does exactly what Maison
+  does. See [`docs/app-env.md`](./docs/app-env.md).
 
 ### 5.1 Per-app configuration
 
@@ -315,7 +317,7 @@ daemon. No database: **the filesystem and the Docker daemon are the state.**
 | `internal/stackup` | **Every** `docker compose up` goes through here (see below). |
 | `internal/composecmd` | Shells out to the `docker compose` plugin. |
 | `internal/dockerx` | Docker Engine API: discovery, lifecycle, container event stream. |
-| `internal/envinject` | CasaOS env/template rules + the host-path rewrites. |
+| `internal/envinject` | The variables an app's compose is interpolated with, and host↔container path mapping. It does not touch the compose itself. |
 | `internal/xcasaos` · `internal/xcomposeapp` | The two compose extensions. |
 | `internal/live` | WebSocket hub, channel-multiplexed; sampling only runs while a client is subscribed. |
 | `web/` | Svelte 5 + Vite. Vite builds straight into `internal/ui/dist`, which the Go binary embeds. |
@@ -399,11 +401,6 @@ services:
       PUID: "1000"
       PGID: "1000"
       TZ: "${TZ:-UTC}"
-      # App-store routing template (CasaOS/casa-img compatible). Optional.
-      REF_NET: "mesh"
-      REF_PORT: "80"
-      REF_SCHEME: "http"
-      REF_DOMAIN: "${DOMAIN:-}"
       APPSTORE_URL: "https://github.com/Yundera/AppStore/archive/refs/heads/main.zip"
     group_add:
       - "${DOCKER_GID:-999}"                  # the docker socket's group on the host
@@ -434,7 +431,6 @@ networks:
 | `APPSTORE_URL` | Yundera AppStore zip | Store source(s), comma-separated. |
 | `PUID` / `PGID` | `1000` | Ownership applied to app folders. |
 | `TZ` | — | Timezone for the dashboard and installed apps. |
-| `REF_NET`, `REF_PORT`, `REF_SCHEME`, `REF_DOMAIN`, `REF_SEPARATOR` | — / `-` | Store templating: app network + `{app}{sep}{domain}` hostnames. |
 | `HTTP_ADDR` | `:8080` | Listen address. |
 
 ### Notes

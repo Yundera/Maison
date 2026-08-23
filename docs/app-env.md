@@ -57,15 +57,24 @@ deployment has since **become** — a new app network, a new data root, a new do
 a new public IP. None of that invalidates the app's own configuration, so none of it
 should stop the app from starting.
 
-This is why an app's generated compose refers to its surroundings only through
+This is why a store app's compose refers to its surroundings only through
 `${APP_NET}`, `${DATA_ROOT}`, `${APP_DOMAIN}` … and **never** through a resolved
-literal (see `envinject.Transform`). The literal is the bug: Maison used to bake
-the network name and the host data path into each app's `docker-compose.yml` at
-install time, which froze the app to the deployment it happened to be installed on.
-Move the box, and every app was unstartable — with reinstall as the only way out.
+literal. The literal is the bug: it freezes the app to the deployment it happened to
+be installed on, and moving the box leaves every app unstartable with reinstall as
+the only way out.
 
-Now the compose says *"whatever the app network is"*, `.env.app` says what it
-currently is, and every start resolves the two afresh.
+**The references are the store's to write, not Maison's to insert.** Maison used to
+rewrite each app's `docker-compose.yml` — swapping `/DATA` for `${DATA_ROOT}` and
+replacing the network the app declared with one of its own — before every up. That
+made the file on disk differ from the file the store shipped, made a hand-run
+`docker compose up` differ from an install, and, because the rewrite re-attached only
+the main service, silently dropped every other service the app had put on the shared
+network. It no longer happens: `docker-compose.yml` is the store's bytes, and Maison
+writes only the override and this `.env`.
+
+So a store app writes `${APP_NET:-pcs}` and `${DATA_ROOT:-/DATA}` itself — the
+default keeping a bare `docker compose up` working outside Maison — `.env.app` says
+what they currently are, and every start resolves the two afresh.
 
 ## Why the values are written into the app's `.env`
 

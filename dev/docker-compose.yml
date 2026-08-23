@@ -20,10 +20,11 @@
 #                                             (see dev/dex/config.yaml).
 #   smtp, admin (settings-center)             out of scope for Maison
 #
-# Everything runs on the `pcs` network so that store apps (which declare
-# `networks: pcs external: true`) and auth-registrar's PTR-based caller
-# attestation work exactly as in prod. Maison is told REF_NET=pcs so the apps
-# it installs are attached to the same network.
+# Everything runs on the `pcs` network so that store apps (which declare it
+# themselves, as `name: ${APP_NET:-pcs} / external: true`) and auth-registrar's
+# PTR-based caller attestation work exactly as in prod. The appenv container below
+# sets APP_NET=pcs, which is what those store composes resolve against — Maison
+# does not attach anything itself.
 #
 #   cp .env.dev.example .env.dev   # then edit DOCKER_GID / DATA_HOST_PATH
 #   ./gen-certs.sh                 # once, if dev/certs is empty

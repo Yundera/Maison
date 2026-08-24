@@ -379,9 +379,12 @@ x-compose-app:
   schema_version: 2
   hooks:
     pre_install: |
-      openssl rand -hex 32 > ${DATA_ROOT}/AppData/${AppID}/secrets/key
+      # openssl is NOT available to hooks — run it in a pinned image.
+      # See "The command set" below for why.
+      docker run --rm alpine:3.20 openssl rand -hex 32 \
+        > ${DATA_ROOT}/AppData/${AppID}/secrets/key
     pre_up: |
-      docker pull ghcr.io/example/sidecar:latest
+      docker pull ghcr.io/example/sidecar:1.4.2
     post_up: |
       echo "$AppID up at $(date)" >> /var/log/maison-apps.log
 ```
@@ -406,9 +409,83 @@ directory set to the app's folder, but they talk to the **host** Docker daemon
 (`DOCKER_HOST=unix:///var/run/docker.sock`). They get the app's interpolation
 variables plus its `.env`, `AppID`, and `APP_DIR`.
 
-Because they're aimed at the host daemon, `/DATA` and `${DATA_ROOT}` inside a hook's
-script are rewritten to **host** paths — a `docker run -v` in a hook must name a
-path the host daemon can resolve. The consequence is the one trap worth knowing:
+> **A hook does not run on the host.** Older store documentation said it did. It
+> never has — the CasaOS fork Maison replaced ran hooks in its own container too.
+> What changed is that Maison now says so out loud instead of letting a hook
+> quietly act on the wrong machine.
+
+The distinction that matters: a hook's **shell** is containerised, but its
+**`docker` client is not** — every container it starts is a real container on the
+real host. That is the seam every recipe below goes through.
+
+#### The command set
+
+A hook may call these, and nothing else:
+
+```
+bash sh docker
+cat chmod chown cp cut date dirname echo env expr find grep head id install
+ln ls md5sum mkdir mktemp mv od printf readlink realpath rm rmdir sed seq
+sha256sum sleep sort stat tail tee test timeout touch tr uniq wc wget xargs
+```
+
+Plus bash's own builtins. Anything else **fails the hook** with a message naming
+the sanctioned alternative. The list is the symlinks in `/opt/maison/hookbin`; it
+is a public contract, so entries get added but not removed.
+
+Two kinds of command are deliberately outside it, and the reason is the same in
+both cases — without the guardrail they fail *silently*:
+
+**Not present in the image** — `openssl`, `curl`, `python`, `jq`, `git`, `unzip`.
+A missing command inside a command substitution is not an error in bash:
+
+```bash
+SECRET="$(openssl rand -hex 32)"     # -> ""   and the hook still exits 0
+```
+
+Two shipped apps wrote empty secrets this way and installed green. Run the tool in
+a pinned image instead — `docker run` fails loudly:
+
+```bash
+SECRET="$(docker run --rm alpine:3.20 openssl rand -hex 32)"
+```
+
+**Present but scoped to the wrong machine** — `sysctl`, `ip`, `mount`, `adduser`,
+`modprobe`, `chroot`, `reboot` and ~25 other busybox applets. These exist in the
+container and appear to work, but act on *the container*, whose network namespace,
+mount namespace and user database all vanish on restart. Use a recipe below.
+
+#### Reaching the host
+
+Host access is legitimate and supported. It is not a workaround — it is the
+mechanism, and it goes through the Docker socket the hook already holds. Pin an
+image tag, and justify the access in the app's `rationale.md`.
+
+| To change | Recipe |
+|---|---|
+| Kernel parameters (`sysctl`) | `docker run --rm --privileged --network=host <image> sysctl -w <key>=<value>` |
+| Network state (`ip`, `route`) | `docker run --rm --privileged --network=host <image> ip ...` |
+| Files, users, `/etc` | `docker run --rm -v /:/host <image> chroot /host sh -c '...'` |
+| Filesystems, devices | `docker run --rm --privileged -v /:/host <image> chroot /host mount ...` |
+| Kernel modules | `docker run --rm --privileged <image> modprobe ...` |
+
+`--privileged` and `--network=host` are **both** required for `sysctl`: the first
+for a writable `/proc/sys`, the second because `net.*` keys are per-namespace.
+
+Host *service* management (`systemctl`, `snap`) has no verified recipe yet — a
+`chroot` has no systemd to talk to. Don't rely on it from a hook.
+
+> Nothing here is a security boundary. A hook holds the Docker socket, which is
+> root on the host by construction; the command set is an **authoring aid** that
+> turns silent mistakes into loud ones, not a sandbox. An absolute path
+> (`/bin/sysctl`) still bypasses it, and that is fine — the point is to catch the
+> author who did not know, not the one who insists.
+
+#### Paths
+
+Because hooks are aimed at the host daemon, `/DATA` and `${DATA_ROOT}` in a hook's
+script are rewritten to **host** paths — a `docker run -v` must name a path the
+host daemon can resolve. The consequence is the one trap worth knowing:
 
 > A hook that just wants a directory to exist should **not** `mkdir` it. Written in a
 > hook, that path is a host path, and the `mkdir` would run in the Maison

@@ -61,6 +61,13 @@ recreates a removed one, and re-applies a changed compose, all with the same cal
 The asymmetry in 3 vs 5 is deliberate and worth internalising: **pre-hooks gate,
 post-hooks garnish.** Anything flaky in a `pre_up` blocks the app on *every* start.
 
+A hook is also failed when it calls a command outside the set Maison makes
+available to hooks — even if the script itself exited 0, which is the usual case
+when the command sat inside a `"$(...)"`. That verdict feeds the same table above,
+so it gates a `pre_*` and is only logged for a `post_*`. See
+[`x-compose-app.md`](./x-compose-app.md) § *The command set* for the list and for
+the sanctioned way to reach the host.
+
 ---
 
 ## Install

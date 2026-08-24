@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/yundera/maison/internal/appenv"
 	"github.com/yundera/maison/internal/composecmd"
@@ -157,12 +158,48 @@ func Prepare(cfg config.Config, project, dir string, spec Spec) error {
 // a path the host daemon can resolve. Hooks that only need a directory to exist
 // should declare it under `folders` instead: those are created container-side,
 // through Maison's data mount, and are correct on both sides.
+//
+// The commands a hook may call are the curated set in hookBinDir; anything else
+// fails the hook with a message naming the sanctioned alternative. See
+// hookshell.go for why that list is an allowlist and why the verdict comes from
+// a file rather than an exit status.
 func RunHook(ctx context.Context, cfg config.Config, project, dir, script string) error {
+	rejected, err := os.CreateTemp("", "maison-hook-rejected-")
+	if err != nil {
+		return fmt.Errorf("hook workspace: %w", err)
+	}
+	rejected.Close()
+	defer os.Remove(rejected.Name())
+
+	preamble, err := os.CreateTemp("", "maison-hook-preamble-*.sh")
+	if err != nil {
+		return fmt.Errorf("hook workspace: %w", err)
+	}
+	defer os.Remove(preamble.Name())
+	if _, err := preamble.WriteString(hookPreamble()); err != nil {
+		preamble.Close()
+		return fmt.Errorf("hook workspace: %w", err)
+	}
+	preamble.Close()
+
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", envinject.RewriteToHostPath(script, cfg))
 	cmd.Dir = dir
-	cmd.Env = hookEnv(cfg, project, dir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w: %s", err, out)
+	cmd.Env = append(hookEnv(cfg, project, dir),
+		"BASH_ENV="+preamble.Name(),
+		hookRejectedVar+"="+rejected.Name(),
+	)
+	out, runErr := cmd.CombinedOutput()
+
+	// Checked before runErr, and regardless of it: the failures this catches are
+	// the ones that do not show up as a non-zero exit. A missing command inside
+	// `"$(...)"` leaves the substitution empty and the hook exits 0, which is how
+	// an app ships an empty secret and installs green.
+	if names := rejectedCommands(rejected.Name()); len(names) > 0 {
+		return fmt.Errorf("hook called %s, which app hooks may not use — run it in a pinned container instead (see %s): %s",
+			strings.Join(names, ", "), hookDocRef, out)
+	}
+	if runErr != nil {
+		return fmt.Errorf("%w: %s", runErr, out)
 	}
 	return nil
 }
@@ -178,7 +215,7 @@ func hookEnv(cfg config.Config, project, dir string) []string {
 		}
 	}
 	return append(env,
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"PATH="+hookPath(),
 		"DOCKER_HOST=unix:///var/run/docker.sock",
 		"AppID="+project,
 		"APP_DIR="+envinject.HostPath(dir, cfg), // a real path, so map it — don't text-rewrite it

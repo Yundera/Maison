@@ -67,7 +67,7 @@ x-compose-app:
 
 | Field | Type | Required | Meaning / Maison use | `x-casaos` fallback |
 |---|---|---|---|---|
-| `schema_version` | int | no (default `1`) | Spec version (currently **2**). Maison refuses versions it doesn't understand and falls back to `x-casaos`. v1 files keep working; declare `2` if the app *needs* `folders`/`hooks` to be honoured, so an older Maison refuses it instead of silently starting it without its directories. | — |
+| `schema_version` | int | no (default `1`) | Spec version (currently **2**). `secrets`, `variables`, `files`, `init` and the seed tree are **additive** and do not raise it — an older build ignores what it does not know instead of dropping the whole block (which would cost the app its folders and routes too). A build that predates the declared version falls back to `x-casaos` for the whole block — note that it **does not refuse to install the app**, so raising the version degrades an app rather than gating it. v1 files keep working. | — |
 | `id` | string | no | Stable app identifier (should equal the Compose project `name`). Defaults to the project name. | `store_app_id` |
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | url | no | Tile icon. | `icon` |
@@ -85,7 +85,11 @@ x-compose-app:
 | `webui-path` | string | no (default `/`) | Path appended to the host. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
 | `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url`. Never the tile's default action. | — |
 | `tips` | string \| localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. When set, it replaces the `x-casaos` tips; clearing it falls back to them. | `tips.before_install` + `tips.custom` |
-| **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). | — |
+| **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). |
+| **`secrets`** | map | no | Values **generated once** and ensured in the app's `.env`. See [Secrets and variables](#secrets-and-variables). |
+| **`variables`** | map | no | Templates ensured in the app's `.env` on **every** up. See [Secrets and variables](#secrets-and-variables). |
+| **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
+| **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
@@ -186,30 +190,198 @@ here — and its click URL keeps mirroring the route it was cloned from.
 
 ## The stack-up sequence
 
-`folders` and `hooks` hang off one sequence, which **every** `docker compose up`
-Maison runs goes through — install, start from the tile, store update, and
-saving the app's config all take the same path:
+The declarative sections hang off one sequence, which **every** `docker compose up`
+Maison runs goes through — install, start from the tile, store update, and saving
+the app's config all take the same path:
 
 ```
-ensure folders  →  pre_up  →  docker compose up -d  →  post_up
+folders → secrets → variables → init(pre_up) → seed → files
+        → pre_up → docker compose up -d → init(post_up) → post_up
 ```
 
 `pre_install` / `post_install` bracket that sequence, but only the **first** time —
 during the install itself:
 
 ```
-write compose + .env  →  ensure folders  →  pull images
-                      →  pre_install  →  [ the up sequence ]  →  post_install
+write compose + .env + .seed  →  ensure folders  →  pull images
+                              →  pre_install  →  [ the up sequence ]  →  post_install
 ```
 
 So a directory declared under `folders` is guaranteed to exist before an image is
 pulled, before any hook runs, and before the containers start — on the first boot
-*and* on every boot after it.
+*and* on every boot after it. The same is true of every secret, seed file and
+declared file: the sequence is a **converge**, not an installer, and it runs in
+full on every start.
+
+Everything before `compose up` is **fatal** on failure, and that is the point. The
+shell version of this work was not: a hook whose `openssl` was missing wrote an
+empty secret, exited 0, and left an app that looked installed.
 
 [`lifecycle.md`](./lifecycle.md) is authoritative for these sequences, and covers
 what the other operations (start, restart, update, save, uninstall) do with them.
 
 ---
+
+## The seed tree
+
+**Most first-run setup needs no declaration at all.** A store app ships a `seed/`
+folder whose tree **mirrors the app directory**, so a path in the store *is* the
+path on disk:
+
+```
+Apps/Caddy/seed/Caddyfile                    → /DATA/AppData/caddy/Caddyfile
+Apps/Caddy/seed/www/index.html               → /DATA/AppData/caddy/www/index.html
+Apps/Tuwunel/seed/element/config.json.tmpl   → /DATA/AppData/tuwunel/element/config.json
+```
+
+Nothing in `x-compose-app` mentions those files. The declaration was never
+information — it was the shape of a folder.
+
+At install Maison copies the store's `seed/` into the app folder as `.seed/`, for
+the same reason it copies `docker-compose.yml` byte-for-byte: after that the app
+folder stands on its own ([`app-model.md`](./app-model.md)), the backup archives
+it, and a re-ensure works whether or not the store is still configured. An update
+refreshes `.seed/` from the same store sync that refreshes the compose.
+
+| Rule | Detail |
+|---|---|
+| `.tmpl` is rendered, and the suffix is stripped | Interpolated with the app's variables and its `.env`, exactly like `folders` paths. `$$` is a literal `$`. |
+| Everything else is copied byte-for-byte | Binary-safe: icons, SQL dumps, scripts. |
+| **Create-if-absent, on every up** | Never clobbers what the app or the operator has written. The accepted cost: a seed file deleted on purpose comes back on the next start. |
+| Files land as `PUID:PGID`, `0644`, dirs `0755` | The exec bit survives, so an init script arrives runnable. Anything else is what [`files`](#files) is for. |
+| Directories are created, but their **ownership** comes from `folders` | One place declares a directory's identity. |
+| `docker-compose.yml`, `docker-compose.override.yml`, `.env` are refused | They are the app's identity, not its data. |
+| Symlinks, escaping paths, and two entries writing one target are refused | A store is a downloaded archive. |
+| An **unresolved `${VAR}` fails the up** | The old form of this failure wrote the literal `${VAR}` into the config and started the app. |
+
+---
+
+## Secrets and variables
+
+A generated secret does not need its own plumbing. It needs to be **an ordinary
+`.env` variable** — after which compose reads it, the seed renderer interpolates
+it, and a hand-run `docker compose up` in the app folder sees exactly what Maison
+sees.
+
+```yaml
+x-compose-app:
+  secrets:                                  # values are ALWAYS generator specs
+    SEARXNG_SECRET: hex:32
+    DEX_PASSWORD_HASH: bcrypt:${APP_DEFAULT_PASSWORD}
+  variables:                                # values are ALWAYS templates
+    OUTLINE_URL: https://outline-${APP_DOMAIN}
+```
+
+```
+seed/searxng/settings.yml.tmpl:   secret_key: "${SEARXNG_SECRET}"
+```
+
+Two sections rather than one because a bare map value cannot say whether it is a
+literal or a generator. Splitting them by intent removes the question, and lets
+`secrets` carry its own semantics: a generated value is never written to a log or
+an install event.
+
+| Generator | Produces |
+|---|---|
+| `hex:N` | N **bytes**, hex-encoded — `hex:32` is 64 characters, matching `openssl rand -hex 32` |
+| `base64:N` | N bytes, base64 (standard alphabet), matching `openssl rand -base64 N` |
+| `alnum:N` / `password:N` | N characters from `[A-Za-z0-9]` |
+| `uuid` | a random (v4) UUID |
+| `bcrypt:TEXT` | bcrypt of the rendered TEXT — replaces a `docker run … dex hash` |
+
+- **Secrets are generated once and then stable.** A key already holding a value is
+  reused, never regenerated: a signing key that rotates behind an app's back is
+  indistinguishable from data loss. Pinning one by hand in `.env` is supported and
+  survives. Rotation is an explicit act.
+- **Variables are re-rendered on every up**, so a derived value follows a domain
+  change instead of freezing at install time.
+- Both are written key-by-key into the app's `.env`, the same path `.env.app` uses,
+  so unrelated lines an operator added survive.
+- Do **not** write a generator inside `${…}`. `docker compose` interpolates this
+  file too, and `${random.hex(32)}` fails as an invalid interpolation before Maison
+  ever reads it.
+
+> `secrets` writes plaintext into the app's `.env`, on a box that has no auth and
+> whose `.env.app` already holds `APP_DEFAULT_PASSWORD` in the clear (see
+> [`app-env.md`](./app-env.md)). It removes a class of *silent failure*; it is not
+> a secrets manager and does not pretend to be one.
+
+---
+
+## Files
+
+The escape hatch beside the seed tree, for the two things a folder of files cannot
+say: a file that must be **re-rendered on every up**, or one that needs a
+non-default owner or mode.
+
+```yaml
+x-compose-app:
+  files:
+    - path: /DATA/AppData/${AppID}/element/config.json
+      from: element/config.json.tmpl      # a path in the app's seed tree
+      ensure: always                      # tracks ${APP_DOMAIN} instead of freezing it
+    - path: /DATA/AppData/${AppID}/db/init.sh
+      from: db/init.sh
+      mode: "0755"
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `path` | string | required | Absolute host-spelled path under the data root. Same three declaration errors as `folders`. |
+| `from` | string | — | A path inside the app's seed tree; `.tmpl` is rendered. |
+| `content` | string | — | An inline body, always rendered. Exactly one of `from` / `content`. |
+| `ensure` | `once` \| `always` | `once` | `always` re-renders on every up. |
+| `user` / `group` / `mode` | | `${PUID}` / `${PGID}` / `0644` | As `folders` — **quote the octal**. |
+
+A path claimed by a `files` entry is skipped by the seed tree, so nothing is
+written twice. An `always` file whose content has not changed is left alone, so a
+converge does not churn its mtime.
+
+---
+
+## Init
+
+The one case that is not a declaration in disguise: work that needs *a container* —
+the app's own binary seeding its database, or a tool computing a value.
+
+```yaml
+x-compose-app:
+  init:
+    - name: seed-db
+      image: filebrowser/filebrowser:v2.63.2
+      command: config init --database /db/database.db
+      user: "${PUID}:${PGID}"
+      volumes:
+        - /DATA/AppData/${AppID}/db:/db
+      when: absent:/DATA/AppData/${AppID}/db/database.db
+
+    - name: obscure-pass
+      image: rclone/rclone:1.73.3
+      command: [obscure, "${APP_DEFAULT_PASSWORD}"]
+      capture: RCLONE_PASS        # stdout → a variable the seed template can use
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | string | required for `when: once` | Identifies the step in logs, and is what `once` is remembered by. |
+| `image` | string | required | |
+| `command` / `entrypoint` | list \| string | — | A string is split on whitespace, honouring quotes. It is argv — there is no shell, no expansion and no operators. |
+| `user` / `environment` / `volumes` / `network` | | | The `docker run` surface. `environment` takes a list or a mapping. |
+| `when` | `once` \| `always` \| `absent:<path>` | `once` | The guard, replacing every hand-written `if [ ! -f ]`. |
+| `capture` | string | — | Binds trimmed stdout to a variable for the seed renderer and `files`, for this converge only. Not written to `.env` unless a `variables` entry asks. |
+| `phase` | `pre_up` \| `post_up` | `pre_up` | `post_up` for a seeder that needs the app's own network or a running service. |
+
+**Two path spellings, deliberately.** A `volumes` source is resolved by the *host
+daemon*, so it is a host path — the same rule a hook's `docker run -v` lives under.
+The path in `when:` is resolved by *Maison*, so it is container-side. Two different
+processes resolve them; one spelling could not serve both.
+
+`when: once` is remembered in `.init/<name>` inside the app folder, so it travels
+with the app's backup: an app restored from an archive does not re-seed a database
+it already has. A step that fails records nothing and is retried on the next up.
+
+A failing `pre_up` step is **fatal**; a `post_up` step is logged and swallowed, for
+the same reason the matching hooks are.
 
 ## Views
 
@@ -364,6 +536,13 @@ on a multi-terabyte media folder that is already correct.
 
 ## Hooks
 
+**Reach for a hook last.** Everything above — the seed tree, `secrets`,
+`variables`, `files`, `init` — exists because the work these hooks were doing was
+declarative all along, and expressing it as shell cost correctness: an undeclared
+command set, host-vs-container path rewriting, hand-rolled idempotence, and values
+frozen at install time. What is left for a hook is genuinely imperative work, such
+as waiting on another program to write its own config and then patching it.
+
 Shell snippets around the app's lifecycle. Two pairs, differing in **when** they
 fire:
 
@@ -491,7 +670,9 @@ host daemon can resolve. The consequence is the one trap worth knowing:
 > hook, that path is a host path, and the `mkdir` would run in the Maison
 > container — creating the wrong directory in the wrong place. Declare it under
 > `folders` instead: those are created through Maison's data mount and are correct
-> on both sides.
+> on both sides. The same trap applies to a hook that writes a *file* into `/DATA`:
+> use the [seed tree](#the-seed-tree) or [`files`](#files), which are written
+> container-side and are correct on both.
 
 Hooks are for **Docker-level** work (pulling a sidecar image, priming a volume with
 `docker run`, poking another stack). Directories are what `folders` is for.

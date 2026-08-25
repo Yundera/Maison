@@ -25,6 +25,8 @@ Every app is one directory directly under the data root:
 ├── docker-compose.yml            # strict copy from the store — never modified
 ├── docker-compose.override.yml   # user edits from the config window (Compose override)
 ├── .env                          # prefilled by Maison on create, then user-editable
+├── .seed/                        # the store's seed tree, copied in at install
+├── .init/                        # markers for init steps that run once
 └── …                             # any other files the app needs (configs, seed data, …)
 ```
 
@@ -38,7 +40,9 @@ what the dashboard shows.
 | `docker-compose.yml` | **Strict copy from the store listing.** | Never — Maison treats it as read-only. | The pristine app definition. Keeping it byte-for-byte identical to the store is what lets updates stay clean (re-copy on update, overrides survive). |
 | `docker-compose.override.yml` | Generated from the **per-app config window** (ports, env, volumes, …). | Maison, on every config save — and on every up, for the routes it generates (see [`domains.md`](./domains.md)). | User customizations, layered on top via Compose override semantics. The running stack = `docker-compose.yml` + `docker-compose.override.yml`. |
 | `.env` | **Prefilled by Maison on create** (PUID/PGID, TZ, `REF_*`, domain, generated secrets, …), then hand-editable. | Maison on create; user thereafter. | Variable substitution for both compose files. |
-| everything else | The app (bind-mount targets, config files, databases, …). | The app at runtime. | User data. **Never** deleted by Maison (see uninstall). |
+| `.seed/` | Copied from the store app's `seed/` folder at install, refreshed on update. | Maison, on install and update. | The app's initial data tree, mirroring this folder. Written out create-if-absent on every up, so a missing file is restored and an edited one is left alone. Nothing ever writes back into it. See [`x-compose-app.md`](./x-compose-app.md). |
+| `.init/` | Written by Maison when a `when: once` init step succeeds. | Maison. | One empty file per completed step, so a seeder that must not run twice does not. It lives here rather than in Maison's own state so that it travels with the app's backup — an app restored from an archive does not re-seed a database it already has. |
+| everything else | The app (bind-mount targets, config files, databases, …). | The app at runtime, and Maison's seed/files declarations on first write. | User data. **Never** deleted by Maison (see uninstall). |
 
 The stack is always brought up from this directory as
 `docker compose -f docker-compose.yml -f docker-compose.override.yml … up`, with

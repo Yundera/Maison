@@ -57,6 +57,11 @@ type CatalogApp struct {
 	composePath string // absolute path to the app's compose file
 }
 
+// Dir is the app's folder inside the extracted store — the directory holding its
+// docker-compose.yml, and beside it whatever else the store ships for the app
+// (its seed tree, its icon). The installer reads it to copy the seed tree in.
+func (a *CatalogApp) Dir() string { return filepath.Dir(a.composePath) }
+
 // Source is one configured store, named for display.
 type Source struct {
 	URL  string `json:"url"`
@@ -229,18 +234,25 @@ func (m *Manager) GetFrom(ctx context.Context, ref Ref) (*CatalogApp, []byte, er
 // why an unreachable origin is an error here even when a cached copy exists —
 // "couldn't check" must not render as "up to date".
 func (m *Manager) AppComposeFrom(ctx context.Context, ref Ref) ([]byte, error) {
+	_, raw, err := m.AppSyncedFrom(ctx, ref)
+	return raw, err
+}
+
+// AppSyncedFrom is AppComposeFrom with the app itself, for a caller that needs
+// more of the store's copy than its compose bytes — the update flow refreshes
+// the app's seed tree from CatalogApp.Dir() at the same time, and both have to
+// come from the same sync or the two halves could disagree.
+func (m *Manager) AppSyncedFrom(ctx context.Context, ref Ref) (*CatalogApp, []byte, error) {
 	if ref.Merged() {
-		_, raw, err := m.Get(ref.ID)
-		return raw, err
+		return m.Get(ref.ID)
 	}
 	m.syncMu.Lock()
 	root, err := m.syncStore(ctx, ref.URL, ref.Apps())
 	m.syncMu.Unlock()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	_, raw, err := m.appIn(root, ref)
-	return raw, err
+	return m.appIn(root, ref)
 }
 
 // appIn finds app id in an extracted store root and reads its compose file. It
@@ -657,7 +669,7 @@ func extractZip(zr *zip.Reader, dest string) error {
 		if err != nil {
 			return err
 		}
-		out, err := os.Create(target)
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, storeFileMode(f.Mode()))
 		if err != nil {
 			rc.Close()
 			return err
@@ -670,6 +682,21 @@ func extractZip(zr *zip.Reader, dest string) error {
 		}
 	}
 	return nil
+}
+
+// storeFileMode is the permission an extracted store file gets: 0755 if the
+// archive marked it executable, 0644 otherwise.
+//
+// Only the exec bit is carried over. A store is a downloaded zip, and honouring
+// its modes wholesale would let one land a setuid or world-writable file in the
+// cache; discarding them entirely (which os.Create did) loses the one bit that
+// carries meaning — an app's seed tree ships scripts, and a script that arrives
+// without +x is a broken install with no declaration to fix it.
+func storeFileMode(m fs.FileMode) fs.FileMode {
+	if m.Perm()&0o111 != 0 {
+		return 0o755
+	}
+	return 0o644
 }
 
 // findStoreRoot locates the store root inside an extracted archive: the

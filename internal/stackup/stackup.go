@@ -29,8 +29,12 @@ import (
 
 // Spec is an app's lifecycle declaration, merged across its compose files.
 type Spec struct {
-	Folders []xcomposeapp.Folder
-	Hooks   xcomposeapp.Hooks
+	Folders   []xcomposeapp.Folder
+	Hooks     xcomposeapp.Hooks
+	Secrets   xcomposeapp.StringMap
+	Variables xcomposeapp.StringMap
+	Files     []xcomposeapp.File
+	Init      []xcomposeapp.InitStep
 }
 
 // Load resolves the lifecycle spec from an app's compose files, in the order
@@ -65,6 +69,7 @@ func Load(files []string) Spec {
 			spec.Hooks.PostInstall = h
 		}
 		spec.Hooks.PreUp, spec.Hooks.PostUp = ca.Hooks.PreUp, ca.Hooks.PostUp
+		spec.Secrets, spec.Variables, spec.Files, spec.Init = ca.Secrets, ca.Variables, ca.Files, ca.Init
 	}
 	return spec
 }
@@ -115,7 +120,8 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 	}
 	spec := Load(files)
 
-	if err := Prepare(cfg, project, dir, spec); err != nil {
+	captures, err := Converge(ctx, cfg, project, dir, spec)
+	if err != nil {
 		return err
 	}
 	if h := spec.Hooks.PreUp; h != "" {
@@ -126,12 +132,68 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 	if err := composecmd.Up(ctx, dir, project, files, envinject.Env(cfg, project)); err != nil {
 		return err
 	}
+	// After the stack is up: a seeder that needs the app's own network, or a
+	// service of it to answer. Logged and swallowed like the post_up hook — the
+	// app is already running, and taking a healthy stack back down over a failed
+	// after-the-fact tweak is the worse outcome.
+	if err := RunInit(ctx, cfg, project, dir, xcomposeapp.PhasePostUp, spec.Init, captures); err != nil {
+		log.Printf("%s: %v", project, err)
+	}
 	if h := spec.Hooks.PostUp; h != "" {
 		if err := RunHook(ctx, cfg, project, dir, h); err != nil {
 			log.Printf("%s: post_up hook: %v", project, err)
 		}
 	}
 	return nil
+}
+
+// Converge brings the app's declared state into being, in the one order every
+// path into a stack goes through: directories, then the values its templates
+// reference, then the files themselves.
+//
+//	folders → secrets → variables → init(pre_up) → seed → files
+//
+// Each step is idempotent and each is fatal: an app whose directory is missing,
+// whose secret could not be generated, or whose config file could not be
+// written must not start. Getting that wrong is what the shell version did —
+// a failed substitution left a file that looked initialised, and the app came
+// up broken and stayed that way.
+//
+// Later steps in this sequence (init, seed, files) are added by their own files
+// in this package.
+func Converge(ctx context.Context, cfg config.Config, project, dir string, spec Spec) (map[string]string, error) {
+	if err := Prepare(cfg, project, dir, spec); err != nil {
+		return nil, err
+	}
+	// What an init step prints lands here and overlays the app's .env for
+	// everything rendered after it — the seed tree and `files`. It lives only for
+	// this converge: a derived value is re-derived, not remembered.
+	captures := map[string]string{}
+	if err := EnsureSecrets(cfg, project, dir, spec.Secrets, captures); err != nil {
+		return nil, err
+	}
+	if err := EnsureVariables(cfg, project, dir, spec.Variables, captures); err != nil {
+		return nil, err
+	}
+	if err := RunInit(ctx, cfg, project, dir, xcomposeapp.PhasePreUp, spec.Init, captures); err != nil {
+		return nil, err
+	}
+	// The seed tree leaves a files entry's target alone: files owns it, and an
+	// ensure: always file must not be briefly seeded with a stale render first.
+	if err := EnsureSeed(cfg, project, dir, ClaimedPaths(cfg, project, dir, spec.Files), captures); err != nil {
+		return nil, err
+	}
+	if err := EnsureFiles(cfg, project, dir, spec.Files, captures); err != nil {
+		return nil, err
+	}
+	return captures, nil
+}
+
+// readEnvFile reads an app's .env, or returns nil when it has none yet — every
+// caller here treats "no file" and "empty file" the same way.
+func readEnvFile(dir string) []byte {
+	b, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	return b
 }
 
 // Prepare creates the directories the app needs before anything touches its
@@ -148,8 +210,7 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 // Prepare is idempotent, so the installer can call it early — before the
 // pre_install hook — and let Up call it again at up time.
 func Prepare(cfg config.Config, project, dir string, spec Spec) error {
-	envFile, _ := os.ReadFile(filepath.Join(dir, ".env"))
-	return EnsureFolders(cfg, project, spec.Folders, envFile)
+	return EnsureFolders(cfg, project, spec.Folders, readEnvFile(dir))
 }
 
 // RunHook runs a lifecycle hook. Hooks execute in Maison's own container
@@ -209,10 +270,8 @@ func RunHook(ctx context.Context, cfg config.Config, project, dir, script string
 // variables a hook needs to reach the host daemon and its own app directory.
 func hookEnv(cfg config.Config, project, dir string) []string {
 	env := envinject.Env(cfg, project)
-	if b, err := os.ReadFile(filepath.Join(dir, ".env")); err == nil {
-		for k, v := range envinject.EnvFileVars(b) {
-			env = append(env, k+"="+v)
-		}
+	for k, v := range envinject.EnvFileVars(readEnvFile(dir)) {
+		env = append(env, k+"="+v)
 	}
 	return append(env,
 		"PATH="+hookPath(),

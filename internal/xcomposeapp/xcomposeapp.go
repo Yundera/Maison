@@ -10,6 +10,7 @@ package xcomposeapp
 
 import (
 	"errors"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -93,6 +94,239 @@ type App struct {
 	// hooks that bracket install and up. See docs/x-compose-app.md.
 	Folders []Folder `yaml:"folders,omitempty"`
 	Hooks   Hooks    `yaml:"hooks,omitempty"`
+
+	// Secrets are values generated ONCE and ensured in the app's .env — a key
+	// already carrying a value is reused, never regenerated, because a rotated
+	// signing key is indistinguishable from data loss to the app that signed with
+	// the old one. Values are generator specs (see internal/secretgen), never
+	// literals: that is what lets a plain map be read unambiguously.
+	Secrets StringMap `yaml:"secrets,omitempty"`
+
+	// Files are individual files Maison writes into the app's tree. It is the
+	// escape hatch beside the seed convention, not the main road: a file only
+	// needs an entry here when the seed tree cannot express it — because it must
+	// be re-rendered on every up (ensure: always), or because it needs an owner
+	// or mode other than the default.
+	Files []File `yaml:"files,omitempty"`
+
+	// Init are one-shot containers run around the app's own stack: the cases that
+	// genuinely need a container rather than a declaration — seeding a database
+	// with the app's own binary, or computing a value for a config file.
+	Init []InitStep `yaml:"init,omitempty"`
+
+	// Variables are ordinary templates ensured in the app's .env on every up, so
+	// a value derived from the deployment (a domain, a URL) follows the
+	// deployment instead of freezing at install time. Values are always
+	// templates, never generator specs — the counterpart split to Secrets.
+	Variables StringMap `yaml:"variables,omitempty"`
+}
+
+// Ensure modes for a File: written once if absent, or re-rendered on every up.
+const (
+	// EnsureOnce writes the file only when it is not there. The default, and what
+	// a seed file does.
+	EnsureOnce = "once"
+	// EnsureAlways re-renders on every up, so a config that embeds a deployment
+	// value (a domain, a URL) follows a change to it instead of freezing at
+	// install time. The app or an operator editing such a file will lose the edit
+	// on the next start, which is the trade the declaration is making.
+	EnsureAlways = "always"
+)
+
+// File is one file Maison ensures in the app's tree.
+//
+// Content comes from exactly one of From (a path in the app's seed tree, rendered
+// if it carries the .tmpl suffix) or Content (an inline body, always rendered).
+type File struct {
+	Path    string `yaml:"path,omitempty"`
+	From    string `yaml:"from,omitempty"`
+	Content string `yaml:"content,omitempty"`
+	// Ensure is EnsureOnce (default) or EnsureAlways.
+	Ensure string `yaml:"ensure,omitempty"`
+	// User, Group and Mode carry the same meaning, defaults and quoting rule as
+	// on Folder — mode: "0644" must be quoted.
+	User  string `yaml:"user,omitempty"`
+	Group string `yaml:"group,omitempty"`
+	Mode  string `yaml:"mode,omitempty"`
+}
+
+// UnmarshalYAML decodes the scalar fields as text, so `mode: 0644` and
+// `user: 1000` survive YAML's retyping the way Folder's do.
+func (f *File) UnmarshalYAML(n *yaml.Node) error {
+	var raw struct {
+		Path    text `yaml:"path"`
+		From    text `yaml:"from"`
+		Content text `yaml:"content"`
+		Ensure  text `yaml:"ensure"`
+		User    text `yaml:"user"`
+		Group   text `yaml:"group"`
+		Mode    text `yaml:"mode"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	*f = File{
+		Path:    string(raw.Path),
+		From:    string(raw.From),
+		Content: string(raw.Content),
+		Ensure:  string(raw.Ensure),
+		User:    string(raw.User),
+		Group:   string(raw.Group),
+		Mode:    string(raw.Mode),
+	}
+	return nil
+}
+
+// When an init step runs, and which side of `compose up` it runs on.
+const (
+	// WhenOnce runs the step the first time and remembers that it has, so a
+	// seeder that refuses to run twice (filebrowser's `config init` aborts, and
+	// aborts the whole hook with it) is not asked to.
+	WhenOnce = "once"
+	// WhenAlways runs it on every up.
+	WhenAlways = "always"
+	// WhenAbsentPrefix guards on a path: `absent:/DATA/AppData/x/db/db.sqlite`
+	// runs the step only while that file is missing. It is the declarative form
+	// of the `if [ ! -f ]` every one of these hooks opens with.
+	WhenAbsentPrefix = "absent:"
+
+	// PhasePreUp runs the step before `compose up` (the default).
+	PhasePreUp = "pre_up"
+	// PhasePostUp runs it after, for a seeder that needs the app's own network or
+	// a running service to talk to.
+	PhasePostUp = "post_up"
+)
+
+// InitStep is one one-shot container.
+//
+// Volume sources are HOST paths, resolved by the daemon like a hook's
+// `docker run -v`; the path in When is resolved by Maison and so is
+// container-side. That split is inherent — two different processes resolve them —
+// which is why both spellings live in one struct.
+type InitStep struct {
+	Name       string   `yaml:"name,omitempty"`
+	Image      string   `yaml:"image,omitempty"`
+	Entrypoint StrList  `yaml:"entrypoint,omitempty"`
+	Command    StrList  `yaml:"command,omitempty"`
+	User       string   `yaml:"user,omitempty"`
+	Env        EnvList  `yaml:"environment,omitempty"`
+	Volumes    []string `yaml:"volumes,omitempty"`
+	Network    string   `yaml:"network,omitempty"`
+	// When is WhenOnce (default), WhenAlways, or WhenAbsentPrefix + a path.
+	When string `yaml:"when,omitempty"`
+	// Capture names a variable to bind the step's stdout to, visible to the seed
+	// renderer and to `files` for the rest of this converge. It is not written to
+	// the app's .env unless a `variables` entry asks for it.
+	Capture string `yaml:"capture,omitempty"`
+	// Phase is PhasePreUp (default) or PhasePostUp.
+	Phase string `yaml:"phase,omitempty"`
+}
+
+// StrList is compose's command/entrypoint shape: a list, or a string split on
+// whitespace with quoted runs kept together.
+type StrList []string
+
+// UnmarshalYAML accepts either form, because an author writing
+// `command: config init --database /db/db.sqlite` is writing what they would type.
+func (l *StrList) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		*l = splitArgs(n.Value)
+		return nil
+	}
+	var out []string
+	if err := n.Decode(&out); err != nil {
+		return err
+	}
+	*l = out
+	return nil
+}
+
+// splitArgs splits a command string on whitespace, honouring single and double
+// quotes so a password or a path with a space survives as one argument.
+//
+// It is not a shell: no expansion, no escaping, no operators. The result is
+// passed to the daemon as argv and never to a shell, which is the difference
+// between this and the hook it replaces.
+func splitArgs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	var quote rune
+	inWord := false
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			inWord = true
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if inWord {
+				out = append(out, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		default:
+			cur.WriteRune(r)
+			inWord = true
+		}
+	}
+	if inWord {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// EnvList is compose's environment shape: a KEY=VALUE list or a mapping,
+// normalised to the list form the Docker API takes.
+type EnvList []string
+
+// UnmarshalYAML accepts both forms.
+func (e *EnvList) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.MappingNode {
+		var m map[string]text
+		if err := n.Decode(&m); err != nil {
+			return err
+		}
+		out := make([]string, 0, len(m))
+		for k, v := range m {
+			out = append(out, k+"="+string(v))
+		}
+		sort.Strings(out) // a mapping has no order; the container should still be reproducible
+		*e = out
+		return nil
+	}
+	var out []string
+	if err := n.Decode(&out); err != nil {
+		return err
+	}
+	*e = out
+	return nil
+}
+
+// StringMap is a YAML mapping whose values are taken verbatim as text.
+//
+// It exists so `variables: PORT: 8080` and `secrets: KEY: hex:32` are read the
+// same way: plain map[string]string refuses the first (YAML types it as an int),
+// and the extension block round-trips through map[string]any before it reaches
+// here, so a retyped scalar cannot be recovered later.
+type StringMap map[string]string
+
+// UnmarshalYAML decodes each value through text, which accepts any scalar.
+func (m *StringMap) UnmarshalYAML(n *yaml.Node) error {
+	var raw map[string]text
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	out := make(StringMap, len(raw))
+	for k, v := range raw {
+		out[k] = string(v)
+	}
+	*m = out
+	return nil
 }
 
 // Dashboard views an app's tile can land in (the `view` field).

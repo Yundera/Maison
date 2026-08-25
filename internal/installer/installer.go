@@ -289,6 +289,14 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 		return err
 	}
 
+	// The store's seed tree, copied in beside the compose file so the app folder
+	// carries everything it needs to converge later without the store (see
+	// writeSeed and stackup.EnsureSeed). The files themselves are written out by
+	// the converge below, not here.
+	if err := writeSeed(app, appDir); err != nil {
+		return err
+	}
+
 	// Prefill the app's .env from the deployment's .env.app (merged with the vars
 	// Maison computes per app), so its compose resolves offline and the operator
 	// can hand-edit it afterwards — see docs/app-model.md and internal/appenv.

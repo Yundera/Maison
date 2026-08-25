@@ -12,6 +12,7 @@ package envinject
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -125,6 +126,45 @@ func Env(cfg config.Config, appID string) []string {
 // routinely reference the ambient vars (APP_DEFAULT_PASSWORD, DOMAIN, …) that
 // only exist in the process environment.
 func Render(s string, cfg config.Config, appID string, envFile []byte) string {
+	return expand(s, RenderVars(cfg, appID, envFile, nil), func(name string) string {
+		return "${" + name + "}" // leave references we don't own untouched
+	})
+}
+
+// RenderStrict renders s like Render but fails on a reference it cannot resolve,
+// naming every one of them.
+//
+// The difference is the whole reason both exist. Leaving `${FOO}` in place is
+// right for a tip, which a person reads and can shrug at; it is wrong for a file
+// an app is about to parse, where the literal `${SEARXNG_SECRET}` lands in
+// settings.yml and the app starts with a secret spelled as a variable name. That
+// is the failure mode this package exists to end, so a template that references
+// something nobody provides fails the up instead.
+//
+// extra overlays everything else — it carries the values captured from `init`
+// steps, which exist only for the duration of one converge and are not in any
+// file.
+func RenderStrict(s string, cfg config.Config, appID string, envFile []byte, extra map[string]string) (string, error) {
+	missing := map[string]bool{}
+	out := expand(s, RenderVars(cfg, appID, envFile, extra), func(name string) string {
+		missing[name] = true
+		return ""
+	})
+	if len(missing) > 0 {
+		names := make([]string, 0, len(missing))
+		for k := range missing {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		return "", fmt.Errorf("unresolved variable(s): ${%s}", strings.Join(names, "}, ${"))
+	}
+	return out, nil
+}
+
+// RenderVars is the variable set both renderers resolve against, lowest
+// precedence first: the process environment, the app's base variables, its
+// persisted .env, and finally extra (captures from `init`).
+func RenderVars(cfg config.Config, appID string, envFile []byte, extra map[string]string) map[string]string {
 	vars := map[string]string{}
 	for _, kv := range os.Environ() {
 		if k, v, ok := strings.Cut(kv, "="); ok {
@@ -137,12 +177,10 @@ func Render(s string, cfg config.Config, appID string, envFile []byte) string {
 	for k, v := range EnvFileVars(envFile) {
 		vars[k] = v
 	}
-	return os.Expand(s, func(k string) string {
-		if v, ok := vars[k]; ok {
-			return v
-		}
-		return "${" + k + "}" // leave references we don't own untouched
-	})
+	for k, v := range extra {
+		vars[k] = v
+	}
+	return vars
 }
 
 // EnvFileVars parses simple KEY=VALUE lines (the format EnvFile writes),

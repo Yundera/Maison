@@ -97,7 +97,7 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 		return res, fmt.Errorf("no update reference recorded for %q", project)
 	}
 
-	newBase, err := in.store.AppComposeFrom(ctx, ref)
+	app, newBase, err := in.store.AppSyncedFrom(ctx, ref)
 	if err != nil {
 		return res, err
 	}
@@ -128,6 +128,15 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 
 	if err := os.WriteFile(composePath, newBase, 0o644); err != nil {
 		return res, err
+	}
+	// The seed tree comes from the same sync as the compose above, so an update
+	// that adds, changes or drops a seed file is reflected before the stack comes
+	// back up. Files already written into the app folder are not touched — seeding
+	// is create-if-absent — so an update cannot silently revert an app's config.
+	// A failure here rolls back with everything else: the restore replaces the
+	// whole folder, SeedDir included.
+	if err := writeSeed(app, dir); err != nil {
+		return in.rollBack(ctx, project, res, err)
 	}
 
 	// stackup.Up creates any folder the updated compose newly introduces — declared

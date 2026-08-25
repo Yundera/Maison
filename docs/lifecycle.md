@@ -32,10 +32,12 @@ change. Five call sites, one guarantee.
   install ─────────────┤                                         │
   start (tile)  ───────┤          stackup.Up(project, files)     │
   store update ────────┤                                         │
-  save config  ────────┤   ensure folders                        │
-  save web-UI  ────────┤     → pre_up                            │
+  save config  ────────┤   converge:                             │
+  save web-UI  ────────┤     folders → secrets → variables       │
+                       │       → init(pre_up) → seed → files     │
+                       │     → pre_up                            │
                        │       → docker compose up -d            │
-                       │         → post_up                       │
+                       │         → init(post_up) → post_up       │
                        └─────────────────────────────────────────┘
 ```
 
@@ -52,13 +54,24 @@ recreates a removed one, and re-applies a changed compose, all with the same cal
 
 | Step | What happens | On failure |
 |---|---|---|
-| **1. Resolve the spec** | Read `x-compose-app` (`folders`, `hooks`) from base + override, with `x-casaos` `pre-install-cmd` / `post-install-cmd` as the fallback for the install hooks. Later files win, key by key. | — |
+| **1. Resolve the spec** | Read `x-compose-app` (`folders`, `secrets`, `variables`, `files`, `init`, `hooks`) from base + override, with `x-casaos` `pre-install-cmd` / `post-install-cmd` as the fallback for the install hooks. Later files win, key by key. | — |
 | **2. Ensure folders** | Create every folder declared under `folders`; apply user/group/mode; walk the tree when `recursive`. Declared folders are the *only* directories Maison creates — it never infers them from `volumes:`. | **Fatal** — a declared folder is the author's contract. |
-| **3. `pre_up`** | Run the hook. | **Fatal** — a precondition that doesn't hold must not start the stack. |
-| **4. `docker compose up -d`** | Base + override, with the app's `.env` and interpolation variables. | **Fatal.** |
-| **5. `post_up`** | Run the hook. | **Logged and swallowed** — the stack is already running; tearing a healthy app back down over a failed after-the-fact tweak is worse than the failed tweak. |
+| **3. Secrets** | Generate each `secrets` value the app's `.env` does not already carry, and write it there. A key already holding a value is **reused, never regenerated**. | **Fatal.** |
+| **4. Variables** | Render each `variables` template and refresh it in `.env`, so a derived value follows the deployment instead of freezing. | **Fatal.** |
+| **5. `init` (pre_up)** | Run each one-shot container whose `when:` guard says it is due; bind `capture:` output for the renderers below. | **Fatal** — a stack must not start on a store that was never seeded. |
+| **6. Seed** | Mirror the app's `.seed` tree into its folder: `.tmpl` rendered, everything else copied, **create-if-absent**. Paths a `files` entry claims are left to it. | **Fatal** — including an unresolved `${VAR}` in a template. |
+| **7. Files** | Write each `files` entry: `ensure: once` skips an existing file, `ensure: always` re-renders it. | **Fatal.** |
+| **8. `pre_up`** | Run the hook. | **Fatal** — a precondition that doesn't hold must not start the stack. |
+| **9. `docker compose up -d`** | Base + override, with the app's `.env` and interpolation variables. | **Fatal.** |
+| **10. `init` (post_up)** | Run each `phase: post_up` step — a seeder that needs the app's own network or a running service. | **Logged and swallowed.** |
+| **11. `post_up`** | Run the hook. | **Logged and swallowed** — the stack is already running; tearing a healthy app back down over a failed after-the-fact tweak is worse than the failed tweak. |
 
-The asymmetry in 3 vs 5 is deliberate and worth internalising: **pre-hooks gate,
+Steps 2–7 are the **converge**: everything the app declared, brought into being
+before anything runs. Every one of them is idempotent, and every one of them is
+fatal, because the failure they replace was not — a shell hook whose `openssl`
+was missing wrote an empty secret and exited 0.
+
+The asymmetry in 8 vs 11 is deliberate and worth internalising: **pre-hooks gate,
 post-hooks garnish.** Anything flaky in a `pre_up` blocks the app on *every* start.
 
 A hook is also failed when it calls a command outside the set Maison makes
@@ -83,21 +96,28 @@ that knows the app is being installed for the *first* time.
                                 install/update, never otherwise)
  4. write .env                 (prefilled, and NEVER clobbered if one already exists)
  5. write the update reference into the override's x-compose-app
- 6. ensure folders             ← early, because pre_install seeds files into them
- 7. pull images                (Download progress bar, 0 → 100)
- 8. pre_install hook           ← fatal on failure
- 9. ┌ stackup.Up ─────────────────────────────────────┐
-    │ ensure folders (again, idempotent)              │   (Start progress bar)
-    │ pre_up → compose up -d → post_up                │
+ 6. copy the store's seed/ tree to .seed   (the app folder stands on its own after)
+ 7. ensure folders             ← early, because pre_install seeds files into them
+ 8. pull images                (Download progress bar, 0 → 100)
+ 9. pre_install hook           ← fatal on failure
+10. ┌ stackup.Up ─────────────────────────────────────┐
+    │ converge (again, idempotent):                   │   (Start progress bar)
+    │   folders → secrets → variables → init          │
+    │   → seed → files                                │
+    │ pre_up → compose up -d → init(post_up) → post_up│
     └─────────────────────────────────────────────────┘
-10. post_install hook          ← logged, not fatal
-11. await readiness            (poll Docker until running + healthy, ~30s)
+11. post_install hook          ← logged, not fatal
+12. await readiness            (poll Docker until running + healthy, ~30s)
 ```
 
-Folders are ensured **twice** — at step 6 and again inside step 9. That is not
-redundancy to clean up: step 6 is what makes them exist before the `pre_install`
-hook and the image pull, and step 9 is what makes them exist for every *later*
+Folders are ensured **twice** — at step 7 and again inside step 10. That is not
+redundancy to clean up: step 7 is what makes them exist before the `pre_install`
+hook and the image pull, and step 10 is what makes them exist for every *later*
 start, when there is no installer in the picture at all.
+
+Step 6 copies, it does not write: the store's `seed/` becomes the app's own
+`.seed/`, and the files themselves are written by the converge in step 10 — so
+the same code path seeds a fresh install and re-seeds every later start.
 
 Steps 4–5 are the non-destructive contract that makes "install from backup" work
 without special-casing: the strict base is meant to be replaceable, an existing
@@ -143,11 +163,13 @@ install time (`store` + `store-app-id`).
 2. equal to what's on disk, byte for byte? → nothing to do, report "up to date"
 3. back up the app  ← the rollback point, taken before anything is written
 4. overwrite docker-compose.yml (the strict base only)
-5. stackup.Up  → folders (including any the new version introduces) → pre_up → up → post_up
-6. Up failed? → restore the rollback point and report both failures
+5. refresh .seed from the same store sync as the compose above
+6. stackup.Up  → converge (folders, secrets, variables, init, seed, files — including
+                 anything the new version introduces) → pre_up → up → post_up
+7. Up failed? → restore the rollback point and report both failures
 ```
 
-Step 4 is **always the local engine**, whatever engine is configured for scheduled
+The rollback point (step 3) is **always the local engine**, whatever engine is configured for scheduled
 backups. A rollback happens in the seconds after an update broke something, so it
 has to be a rename; restoring from a repository is a download, and the app would be
 broken for the duration. These are ordinary local archives, so the nightly run's
@@ -159,7 +181,7 @@ to hold a second copy of — **the update still proceeds**, and the response car
 the largest apps on old versions, including for security fixes, which is the worse
 failure.
 
-Step 7 restores the whole folder, so it takes the old compose with it: the app
+The restore (step 7) replaces the whole folder, so it takes the old compose with it: the app
 returns to the state the rollback point captured rather than to a new compose running
 against old data. A rolled-back update still reports as a **failure** — the app is
 running the old version, and rendering that as success would be a lie.

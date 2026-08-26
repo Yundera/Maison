@@ -156,6 +156,63 @@ durable storage and back.**
 That boundary is what keeps a plugin from being able to extend an app's downtime or
 produce an inconsistent snapshot.
 
+### Progress: engines report, Maison derives
+
+> **An engine reports what it observed. Everything computed from that is computed in
+> one place, the same way, for every engine.**
+
+A provider fills in as much of `apps.Event` as it happens to know — a percentage, byte
+counts, a message, or nothing but a message. It is never asked to declare which of
+those it can do, because the answer varies *within* one operation rather than between
+engines: kopia reports nothing but a message while it is still estimating the tree,
+then bytes and a percentage once it knows.
+
+`apps.Tracker` turns that stream into a transfer rate and a time remaining:
+
+| The engine reports | What the user gets |
+|---|---|
+| Bytes done and expected | Bar, rate, ETA |
+| A percentage only | Bar, ETA (from elapsed × (100−p)/p) |
+| Neither | Indeterminate bar, elapsed time |
+
+The percentage-only row is the one that makes this generic rather than kopia-shaped:
+a new engine that can only say how far along it is still gets a usable estimate, and
+the local engine — which knows its total exactly, because `mirror` walks the tree
+first — has the most trustworthy numbers on the box.
+
+**An engine's own ETA is deliberately not used**, though kopia prints one. It is
+engine-specific (the next engine's would have different semantics and different
+smoothing, so the number under the bar would mean something different depending on
+where the backup was going) and it is not available uniformly (kopia reports none
+while estimating; the local engine reports none ever), so the fallback has to exist
+regardless. Parsing one engine's output stops at `internal/backup/kopia/progress.go`;
+nothing downstream of `apps.Event` knows which engine it is talking to.
+
+Three rules the tracker exists to enforce, all of them about not lying:
+
+- **Estimates are per phase, and reset at every boundary.** The tracks are cumulative
+  on the wire, so an estimate carried from the live pass into the stopped pass would
+  describe work that finished a minute ago. The reset also produces the most useful
+  number on the screen for free: the stopped pass's ETA is *how much longer the app is
+  down*.
+- **Nothing is shown until it is worth showing** — five seconds of samples and at
+  least 2% done. An ETA offered in the first second is always wrong, and being wrong
+  early is how a progress indicator teaches people to ignore it.
+- **A total is allowed to move.** An engine discovering the tree as it walks it revises
+  its estimate upward, so a count can go backwards relative to it. That is normal, not
+  a fault.
+
+The whole-box run reports through the same path: each target's progress is mirrored
+into `backup.RunState` from the very events that drive the app's tile, so the two can
+never disagree about what an app is doing. Targets are enumerated *before* the first
+one starts, which is what lets the page say "3 of 9" and show what is still to come.
+
+A target the run deliberately did not attempt is **skipped**, not failed — the
+user-data set while a restore is rewriting it, or an app somebody is already backing
+up by hand. The distinction is not cosmetic: a failure mails the operator "backups are
+failing on your server", and sending that for a box where the right thing happened is
+how a useful alert becomes a filter rule.
+
 ### The rule that survives a provider switch
 
 > **The active provider governs writes only.**
@@ -824,11 +881,6 @@ handling lives on this side and retrofitting it during an incident is expensive.
 ## Not yet decided
 
 - **Which SMTP transport** Maison uses.
-- **Progress reporting granularity.** Engines emit clean JSON *results* but no clean
-  JSON *progress* stream. Either stderr is parsed or the bar is indeterminate for v1 —
-  which argues for making upload progress **optional** in the provider interface
-  rather than required, so an engine that can only report start and end is still
-  shippable.
 - **What "custom" means** in the engine picker. *User supplies a command* means Maison
   executes an arbitrary binary as root with app data and storage credentials in
   scope — a deliberate remote-execution surface that deserves an explicit decision.

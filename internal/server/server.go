@@ -104,9 +104,18 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// The two must not write the same tree at once, in either order: a restore during a
 	// run would be restoring under a snapshot, and a run during a restore would snapshot
 	// a half-restored state. Each refuses while the other is working.
+	// The restore's own progress rides the same channel: it has no tile either, and
+	// its OnChange was previously unset, so the card polled for it.
+	s.userData.OnChange = throttle(300*time.Millisecond, s.broadcastBackup)
 	s.userData.Busy = func() bool { return s.backupSched.State().Running }
 	s.backupSched.RestoreInProgress = func() bool { return s.userData.State().Running }
-	s.backupSched.OnChange = throttle(300*time.Millisecond, s.broadcastApps)
+	// Both channels, because a run moves two things at once: the target plan on the
+	// settings page, and the bar on the tile of whichever app is being backed up.
+	s.backupSched.OnChange = throttle(300*time.Millisecond, func() {
+		s.broadcastApps()
+		s.broadcastBackup()
+	})
+	s.hub.BackupSnapshot = s.backupSnapshot
 	s.backupSched.Start(context.Background())
 	// Hand the user their encryption key without waiting to be asked. A key that only
 	// ever leaves the box when someone clicks a button is a key most users never take
@@ -384,6 +393,10 @@ func overlayBackups(list []apps.App, backups []apps.BackupState) []apps.App {
 		list[i].Compress = st.Compress
 		list[i].Phase = st.Phase
 		list[i].BackupError = st.Error
+		list[i].BackupDone = st.Done
+		list[i].BackupTotal = st.Total
+		list[i].BackupRate = st.Rate
+		list[i].BackupETA = st.ETA
 	}
 	return list
 }
@@ -418,6 +431,30 @@ func throttle(d time.Duration, fn func()) func() {
 // broadcastApps pushes the current app list to "apps" channel subscribers. The
 // snapshot is built lazily: with no subscriber there is nothing to send and
 // reconciling the list is pure waste (see live.Hub.BroadcastLazy).
+func (s *Server) broadcastBackup() {
+	s.hub.BroadcastLazy(live.ChannelBackup, s.backupSnapshot)
+}
+
+// backupSnapshot is what the "backup" channel carries: the run and the user-data
+// restore, and deliberately nothing else.
+//
+// Not the engine status the settings page fetches on open — that probes each engine's
+// repository, which for a remote one is a subprocess, and this is pushed several
+// times a second while a backup runs.
+func (s *Server) backupSnapshot() any {
+	snap := struct {
+		Run     backup.RunState     `json:"run"`
+		Restore backup.RestoreState `json:"restore"`
+	}{}
+	if s.backupSched != nil {
+		snap.Run = s.backupSched.State()
+	}
+	if s.userData != nil {
+		snap.Restore = s.userData.State()
+	}
+	return snap
+}
+
 func (s *Server) broadcastApps() {
 	s.hub.BroadcastLazy(live.ChannelApps, s.appsSnapshot)
 }

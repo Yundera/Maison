@@ -103,6 +103,15 @@ type App struct {
 	Sync        float64 `json:"sync,omitempty"`
 	Compress    float64 `json:"compress,omitempty"`
 	BackupError string  `json:"backup_error,omitempty"`
+	// What the bar is made of, beyond how full it is: the byte counts behind the
+	// current phase, the transfer rate, and how long the phase has left. All four are
+	// omitted when unknown — which is the honest answer for an engine that reports no
+	// byte counts, and for the opening seconds of one that does — so the tile shows a
+	// plain bar rather than "0 B/s, 0s left".
+	BackupDone  int64   `json:"backup_done,omitempty"`
+	BackupTotal int64   `json:"backup_total,omitempty"`
+	BackupRate  float64 `json:"backup_rate,omitempty"`
+	BackupETA   int     `json:"backup_eta,omitempty"`
 }
 
 // Health verdicts, aggregated across a project's containers.

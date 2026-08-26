@@ -77,6 +77,15 @@ type RestoreState struct {
 	Running bool   `json:"running"`
 	Stamp   string `json:"stamp,omitempty"`
 	Message string `json:"message,omitempty"`
+	// The same five numbers every other long operation on the box reports, derived by
+	// apps.Tracker from whatever the engine managed to say. A restore of the user-data
+	// set is the longest thing Maison ever does and the one with no tile to fall back
+	// on, so "Restoring your files" with no bar was the worst case of the lot.
+	Pct   float64 `json:"pct"`
+	Done  int64   `json:"done,omitempty"`
+	Total int64   `json:"total,omitempty"`
+	Rate  float64 `json:"rate,omitempty"`
+	ETA   int     `json:"eta,omitempty"`
 	// InPlace distinguishes the destructive mode, because the two failures mean very
 	// different things: a failed copy into a new folder has left nothing behind, and a
 	// failed in-place restore has not.
@@ -312,6 +321,7 @@ func (u *UserData) Restore(ctx context.Context, engine, stamp string, opts apps.
 	}
 	u.state = RestoreState{
 		Running: true, Stamp: stamp, InPlace: inPlace, Message: "Preparing",
+		Pct:         apps.PctUnknown,
 		Interrupted: u.state.Interrupted, InterruptedStamp: u.state.InterruptedStamp,
 	}
 	u.mu.Unlock()
@@ -384,16 +394,28 @@ func humanBytes(n int64) string {
 // restore is the body of a started restore, so the guards read in order.
 func (u *UserData) restore(ctx context.Context, e UserDataRestoreEngine, stamp string, opts apps.UserDataRestoreOpts, inPlace bool, emit func(apps.Event)) error {
 	track := func(msg string) {
-		u.progress(msg)
+		u.progress(apps.Event{Pct: apps.PctUnknown, Message: msg}, apps.Progress{Pct: apps.PctUnknown})
 		if emit != nil {
-			emit(apps.Event{Message: msg})
+			emit(apps.Event{Pct: apps.PctUnknown, Message: msg})
+		}
+	}
+	// One tracker per phase-worth of work. The undo snapshot and the restore proper are
+	// separate operations against the same tree at different speeds, so they are given
+	// separate phase names rather than one estimate spanning both.
+	observe := func(phase string) func(apps.Event) {
+		tr := &apps.Tracker{}
+		return func(ev apps.Event) {
+			u.progress(ev, tr.Observe(phase, ev.Pct, ev.Done, ev.Total))
+			if emit != nil {
+				emit(ev)
+			}
 		}
 	}
 
 	if inPlace {
 		// Guard 1: the undo snapshot. Refusing here is the whole point — see Restore.
 		track("Backing up the current files first, so this can be undone")
-		if _, err := e.BackupUserData(ctx, u.now().Format(apps.StampLayout)); err != nil {
+		if _, err := e.BackupUserData(ctx, u.now().Format(apps.StampLayout), observe(apps.PhaseCopy)); err != nil {
 			return fmt.Errorf("could not back up the current files first, so nothing was changed: %w", err)
 		}
 		// Guard 2: the marker. Written before the first byte and cleared only on success.
@@ -403,14 +425,7 @@ func (u *UserData) restore(ctx context.Context, e UserDataRestoreEngine, stamp s
 	}
 
 	track("Restoring your files")
-	if err := e.RestoreUserData(ctx, stamp, opts, func(ev apps.Event) {
-		if ev.Message != "" {
-			u.progress(ev.Message)
-		}
-		if emit != nil {
-			emit(ev)
-		}
-	}); err != nil {
+	if err := e.RestoreUserData(ctx, stamp, opts, observe(apps.PhaseRestore)); err != nil {
 		return err
 	}
 
@@ -424,9 +439,17 @@ func (u *UserData) restore(ctx context.Context, e UserDataRestoreEngine, stamp s
 	return nil
 }
 
-func (u *UserData) progress(msg string) {
+// progress records one report. A message-less event keeps whatever the last message
+// was: engines emit far more progress lines than distinct messages, and blanking the
+// caption between them makes it flicker.
+func (u *UserData) progress(ev apps.Event, p apps.Progress) {
 	u.mu.Lock()
-	u.state.Message = msg
+	if ev.Message != "" {
+		u.state.Message = ev.Message
+	}
+	u.state.Pct = p.Pct
+	u.state.Done, u.state.Total = ev.Done, ev.Total
+	u.state.Rate, u.state.ETA = p.Rate, int(p.ETA.Seconds())
 	u.mu.Unlock()
 	u.changed()
 }
@@ -435,6 +458,8 @@ func (u *UserData) finish(err error) {
 	u.mu.Lock()
 	u.state.Running = false
 	u.state.Message = ""
+	u.state.Pct, u.state.Done, u.state.Total = apps.PctUnknown, 0, 0
+	u.state.Rate, u.state.ETA = 0, 0
 	if err != nil {
 		u.state.Error = err.Error()
 	} else {

@@ -2,6 +2,7 @@
   import { get } from 'svelte/store'
   import { clickOutside } from '../actions'
   import { appAction, appProgress, dismissAppError, openApp, appUrl, type App } from '../stores/apps'
+  import { renderDuration, renderRate, renderSize } from '../format'
   import { removeLink, type Link } from '../stores/links'
   import { settingsApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
   import { openStore } from '../route'
@@ -32,6 +33,17 @@
   // is (blue download, green start, red uninstall). Same source as the store's
   // install pill, so the two always agree.
   const progress = $derived(tile.kind === 'app' ? appProgress(tile.app) : null)
+  const progressEta = $derived(renderDuration(progress?.eta))
+  /** Bytes and rate, for the tooltip — everything the tile itself has no room for. */
+  const progressDetail = $derived.by(() => {
+    if (!progress) return ''
+    const bits: string[] = []
+    if (progress.total)
+      bits.push(`${renderSize(progress.done ?? 0)} / ${renderSize(progress.total)}`)
+    const rate = renderRate(progress.rate)
+    if (rate) bits.push(rate)
+    return bits.join(' · ')
+  })
   const progressing = $derived(progress !== null)
   const failure = $derived(
     tile.kind === 'app' ? (tile.app.install_error ?? '') || (tile.app.uninstall_error ?? '') : '',
@@ -160,7 +172,16 @@
 
   {#if progress}
     <div class="progress">
-      <span class="plabel one-line">{$t(progress.label)} {Math.round(progress.pct)}%</span>
+      <span class="plabel one-line" title={progressDetail}>
+        {$t(progress.label)}
+        {Math.round(progress.pct)}%
+      </span>
+      <!-- The one measured number a tile has room for. A tile is small, so the bytes
+           and the rate go in the tooltip and the time left gets the line: "3 min left"
+           answers the question people actually have in front of a progress bar. -->
+      {#if progressEta}
+        <span class="plabel one-line eta">{$t('backup_time_left', { time: progressEta })}</span>
+      {/if}
       <div class="pbar">
         <span class="pfill {progress.kind}" style:width={`${progress.pct}%`}></span>
       </div>
@@ -269,6 +290,9 @@
     flex-direction: column;
     gap: 3px;
     pointer-events: none;
+  }
+  .plabel.eta {
+    opacity: 0.75;
   }
   .plabel {
     font-size: 0.6rem;

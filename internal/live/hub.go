@@ -21,6 +21,15 @@ import (
 const (
 	ChannelSystem = "system"
 	ChannelApps   = "apps"
+	// ChannelBackup carries the whole-box run and the user-data restore.
+	//
+	// Separate from ChannelApps because it is the progress of things that have no
+	// tile: the user-data set is the largest target on the box and is not an app, and
+	// a run's plan — what is still to come — exists nowhere in the app list. Its
+	// payload is also cheap, where the app list is a host-wide container listing plus
+	// a YAML parse per app, so tying the two together would have made a byte counter
+	// the most expensive thing on the dashboard.
+	ChannelBackup = "backup"
 )
 
 const sampleInterval = 2 * time.Second
@@ -42,6 +51,10 @@ type Hub struct {
 
 	// AppsSnapshot, if set, returns the current app list for the "apps" channel.
 	AppsSnapshot func() any
+
+	// BackupSnapshot, if set, returns the current backup run/restore state for the
+	// "backup" channel.
+	BackupSnapshot func() any
 }
 
 // NewHub creates a hub sampling utilization via the given collector.
@@ -213,6 +226,13 @@ func (c *client) snapshot(h *Hub, channel string) {
 		if h.AppsSnapshot != nil {
 			if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
 				Data: mustJSON(h.AppsSnapshot())}); err == nil {
+				c.trySend(raw)
+			}
+		}
+	case ChannelBackup:
+		if h.BackupSnapshot != nil {
+			if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
+				Data: mustJSON(h.BackupSnapshot())}); err == nil {
 				c.trySend(raw)
 			}
 		}

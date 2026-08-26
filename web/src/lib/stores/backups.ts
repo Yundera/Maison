@@ -58,6 +58,14 @@ export interface UserDataRestoreState {
    *  outlives a restart — which is the whole point of it being a file. */
   interrupted: boolean
   interrupted_stamp?: string
+  /** The same progress a backup reports. This is the longest operation Maison ever
+   *  runs and the one with no tile to fall back on, so a caption with no bar was the
+   *  worst case on the box. -1 pct means not knowable yet. */
+  pct: number
+  done?: number
+  total?: number
+  rate?: number
+  eta?: number
 }
 
 /** Your files — everything at the data root except AppData, which each app backs up on

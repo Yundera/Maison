@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -46,11 +47,78 @@ func (t Target) ID() string {
 	return "app:" + t.App
 }
 
-// Result is what happened to one target.
-type Result struct {
-	Target Target `json:"target"`
-	Name   string `json:"name,omitempty"`
+// Target statuses, in the order a target passes through them.
+const (
+	StatusPending = "pending"
+	StatusRunning = "running"
+	StatusDone    = "done"
+	StatusFailed  = "failed"
+	// StatusSkipped is a target the run deliberately did not attempt, which is not
+	// the same as one that failed and must not be reported as one. The two cases are
+	// a user-data set that a restore is currently rewriting, and an app somebody is
+	// already backing up by hand — in both, the right thing happened.
+	//
+	// The distinction is not cosmetic: a failure mails the operator "backups are
+	// failing on your server", and doing that for a box where nothing is wrong is how
+	// a useful alert becomes a filter rule.
+	StatusSkipped = "skipped"
+)
+
+// skipError marks a target that was deliberately not attempted. The reason still
+// reaches the user — it is shown on the row — it simply does not count as a failure.
+type skipError struct{ reason string }
+
+func (e skipError) Error() string { return e.reason }
+
+// skip builds one. Exported behaviour, unexported type: nothing outside this package
+// decides what counts as a skip.
+func skip(format string, args ...any) error {
+	return skipError{reason: fmt.Sprintf(format, args...)}
+}
+
+func isSkip(err error) bool {
+	var s skipError
+	return errors.As(err, &s)
+}
+
+// TargetState is one target's place in a run: where it is, and — while it is the
+// one running — how it is getting on.
+//
+// The whole list is built before the first target starts, which is the point of it.
+// A run used to be a single string naming whatever was in flight, so until it
+// finished there was no way to know whether it was a quarter done or nearly there,
+// and the only thing on screen was a compose project name. Knowing the plan up front
+// turns that into "3 of 9", a checklist of what is coming, and — because the failures
+// stay in the list rather than being counted — a record of what went wrong that is
+// still readable when the run ends.
+//
+// Deliberately no display name: resolving one means asking Docker for every app on
+// the box, and the dashboard already holds the names and icons it renders elsewhere.
+// The identity travels; the presentation stays where presentation belongs.
+type TargetState struct {
+	ID   string `json:"id"`             // "app:jellyfin", or "userdata"
+	Kind Kind   `json:"kind"`           // app | userdata
+	App  string `json:"app,omitempty"`  // compose project; empty for user data
+	Name string `json:"name,omitempty"` // the backup this produced, once it has
+
+	Status string `json:"status"` // pending | running | done | failed
 	Err    string `json:"error,omitempty"`
+
+	// Live progress, meaningful while Status is running. Phase is the engine-agnostic
+	// step (apps.PhaseCopy, PhaseSync, …) and is what makes "the app is stopped right
+	// now" visible; the rest is what apps.Tracker derived from whatever the engine
+	// reported. Zero means not known — for Pct that is PctUnknown, since 0% is a real
+	// answer that must not read as "no idea".
+	Phase   string  `json:"phase,omitempty"`
+	Message string  `json:"message,omitempty"`
+	Pct     float64 `json:"pct"`
+	Done    int64   `json:"done,omitempty"`
+	Total   int64   `json:"total,omitempty"`
+	Rate    float64 `json:"rate,omitempty"`
+	ETA     int     `json:"eta,omitempty"`
+
+	Started  time.Time `json:"started,omitempty"`
+	Finished time.Time `json:"finished,omitempty"`
 }
 
 // RunState is a snapshot of the current or last run, for the settings page.
@@ -65,12 +133,32 @@ type RunState struct {
 	// report a successful backup on a box that has never taken one.
 	Ran bool `json:"ran"`
 
-	Started   time.Time `json:"started,omitempty"`
-	Finished  time.Time `json:"finished,omitempty"`
-	Current   string    `json:"current,omitempty"`
-	Results   []Result  `json:"results,omitempty"`
-	Failures  int       `json:"failures"`
-	LastError string    `json:"last_error,omitempty"`
+	Started  time.Time `json:"started,omitempty"`
+	Finished time.Time `json:"finished,omitempty"`
+
+	// Current is the ID of the target in flight. Redundant against Targets, and kept
+	// because it is the one thing a caller that does not want the whole plan still
+	// needs — including the notification mail, which runs after the fact.
+	Current string `json:"current,omitempty"`
+
+	// Targets is every target of this run, in the order the run does them, including
+	// the ones it has not reached yet.
+	Targets   []TargetState `json:"targets,omitempty"`
+	Failures  int           `json:"failures"`
+	LastError string        `json:"last_error,omitempty"`
+}
+
+// Done reports how many targets the run has finished with, by any route. It is what
+// the "3 of 9" on the settings page counts.
+func (st RunState) Done() int {
+	n := 0
+	for _, t := range st.Targets {
+		switch t.Status {
+		case StatusDone, StatusFailed, StatusSkipped:
+			n++
+		}
+	}
+	return n
 }
 
 // Scheduler runs backups on a timetable.
@@ -128,11 +216,18 @@ func (s *Scheduler) now() time.Time {
 }
 
 // State returns the current or last run.
+//
+// The target list is copied rather than shared. Copying a RunState copies the slice
+// header alone, so a caller ranging over it while the run advances would be reading
+// elements the run is writing — a race the race detector would only find on the
+// unlucky schedule, and the payload here is serialised to JSON on a request
+// goroutine while the run mutates it on its own.
 func (s *Scheduler) State() RunState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.state
 	st.Ran = !st.Finished.IsZero()
+	st.Targets = append([]TargetState(nil), s.state.Targets...)
 	return st
 }
 
@@ -239,16 +334,30 @@ func (s *Scheduler) RunAll(ctx context.Context) error {
 	}
 	s.state = RunState{Running: true, Started: s.now()}
 	s.mu.Unlock()
+
+	// The plan is published before the first target is touched, so the page has
+	// something to show from the moment the button is pressed rather than after the
+	// first app finishes. Computed outside the lock: it reads the apps directory.
+	targets := s.Targets()
+	plan := make([]TargetState, len(targets))
+	for i, t := range targets {
+		plan[i] = TargetState{
+			ID: t.ID(), Kind: t.Kind, App: t.App,
+			Status: StatusPending, Pct: apps.PctUnknown,
+		}
+	}
+	s.mu.Lock()
+	s.state.Targets = plan
+	s.mu.Unlock()
 	s.changed()
 
-	targets := s.Targets()
-	for _, t := range targets {
+	for i, t := range targets {
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		s.setCurrent(t.ID())
-		name, err := s.backupOne(ctx, t)
-		s.record(Result{Target: t, Name: name, Err: errText(err)})
+		s.beginTarget(i, t)
+		name, err := s.backupOne(ctx, t, s.targetProgress(i))
+		s.endTarget(i, name, err)
 	}
 
 	prev, hadPrev := s.readLastRun()
@@ -271,7 +380,7 @@ func (s *Scheduler) RunAll(ctx context.Context) error {
 	return nil
 }
 
-func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
+func (s *Scheduler) backupOne(ctx context.Context, t Target, emit func(TargetState)) (string, error) {
 	if s.Backup != nil {
 		return s.Backup(ctx, t)
 	}
@@ -281,7 +390,7 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 		// counts against retention, so it can push out the good one the user is in the
 		// middle of restoring from. Skipping one night is the cheap side of this trade.
 		if s.RestoreInProgress != nil && s.RestoreInProgress() {
-			return "", fmt.Errorf("skipped: a restore of the user-data set is in progress")
+			return "", skip("skipped: a restore of the user-data set is in progress")
 		}
 		// User data has no containers and no compose project, so it does not go
 		// through the app registry at all.
@@ -289,7 +398,23 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("engine %s cannot back up user data", s.set.Writer().ID())
 		}
-		return src.BackupUserData(ctx, s.now().Format(apps.StampLayout))
+		// User data has no tile, so this run panel is the only place its progress can
+		// appear — which is why the emit matters more here than anywhere else: it is
+		// the biggest target on the box by a wide margin, and it used to report
+		// nothing at all between "started" and "finished".
+		//
+		// The tracker is this scheduler's own, because nothing else is watching this
+		// target. The app path below does not get one here: the registry already runs a
+		// tracker for the tile, and a second one would derive a second, slightly
+		// different ETA for the same bytes.
+		tr := &apps.Tracker{}
+		return src.BackupUserData(ctx, s.now().Format(apps.StampLayout), func(ev apps.Event) {
+			p := tr.Observe(apps.PhaseCopy, ev.Pct, ev.Done, ev.Total)
+			emit(TargetState{
+				Phase: apps.PhaseCopy, Message: ev.Message, Pct: p.Pct,
+				Done: ev.Done, Total: ev.Total, Rate: p.Rate, ETA: int(p.ETA.Seconds()),
+			})
+		})
 	}
 	if s.apps == nil {
 		return "", fmt.Errorf("docker unavailable")
@@ -306,8 +431,25 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 	// The empty engine is the default one, deliberately: the nightly run is exactly
 	// the case with nobody there to pick a target, and it is what the "default engine"
 	// setting means. A manual backup can name another engine; this cannot.
-	name, err := s.apps.Backup(ctx, t.App, "", false, nil)
+	//
+	// Tracked, so the app's own tile carries the same bar it would if the user had
+	// backed this app up from its Backups tab. It went through the untracked Backup
+	// for a long time, which meant that pressing "Back up now" left every tile on the
+	// box inert while the work was happening on them.
+	name, err := s.apps.BackupTracked(ctx, t.App, "", false, func(ev apps.BackupEvent) {
+		emit(TargetState{
+			Phase: ev.Phase, Message: ev.Message, Pct: ev.TrackPct(),
+			Done: ev.Done, Total: ev.Total, Rate: ev.Rate, ETA: ev.ETA,
+		})
+	})
 	if err != nil {
+		// Someone is already backing this app up by hand. Waiting behind it would
+		// back the same app up twice in a row for nothing, and reporting it as a
+		// failure would mail the operator about a box where the app has, in fact,
+		// just been backed up.
+		if errors.Is(err, apps.ErrBackupInFlight) {
+			return "", skip("skipped: %v", err)
+		}
 		return "", err
 	}
 	s.pruneLocal(ctx, t.App, conf.KeepLocal)
@@ -318,7 +460,7 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target) (string, error) {
 // The local engine cannot and must not: its archives live inside the very tree it
 // would be copying.
 type UserDataEngine interface {
-	BackupUserData(ctx context.Context, stamp string) (string, error)
+	BackupUserData(ctx context.Context, stamp string, emit func(apps.Event)) (string, error)
 }
 
 // RetentionEngine is implemented by engines that apply retention themselves.
@@ -375,20 +517,59 @@ func (s *Scheduler) heldElsewhere(ctx context.Context, app, name string) bool {
 	return false
 }
 
-func (s *Scheduler) setCurrent(id string) {
+func (s *Scheduler) beginTarget(i int, t Target) {
 	s.mu.Lock()
-	s.state.Current = id
+	s.state.Current = t.ID()
+	if i < len(s.state.Targets) {
+		s.state.Targets[i].Status = StatusRunning
+		s.state.Targets[i].Started = s.now()
+	}
 	s.mu.Unlock()
 	s.changed()
 }
 
-func (s *Scheduler) record(res Result) {
+// targetProgress returns the callback the target reports through. Only the progress
+// fields are taken from it — identity and status belong to the run, not to whatever
+// is reporting — so an engine cannot rename a target or declare itself finished.
+func (s *Scheduler) targetProgress(i int) func(TargetState) {
+	return func(p TargetState) {
+		s.mu.Lock()
+		if i < len(s.state.Targets) {
+			t := &s.state.Targets[i]
+			t.Phase, t.Message, t.Pct = p.Phase, p.Message, p.Pct
+			t.Done, t.Total, t.Rate, t.ETA = p.Done, p.Total, p.Rate, p.ETA
+		}
+		s.mu.Unlock()
+		s.changed()
+	}
+}
+
+func (s *Scheduler) endTarget(i int, name string, err error) {
 	s.mu.Lock()
-	s.state.Results = append(s.state.Results, res)
-	if res.Err != "" {
-		s.state.Failures++
-		s.state.LastError = res.Err
-		log.Printf("backup: %s failed: %s", res.Target.ID(), res.Err)
+	if i < len(s.state.Targets) {
+		t := &s.state.Targets[i]
+		t.Finished = s.now()
+		t.Name = name
+		t.Err = errText(err)
+		t.Status = StatusDone
+		switch {
+		case isSkip(err):
+			t.Status = StatusSkipped
+		case err != nil:
+			t.Status = StatusFailed
+		}
+		// A finished target keeps no live progress: leaving a rate and an ETA on a row
+		// that is done reads as though it were still moving.
+		t.Phase, t.Message, t.Rate, t.ETA = "", "", 0, 0
+		t.Pct = 100
+		if err != nil {
+			t.Pct = apps.PctUnknown
+		}
+		if t.Status == StatusFailed {
+			s.state.Failures++
+			s.state.LastError = t.Err
+			log.Printf("backup: %s failed: %s", t.ID, t.Err)
+		}
 	}
 	s.mu.Unlock()
 	s.changed()
@@ -553,17 +734,17 @@ func failureMail(domain string, failed bool, st RunState) (subject, body string)
 	if !failed {
 		return "Backups are working again on " + where,
 			fmt.Sprintf("The backup run that finished at %s completed with no failures.\n\n%d targets were backed up.\n",
-				st.Finished.Format(time.RFC1123), len(st.Results))
+				st.Finished.Format(time.RFC1123), st.Done())
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "The backup run that finished at %s did not complete.\n\n", st.Finished.Format(time.RFC1123))
-	fmt.Fprintf(&b, "%d of %d targets failed:\n\n", st.Failures, len(st.Results))
-	for _, r := range st.Results {
-		if r.Err != "" {
-			fmt.Fprintf(&b, "  %s\n    %s\n", r.Target.ID(), r.Err)
+	fmt.Fprintf(&b, "%d of %d targets failed:\n\n", st.Failures, st.Done())
+	for _, t := range st.Targets {
+		if t.Err != "" {
+			fmt.Fprintf(&b, "  %s\n    %s\n", t.ID, t.Err)
 		}
 	}
-	ok := len(st.Results) - st.Failures
+	ok := st.Done() - st.Failures
 	fmt.Fprintf(&b, "\n%d target(s) were backed up successfully.\n", ok)
 	b.WriteString("\nThis message is sent once when backups start failing, and once when they recover.\n")
 	return "Backups are failing on " + where, b.String()

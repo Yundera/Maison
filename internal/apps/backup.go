@@ -2,6 +2,7 @@ package apps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -44,6 +45,18 @@ type BackupEvent struct {
 	Copy     float64 `json:"copy"`     // first (live) mirror pass, 0-100
 	Sync     float64 `json:"sync"`     // second (stopped) mirror pass, 0-100
 	Compress float64 `json:"compress"` // zipping the snapshot, 0-100
+
+	// Done and Total are the byte counts behind whichever track is moving, passed
+	// straight through from the engine's Event. Zero means the engine did not report
+	// them, which is normal rather than exceptional.
+	Done  int64 `json:"done,omitempty"`
+	Total int64 `json:"total,omitempty"`
+
+	// Rate (bytes/second) and ETA (seconds) are *derived*, not reported: they are
+	// filled in by the Tracker in trackBackup, on the way past, and a provider must
+	// never set them. Zero means not yet knowable — see apps.Progress.
+	Rate float64 `json:"rate,omitempty"`
+	ETA  int     `json:"eta,omitempty"`
 }
 
 // BackupState is a snapshot of one in-flight (or failed) backup or restore. The
@@ -56,6 +69,10 @@ type BackupState struct {
 	Copy     float64 `json:"copy"`     // first (live) mirror pass, 0-100
 	Sync     float64 `json:"sync"`     // second (stopped) mirror pass, 0-100
 	Compress float64 `json:"compress"` // zipping the snapshot, 0-100
+	Done     int64   `json:"done"`     // bytes processed in the current phase, 0 = unknown
+	Total    int64   `json:"total"`    // bytes expected in the current phase, 0 = unknown
+	Rate     float64 `json:"rate"`     // bytes/second, 0 = unknown
+	ETA      int     `json:"eta"`      // seconds left in this phase, 0 = unknown
 	Error    string  `json:"error"`    // set when Phase == error
 }
 
@@ -143,19 +160,15 @@ func (r *Registry) StartBackup(id, engine string, zip bool) error {
 			id, humanBytes(est.Needed), humanBytes(est.Free))
 	}
 
-	r.mu.Lock()
-	if st := r.backups[id]; st != nil && st.Phase != PhaseError {
-		r.mu.Unlock()
+	if err := r.beginBackup(id); err != nil {
 		return nil // already running — attach, don't restart
 	}
-	r.backups[id] = &BackupState{ID: id, Phase: PhaseCopy, Message: "Queued"}
-	r.mu.Unlock()
 	r.changed()
 
 	go func() {
 		// Deliberately not a request context: the backup must outlive the request
 		// that asked for it.
-		_, err := r.Backup(context.Background(), id, engine, zip, r.trackBackup(id))
+		_, err := r.Backup(context.Background(), id, engine, zip, r.trackBackup(id, nil))
 		r.finishBackup(id, err, "backup")
 	}()
 	return nil
@@ -190,24 +203,107 @@ func (r *Registry) StartRestore(ctx context.Context, id, engine, name string) er
 	r.changed()
 
 	go func() {
-		err := r.Restore(context.Background(), id, engine, name, r.trackBackup(id))
+		err := r.Restore(context.Background(), id, engine, name, r.trackBackup(id, nil))
 		r.finishBackup(id, err, "restore")
 	}()
 	return nil
 }
 
-// trackBackup returns the emit function that copies progress into the tracked
-// state and pokes the throttled progress hook.
-func (r *Registry) trackBackup(id string) func(BackupEvent) {
+// trackBackup returns the emit function that derives rate and ETA, copies the
+// result into the tracked state, pokes the throttled progress hook, and passes the
+// finished event on to `extra`.
+//
+// The Tracker is created here, once per operation, which is what makes it correct
+// for every engine at once: whatever a provider managed to report — a percentage,
+// byte counts, or neither — is turned into the same two derived numbers in the same
+// place. Nothing below this line is engine-aware.
+//
+// `extra` is how the same event reaches a second observer without a second tracker
+// producing a second, slightly different estimate of the same work. The whole-box
+// run uses it to mirror an app's progress into its own target list while the tile
+// shows exactly the same numbers.
+func (r *Registry) trackBackup(id string, extra func(BackupEvent)) func(BackupEvent) {
+	tr := &Tracker{}
 	return func(ev BackupEvent) {
+		// Keyed on the phase, so an estimate never spans the boundary between the live
+		// pass and the stopped one. They are different work at different speeds — and
+		// the stopped pass's ETA is how much longer the app is *down*, which is the one
+		// number here worth being careful about.
+		p := tr.Observe(ev.Phase, ev.TrackPct(), ev.Done, ev.Total)
+		ev.Rate, ev.ETA = p.Rate, int(p.ETA.Seconds())
+
 		r.mu.Lock()
 		if st := r.backups[id]; st != nil {
 			st.Phase, st.Message = ev.Phase, ev.Message
 			st.Copy, st.Sync, st.Compress = ev.Copy, ev.Sync, ev.Compress
+			st.Done, st.Total, st.Rate, st.ETA = ev.Done, ev.Total, ev.Rate, ev.ETA
 		}
 		r.mu.Unlock()
 		r.progressed()
+		if extra != nil {
+			extra(ev)
+		}
 	}
+}
+
+// TrackPct is the percentage of the track that is actually moving.
+//
+// The tracks are cumulative on the wire — a Sync event carries Copy: 100 so the bar
+// does not rewind — so reading the wrong one gives the progress of a phase that
+// finished a minute ago and is pinned at 100%. Exported because the whole-box run
+// mirrors these events into its own target list and needs the same answer.
+func (ev BackupEvent) TrackPct() float64 {
+	switch ev.Phase {
+	case PhaseCompress:
+		return ev.Compress
+	case PhaseSync:
+		return ev.Sync
+	case PhaseCopy, PhaseRestore:
+		return ev.Copy
+	default:
+		// Phases with no track of their own (start, done, error). They are moments
+		// rather than stretches, and an ETA for one is meaningless.
+		return PctUnknown
+	}
+}
+
+// BackupTracked runs a backup to completion while showing its progress on the app's
+// tile, and reports every event to `extra` as well.
+//
+// It is the synchronous twin of StartBackup, and exists for the whole-box run: that
+// run needs to wait for each target before starting the next one (two apps stopped at
+// once is not a backup strategy), but it should light up the tiles exactly as a
+// single-app backup does. Before this existed the nightly run called Backup directly
+// with a nil emit, so a run started from Settings left every tile on the box inert —
+// the one moment the user is most likely to be watching them.
+func (r *Registry) BackupTracked(ctx context.Context, id, engine string, zip bool, extra func(BackupEvent)) (string, error) {
+	if err := r.beginBackup(id); err != nil {
+		return "", err
+	}
+	r.changed()
+	name, err := r.Backup(ctx, id, engine, zip, r.trackBackup(id, extra))
+	r.finishBackup(id, err, "backup")
+	return name, err
+}
+
+// ErrBackupInFlight reports that this app is already being backed up, so a second
+// attempt has nothing to do. It is a sentinel rather than a plain error because the
+// two callers want opposite things from it: StartBackup attaches to the operation
+// already running, and the whole-box run marks the target skipped rather than failed
+// — an app that is being backed up right now is the one case where "we did not back
+// it up" is not a problem worth mailing anyone about.
+var ErrBackupInFlight = errors.New("a backup of this app is already running")
+
+// beginBackup claims the tracking slot for an app, or reports that something else
+// already has it.
+func (r *Registry) beginBackup(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.backups[id]; st != nil && st.Phase != PhaseError {
+		return fmt.Errorf("%s: %w", id, ErrBackupInFlight)
+	}
+	r.backups[id] = &BackupState{ID: id, Phase: PhaseCopy, Message: "Queued"}
+	return nil
 }
 
 // finishBackup settles a tracked operation: a failure stays visible on the tile
@@ -316,7 +412,8 @@ func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bo
 	emit(BackupEvent{Phase: PhaseCopy, Message: "Copying " + id})
 	opts.Pass = 1
 	if err := p.Snapshot(ctx, id, stamp, opts, func(ev Event) {
-		emit(BackupEvent{Phase: PhaseCopy, Message: ev.Message, Copy: ev.Pct})
+		emit(BackupEvent{Phase: PhaseCopy, Message: ev.Message, Copy: ev.Pct,
+			Done: ev.Done, Total: ev.Total})
 	}); err != nil {
 		return "", fmt.Errorf("copy app folder: %w", err)
 	}
@@ -360,7 +457,8 @@ func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bo
 	emit(BackupEvent{Phase: PhaseSync, Message: "Syncing changes", Copy: 100})
 	opts.Pass = 2
 	if err := p.Snapshot(downCtx, id, stamp, opts, func(ev Event) {
-		emit(BackupEvent{Phase: PhaseSync, Message: ev.Message, Copy: 100, Sync: ev.Pct})
+		emit(BackupEvent{Phase: PhaseSync, Message: ev.Message, Copy: 100, Sync: ev.Pct,
+			Done: ev.Done, Total: ev.Total})
 	}); err != nil {
 		return "", fmt.Errorf("sync app folder: %w", err)
 	}
@@ -375,6 +473,7 @@ func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bo
 		emit(BackupEvent{
 			Phase: PhaseCompress, Message: ev.Message,
 			Copy: 100, Sync: 100, Compress: ev.Pct,
+			Done: ev.Done, Total: ev.Total,
 		})
 	})
 	if err != nil {
@@ -547,7 +646,8 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 	if est.Enough {
 		emit(BackupEvent{Phase: PhaseRestore, Message: "Fetching " + name})
 		if err := src.Materialize(downCtx, id, name, func(ev Event) {
-			emit(BackupEvent{Phase: PhaseRestore, Message: ev.Message, Copy: ev.Pct})
+			emit(BackupEvent{Phase: PhaseRestore, Message: ev.Message, Copy: ev.Pct,
+				Done: ev.Done, Total: ev.Total})
 		}); err != nil {
 			return fmt.Errorf("fetch backup: %w", err)
 		}
@@ -674,7 +774,8 @@ func (r *Registry) restoreInPlace(ctx context.Context, src Provider, id, name, a
 
 	emit(BackupEvent{Phase: PhaseRestore, Message: "Restoring " + name})
 	if err := src.RestoreInPlace(ctx, id, name, appDir, func(ev Event) {
-		emit(BackupEvent{Phase: PhaseRestore, Message: ev.Message, Copy: ev.Pct})
+		emit(BackupEvent{Phase: PhaseRestore, Message: ev.Message, Copy: ev.Pct,
+			Done: ev.Done, Total: ev.Total})
 	}); err != nil {
 		// 3. The marker stays. The app must not come back up on a half-restored
 		//    folder: it would initialise over the gap — fresh database, default

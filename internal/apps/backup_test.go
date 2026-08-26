@@ -2,9 +2,11 @@ package apps
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -296,5 +298,90 @@ func TestMirrorSkipsIrregularFiles(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(dst, "app.sock")); !os.IsNotExist(err) {
 		t.Error("irregular file was copied into the snapshot")
+	}
+}
+
+// End to end through the real local engine: the byte counts the engine reports have
+// to survive all the way onto the tile's state, or none of the rest of this matters.
+//
+// The local engine is the strict case — it knows its total exactly, because mirror
+// walks the tree before copying it — so anything missing here is Maison dropping it
+// rather than the engine failing to say it.
+func TestBackupCarriesByteCountsOntoTheTile(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	seedApp(t, filepath.Join(appsDir, "jellyfin"))
+
+	var sawTotal, sawDone bool
+	r.OnProgress = func() {
+		for _, st := range r.Backups() {
+			if st.Total > 0 {
+				sawTotal = true
+			}
+			if st.Done > 0 {
+				sawDone = true
+			}
+		}
+	}
+
+	if _, err := r.BackupTracked(context.Background(), "jellyfin", "", false, nil); err != nil {
+		t.Fatalf("BackupTracked: %v", err)
+	}
+	if !sawTotal || !sawDone {
+		t.Errorf("tile saw total=%v done=%v; want both reported during the backup", sawTotal, sawDone)
+	}
+	// A finished backup is not tracked any more — the tile drops the overlay rather
+	// than keeping a full bar on it forever.
+	if got := r.Backups(); len(got) != 0 {
+		t.Errorf("Backups() = %+v after success, want the overlay cleared", got)
+	}
+}
+
+// The whole-box run needs to see exactly what the tile sees, from one tracker — two
+// would derive two slightly different estimates of the same bytes.
+func TestASecondObserverGetsTheSameDerivedNumbers(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	seedApp(t, filepath.Join(appsDir, "jellyfin"))
+
+	var mu sync.Mutex
+	var mirrored []BackupEvent
+	if _, err := r.BackupTracked(context.Background(), "jellyfin", "", false, func(ev BackupEvent) {
+		mu.Lock()
+		mirrored = append(mirrored, ev)
+		mu.Unlock()
+	}); err != nil {
+		t.Fatalf("BackupTracked: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(mirrored) == 0 {
+		t.Fatal("the second observer received nothing")
+	}
+	var withBytes int
+	for _, ev := range mirrored {
+		if ev.Total > 0 {
+			withBytes++
+		}
+	}
+	if withBytes == 0 {
+		t.Error("the mirrored events carried no byte counts")
+	}
+	if last := mirrored[len(mirrored)-1]; last.Phase != PhaseDone {
+		t.Errorf("last mirrored phase = %q, want %q — the observer must see the end", last.Phase, PhaseDone)
+	}
+}
+
+// An app already being backed up is reported as such rather than backed up twice, so
+// the whole-box run can tell "already in hand" apart from "went wrong".
+func TestASecondBackupOfTheSameAppIsRefusedNotDuplicated(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	seedApp(t, filepath.Join(appsDir, "jellyfin"))
+
+	if err := r.beginBackup("jellyfin"); err != nil {
+		t.Fatalf("beginBackup: %v", err)
+	}
+	_, err := r.BackupTracked(context.Background(), "jellyfin", "", false, nil)
+	if !errors.Is(err, ErrBackupInFlight) {
+		t.Errorf("err = %v, want ErrBackupInFlight", err)
 	}
 }

@@ -97,7 +97,7 @@ func (p *LocalProvider) Snapshot(ctx context.Context, app, stamp string, opts Sn
 		}
 	}
 	return mirror(appDir, staging, func(copied, total int64) {
-		emitPct(emit, pct(copied, total), "Copying "+app)
+		emitBytes(emit, copied, total, "Copying "+app)
 	})
 }
 
@@ -139,9 +139,15 @@ func (p *LocalProvider) Commit(ctx context.Context, app, stamp string, opts Snap
 
 	name := stamp + ".zip"
 	tmp := filepath.Join(dir, "."+name+".partial")
-	emitPct(emit, 0, "Compressing "+name)
+	// Explicitly zero rather than through emitBytes: the total is not known until
+	// archiveDir has walked the tree, and pct(0, 0) reads as "nothing to do, so it is
+	// finished" — which is the right answer for an empty copy and exactly the wrong
+	// one for a compression that is about to start.
+	if emit != nil {
+		emit(Event{Pct: 0, Message: "Compressing " + name})
+	}
 	if err := archiveDir(source, tmp, func(copied, total int64) {
-		emitPct(emit, pct(copied, total), "Compressing "+name)
+		emitBytes(emit, copied, total, "Compressing "+name)
 	}); err != nil {
 		_ = os.Remove(tmp)
 		return Backup{}, fmt.Errorf("compress backup: %w", err)
@@ -236,11 +242,17 @@ func (p *LocalProvider) backupFor(app, name string) (Backup, error) {
 	return b, nil
 }
 
-// emitPct is the small adapter between the byte-counting callbacks this package's
+// emitBytes is the small adapter between the byte-counting callbacks this package's
 // copy helpers use and the Event a provider reports.
-func emitPct(emit func(Event), p float64, msg string) {
+//
+// The counts are passed through rather than collapsed into the percentage they were
+// previously reduced to. This engine is the one that knows the total exactly before
+// it starts — mirror walks the tree first — so it is the engine whose rate and ETA
+// are the most trustworthy on the box, and throwing the bytes away to send a single
+// float was discarding the better answer.
+func emitBytes(emit func(Event), done, total int64, msg string) {
 	if emit == nil {
 		return
 	}
-	emit(Event{Pct: p, Message: msg})
+	emit(Event{Pct: pct(done, total), Message: msg, Done: done, Total: total})
 }

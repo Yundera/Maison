@@ -125,8 +125,14 @@ func TestRunAllContinuesPastAFailure(t *testing.T) {
 		t.Fatalf("ran = %v, want every target attempted in order", ran)
 	}
 	st := s.State()
-	if st.Failures != 1 || len(st.Results) != 3 {
-		t.Fatalf("state = %+v, want 3 results and 1 failure", st)
+	if st.Failures != 1 || st.Done() != 3 {
+		t.Fatalf("state = %+v, want 3 finished targets and 1 failure", st)
+	}
+	// The plan outlives the run, so what failed is still readable afterwards rather
+	// than reduced to a count.
+	if len(st.Targets) != 3 || st.Targets[1].Status != StatusFailed ||
+		st.Targets[0].Status != StatusDone || st.Targets[2].Status != StatusDone {
+		t.Fatalf("targets = %+v, want beta failed and the others done", st.Targets)
 	}
 	if st.Running {
 		t.Error("run state still reports running after RunAll returned")
@@ -319,9 +325,9 @@ func TestFailureMailNamesWhatFailedAndWhatDidNot(t *testing.T) {
 	st := RunState{
 		Finished: time.Date(2026, 3, 1, 3, 30, 0, 0, time.UTC),
 		Failures: 1,
-		Results: []Result{
-			{Target: Target{Kind: KindApp, App: "alpha"}},
-			{Target: Target{Kind: KindApp, App: "beta"}, Err: "repository unreachable"},
+		Targets: []TargetState{
+			{ID: "app:alpha", Kind: KindApp, App: "alpha", Status: StatusDone},
+			{ID: "app:beta", Kind: KindApp, App: "beta", Status: StatusFailed, Err: "repository unreachable"},
 		},
 	}
 	subject, body := failureMail("john.nsl.sh", true, st)
@@ -360,7 +366,7 @@ func TestStateDoesNotClaimARunThatNeverHappened(t *testing.T) {
 // engine deliberately cannot.
 type userDataCapable struct{ backuptest.Fake }
 
-func (*userDataCapable) BackupUserData(context.Context, string) (string, error) {
+func (*userDataCapable) BackupUserData(context.Context, string, func(apps.Event)) (string, error) {
 	return "2026-01-01_000000", nil
 }
 
@@ -392,7 +398,7 @@ func TestUserDataBackupIsSkippedDuringARestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := s.backupOne(context.Background(), Target{Kind: KindUserData})
+	_, err := s.backupOne(context.Background(), Target{Kind: KindUserData}, func(TargetState) {})
 	if err == nil {
 		t.Fatal("the user-data set was backed up while a restore was rewriting it")
 	}
@@ -401,7 +407,138 @@ func TestUserDataBackupIsSkippedDuringARestore(t *testing.T) {
 	}
 
 	// And the app half is untouched by that rule.
-	if _, err := s.backupOne(context.Background(), Target{Kind: KindApp, App: "jellyfin"}); err != nil {
+	if _, err := s.backupOne(context.Background(), Target{Kind: KindApp, App: "jellyfin"}, func(TargetState) {}); err != nil {
 		t.Errorf("an app backup was blocked by a user-data restore: %v", err)
+	}
+}
+
+// The plan is the point of the target list: it has to be on screen from the moment
+// the button is pressed, not assembled as the run discovers what it is doing. Before
+// this, a run in flight was a single string naming the app being worked on, so
+// "backing up app:immich" was all the user got — no idea whether that was the first
+// of two or the eighth of nine.
+func TestThePlanIsPublishedBeforeTheFirstTargetRuns(t *testing.T) {
+	s, store := newScheduler(t, "alpha", "beta", "gamma")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Captured from inside the first target, so this is the state a client would have
+	// seen while the first app was still being copied.
+	var seen RunState
+	first := true
+	s.Backup = func(context.Context, Target) (string, error) {
+		if first {
+			first = false
+			seen = s.State()
+		}
+		return "2026-01-01_000000", nil
+	}
+	if err := s.RunAll(context.Background()); err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+
+	if len(seen.Targets) != 3 {
+		t.Fatalf("targets during the first backup = %d, want all 3 known up front", len(seen.Targets))
+	}
+	if seen.Targets[0].Status != StatusRunning {
+		t.Errorf("first target status = %q, want %q", seen.Targets[0].Status, StatusRunning)
+	}
+	for _, tg := range seen.Targets[1:] {
+		if tg.Status != StatusPending {
+			t.Errorf("target %s = %q, want %q — the rest of the plan must be visible as pending",
+				tg.ID, tg.Status, StatusPending)
+		}
+	}
+	if seen.Done() != 0 {
+		t.Errorf("Done() = %d before the first target finished, want 0", seen.Done())
+	}
+}
+
+// A target reports its progress through the run, and the run keeps identity and
+// status to itself: whatever is reporting must not be able to rename a target or
+// declare itself finished.
+func TestProgressUpdatesTheRunningTargetOnly(t *testing.T) {
+	s, store := newScheduler(t, "alpha")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mid RunState
+	s.Backup = func(context.Context, Target) (string, error) { return "2026-01-01_000000", nil }
+	// Drive one progress report by hand: s.Backup replaces backupOne wholesale, so
+	// this exercises the bookkeeping rather than an engine.
+	s.state = RunState{Running: true, Targets: []TargetState{
+		{ID: "app:alpha", Kind: KindApp, App: "alpha", Status: StatusRunning, Pct: apps.PctUnknown},
+	}}
+	s.targetProgress(0)(TargetState{
+		ID: "hijacked", Status: StatusDone, Phase: apps.PhaseSync,
+		Message: "Syncing changes", Pct: 40, Done: 400, Total: 1000, Rate: 100, ETA: 6,
+	})
+	mid = s.State()
+
+	got := mid.Targets[0]
+	if got.ID != "app:alpha" || got.Status != StatusRunning {
+		t.Errorf("target = %+v, want its identity and status untouched by the report", got)
+	}
+	if got.Phase != apps.PhaseSync || got.Pct != 40 || got.Rate != 100 || got.ETA != 6 {
+		t.Errorf("progress = %+v, want the reported numbers", got)
+	}
+}
+
+// A finished target must not look like it is still moving: a row showing a rate and
+// an ETA after it is done reads as a backup that is still running.
+func TestAFinishedTargetKeepsNoLiveProgress(t *testing.T) {
+	s, _ := newScheduler(t, "alpha")
+	s.state = RunState{Running: true, Targets: []TargetState{
+		{ID: "app:alpha", Kind: KindApp, App: "alpha", Status: StatusRunning,
+			Phase: apps.PhaseCopy, Pct: 40, Rate: 100, ETA: 6, Message: "Copying alpha"},
+	}}
+	s.endTarget(0, "2026-01-01_000000", nil)
+
+	got := s.State().Targets[0]
+	if got.Status != StatusDone || got.Name != "2026-01-01_000000" || got.Pct != 100 {
+		t.Errorf("target = %+v, want it finished at 100%%", got)
+	}
+	if got.Rate != 0 || got.ETA != 0 || got.Phase != "" {
+		t.Errorf("target = %+v, want the live progress cleared", got)
+	}
+}
+
+// A target the run deliberately did not attempt is not a target that failed.
+//
+// The difference is what lands in the operator's inbox: a failure mails "backups are
+// failing on your server", and sending that for a box where the right thing happened
+// is how a useful alert turns into a filter rule. Both skips are cases where nothing
+// is wrong — the user-data set is mid-restore, or somebody is already backing that app
+// up by hand.
+func TestASkippedTargetIsNotAFailure(t *testing.T) {
+	s, store := newScheduler(t, "alpha", "beta")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Backup = func(_ context.Context, tg Target) (string, error) {
+		if tg.App == "alpha" {
+			return "", skip("skipped: %v", apps.ErrBackupInFlight)
+		}
+		return "2026-01-01_000000", nil
+	}
+
+	if err := s.RunAll(context.Background()); err != nil {
+		t.Fatalf("RunAll reported a failure for a skipped target: %v", err)
+	}
+	st := s.State()
+	if st.Failures != 0 {
+		t.Errorf("failures = %d, want 0 — a skip is not a failure", st.Failures)
+	}
+	if st.Targets[0].Status != StatusSkipped {
+		t.Errorf("status = %q, want %q", st.Targets[0].Status, StatusSkipped)
+	}
+	// The reason still reaches the user; it just does not raise the alarm.
+	if !strings.Contains(st.Targets[0].Err, "already running") {
+		t.Errorf("skipped target says %q, want it to say why", st.Targets[0].Err)
+	}
+	if st.Done() != 2 {
+		t.Errorf("Done() = %d, want both targets accounted for", st.Done())
 	}
 }

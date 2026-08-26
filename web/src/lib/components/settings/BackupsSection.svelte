@@ -36,8 +36,10 @@
     type EngineBackups,
     type Backup,
   } from '../../stores/backups'
+  import { backupLive, subscribeBackup } from '../../stores/backuplive'
   import { renderSize } from '../../format'
   import BackupRows from '../BackupRows.svelte'
+  import RunPanel from './RunPanel.svelte'
   import UserDataCard from './UserDataCard.svelte'
 
   // --- where backups go ---------------------------------------------------------
@@ -99,21 +101,33 @@
   loadStatus()
   loadArchives()
 
+  // Run and restore progress arrive on the live channel while this page is open.
+  //
+  // It used to poll /api/backup/status every two seconds instead, which was wrong
+  // twice over: that endpoint probes every engine's repository — a subprocess for a
+  // remote one — so it was never something to call on a timer, and a bar fed at 0.5 Hz
+  // looks broken however good the numbers behind it are.
+  $effect(() => subscribeBackup())
+
+  // The live payload is the authority on the run while the socket is up; the fetched
+  // status still provides it on first paint, before the first push arrives.
+  const runState = $derived($backupLive?.run ?? status?.run ?? null)
+
   // Deliberately a plain `let`, not $state: the effect below both reads and writes it,
   // and a reactive flag would re-trigger the effect on its own write.
   let wasRunning = false
 
-  // While a run is in flight this page is the only place its progress shows — the app
-  // tiles carry their own bars, but the user-data target has no tile to hang one off.
   // When the run finishes, the archive list is stale by definition, so reload it:
   // "Back up now" that leaves the list unchanged reads as a backup that did nothing.
+  // The engine status is re-read too, since it is what the rest of this page renders
+  // from and the live channel deliberately does not carry it.
   $effect(() => {
-    const running = !!status?.run.running
-    if (wasRunning && !running) loadArchives()
+    const running = !!runState?.running
+    if (wasRunning && !running) {
+      loadArchives()
+      loadStatus()
+    }
     wasRunning = running
-    if (!running) return
-    const id = setInterval(loadStatus, 2000)
-    return () => clearInterval(id)
   })
 
   // A user-data restore has no tile to carry a progress bar, so this card is the only
@@ -126,8 +140,10 @@
   $effect(() => {
     // Any engine's restore, not just the open tab's: there is one restore at a time on
     // the box, and switching tabs while it runs must not stop the polling that reports
-    // it.
-    if (!engines.some((e) => e.user_data.restore.running)) return
+    // it. The restore's *progress* now arrives live; this poll is only what keeps the
+    // archive list itself current, so it stays slow.
+    const running = $backupLive?.restore.running ?? engines.some((e) => e.user_data.restore.running)
+    if (!running) return
     const id = setInterval(loadArchives, 5000)
     return () => clearInterval(id)
   })
@@ -306,17 +322,17 @@
 
     <div class="actions">
       <button onclick={save} disabled={busy}>{$t('save')}</button>
-      <button onclick={runNow} disabled={busy || status.run.running}>{$t('backup_run_now')}</button>
+      <button onclick={runNow} disabled={busy || runState?.running}>{$t('backup_run_now')}</button>
     </div>
 
-    {#if status.run.running}
-      <p class="hint">{$t('backup_running')} {status.run.current ?? ''}</p>
-    {:else if status.run.ran}
-      <p class="hint">
-        {status.run.failures > 0
-          ? `${$t('backup_last_run_failed')} — ${status.run.last_error ?? ''}`
-          : $t('backup_last_run_ok')}
-      </p>
+    <!-- The plan, live: what is being backed up, how far in, and what is still to
+         come. Shown after a run as well — a finished list is the record of what
+         happened, which the previous single line could not be. -->
+    {#if runState && (runState.running || runState.ran)}
+      <RunPanel run={runState} />
+      {#if !runState.running && runState.failures > 0 && runState.last_error}
+        <p class="err">{runState.last_error}</p>
+      {/if}
     {/if}
 
     <h4>{$t('backup_key')}</h4>

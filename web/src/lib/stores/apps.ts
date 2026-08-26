@@ -65,6 +65,16 @@ export interface App {
   compress?: number
   /** Set when a backup/restore failed; the tile shows it until dismissed. */
   backup_error?: string
+  /** Bytes moved and expected in the current phase. Absent when the engine reports
+   *  no byte counts, which is normal — see internal/apps/progress.go. */
+  backup_done?: number
+  backup_total?: number
+  /** Bytes per second, absent until it can be measured. */
+  backup_rate?: number
+  /** Seconds left in the current phase, absent until the estimate is worth showing.
+   *  Per phase, not for the whole backup: during `sync` it is how much longer the
+   *  app is down. */
+  backup_eta?: number
 }
 
 // Last-known app list, cached in localStorage so a page reload paints the grid
@@ -102,6 +112,14 @@ function persistApps(list: App[]): void {
       delete c.archive
       delete c.remove
       delete c.uninstall_error
+      delete c.backing_up
+      delete c.copy
+      delete c.sync
+      delete c.compress
+      delete c.backup_done
+      delete c.backup_total
+      delete c.backup_rate
+      delete c.backup_eta
       return c
     })
     localStorage.setItem(CACHE_KEY, JSON.stringify(clean))
@@ -193,6 +211,15 @@ export interface AppProgress {
   pct: number
   /** i18n key for the step's label ("Downloading…", "Archiving…", …). */
   label: string
+  /** Seconds left in this step, absent when not yet knowable. Per step, not for the
+   *  whole operation — during a backup's `sync` it is how much longer the app is
+   *  down, which is the part of it the user can actually feel. */
+  eta?: number
+  /** Bytes moved, expected, and per second. Absent for an engine that reports no
+   *  byte counts. The tile has no room for these; they are what its tooltip says. */
+  done?: number
+  total?: number
+  rate?: number
 }
 
 /** The single progress bar an app shows, or null when nothing is in flight.
@@ -237,15 +264,19 @@ export function appProgress(a: App | undefined): AppProgress | null {
     // Restore and start have no measured track — a restore is renames and (for a
     // zip) an extract — so they sit at a full bar while the label says what is
     // happening.
-    if (a.phase === 'restore') return { kind: 'backup', pct: 100, label: 'restoring' }
+    // The measured numbers ride along with whichever track is reported below. They
+    // belong to the phase, not to the operation, so they are attached once here
+    // rather than being re-derived per branch.
+    const m = { eta: a.backup_eta, done: a.backup_done, total: a.backup_total, rate: a.backup_rate }
+    if (a.phase === 'restore') return { kind: 'backup', pct: 100, label: 'restoring', ...m }
     if (a.phase === 'start') return { kind: 'backup', pct: 100, label: 'starting_up' }
-    if (a.phase === 'compress') return { kind: 'backup', pct: a.compress ?? 0, label: 'compressing' }
-    if (a.phase === 'sync') return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing' }
-    if (a.phase === 'copy') return { kind: 'backup', pct: a.copy ?? 0, label: 'copying' }
+    if (a.phase === 'compress') return { kind: 'backup', pct: a.compress ?? 0, label: 'compressing', ...m }
+    if (a.phase === 'sync') return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing', ...m }
+    if (a.phase === 'copy') return { kind: 'backup', pct: a.copy ?? 0, label: 'copying', ...m }
     // Unknown or absent phase: read the counters rather than guess a label, so a
     // phase added on the server renders as an honest bar instead of the wrong step.
-    if ((a.copy ?? 0) < 100) return { kind: 'backup', pct: a.copy ?? 0, label: 'copying' }
-    return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing' }
+    if ((a.copy ?? 0) < 100) return { kind: 'backup', pct: a.copy ?? 0, label: 'copying', ...m }
+    return { kind: 'backup', pct: a.sync ?? 0, label: 'syncing', ...m }
   }
   return null
 }

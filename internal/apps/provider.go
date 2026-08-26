@@ -212,12 +212,31 @@ type SnapshotOpts struct {
 	Consume bool
 }
 
-// Event is a progress update from a provider. Pct is optional: an engine that can
-// only report that it started and finished sets Message alone and leaves Pct at -1,
-// and the bar renders as indeterminate rather than as a lie.
+// Event is a progress update from a provider.
+//
+// Every field is optional, and an engine fills in as much as it happens to know.
+// That is the whole design: there is no capability to declare and no interface to
+// implement twice, because how much an engine can say varies *within* one operation,
+// not just between engines — kopia reports nothing but a message while it is still
+// estimating the tree, then bytes and a percentage once it knows. Whatever arrives
+// is fed to a Tracker (progress.go), which derives the rate and the ETA uniformly;
+// what an engine cannot report simply renders as unknown rather than as a lie.
 type Event struct {
+	// Pct is 0-100, or PctUnknown for an engine that can only report that it started
+	// and finished. The bar then renders as indeterminate.
 	Pct     float64
 	Message string
+
+	// Done and Total are bytes, and are what buy the user a transfer rate — the one
+	// number that cannot be inferred from a percentage, because a percentage of an
+	// unknown quantity has no size. Zero means "not reported"; an engine that counts
+	// bytes but computes no percentage can leave Pct unknown and let it be derived.
+	//
+	// Total is allowed to move. An engine discovering the tree as it walks it revises
+	// its own estimate upward, and the Tracker is written to expect that rather than
+	// treating it as a fault.
+	Done  int64
+	Total int64
 }
 
 // PctUnknown marks an Event that carries no measurable progress.

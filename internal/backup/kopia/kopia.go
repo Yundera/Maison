@@ -19,7 +19,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,15 +61,6 @@ const (
 // alphanumeric first character), so this cannot collide with one — the guard makes
 // the reservation for us rather than us having to police it.
 const userDataApp = "_userdata"
-
-// progressPct pulls the percentage out of kopia's progress line, which looks like
-//
-//	| 1 hashing, 0 hashed (100.8 MB), 2 cached (16 B), uploaded 95.6 MB, estimated 125.8 MB (80.1%) 0s left
-//
-// A line that does not match is reported as a message with no percentage rather than
-// treated as an error: progress is decoration, and a kopia release that restyles it
-// must not be able to fail a backup.
-var progressPct = regexp.MustCompile(`\(([0-9]+(?:\.[0-9]+)?)%\)`)
 
 // Provider is the kopia engine.
 type Provider struct {
@@ -434,18 +424,7 @@ func containerName(args []string) string {
 	return "maison-kopia-" + safe + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
-func emitLine(emit func(apps.Event), line string) {
-	if emit == nil {
-		return
-	}
-	ev := apps.Event{Pct: apps.PctUnknown, Message: line}
-	if m := progressPct.FindStringSubmatch(line); m != nil {
-		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
-			ev.Pct = v
-		}
-	}
-	emit(ev)
-}
+// emitLine lives in progress.go, with the rest of the output parsing.
 
 // --- sources -----------------------------------------------------------------
 
@@ -575,17 +554,21 @@ func (r Retention) args() []string {
 // the engine reads it is captured mid-write — which is normal and accepted for
 // documents and media, and is exactly why apps get the stop treatment and this does
 // not. The corollary is that a database must never live here.
-func (p *Provider) BackupUserData(ctx context.Context, stamp string) (string, error) {
+func (p *Provider) BackupUserData(ctx context.Context, stamp string, emit func(apps.Event)) (string, error) {
 	src := UserDataSource()
 	// Reapplied every run rather than only at setup: policies live in the repository,
 	// so they outlive a Maison reinstall — and a Maison bug can leave a stale one.
 	if err := p.EnsurePolicy(ctx, src, DefaultRetention()); err != nil {
 		return "", err
 	}
-	if err := p.SnapshotSource(ctx, src, stamp, 2, nil); err != nil {
+	// emit is passed on rather than dropped, which it was for as long as this existed.
+	// This is the single largest thing the box backs up — the terabytes are here, not
+	// in the apps — and it is the one target with no tile to fall back on, so a run
+	// reporting nothing for it was a run that appeared to hang for hours.
+	if err := p.SnapshotSource(ctx, src, stamp, 2, emit); err != nil {
 		return "", err
 	}
-	b, err := p.CommitSource(ctx, src, stamp, nil)
+	b, err := p.CommitSource(ctx, src, stamp, emit)
 	if err != nil {
 		return "", err
 	}

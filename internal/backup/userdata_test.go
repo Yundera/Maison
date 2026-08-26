@@ -52,7 +52,7 @@ func (f *fakeUserData) Calls() []string {
 	return append([]string(nil), f.calls...)
 }
 
-func (f *fakeUserData) BackupUserData(_ context.Context, stamp string) (string, error) {
+func (f *fakeUserData) BackupUserData(_ context.Context, stamp string, _ func(apps.Event)) (string, error) {
 	f.record("backup:" + stamp)
 	return stamp, f.backupErr
 }

@@ -18,7 +18,8 @@
    *     of the thing that happens, and defaults to the safe mode.
    */
   import { t } from '../../i18n'
-  import { renderSize } from '../../format'
+  import { backupLive } from '../../stores/backuplive'
+  import { renderSize, renderRate, renderDuration } from '../../format'
   import { renderStamp, restoreUserData, type Backup, type UserDataBackups } from '../../stores/backups'
 
   let {
@@ -40,7 +41,25 @@
   let busy = $state(false)
   let error = $state('')
 
-  const restoring = $derived(data.restore.running)
+  // The live channel while something is actually running, the fetched data otherwise.
+  // The fallback is not redundant: the sticky error and the interrupted-restore marker
+  // are what this card shows when *nothing* is running, and they come with the list.
+  const restore = $derived($backupLive?.restore.running ? $backupLive.restore : data.restore)
+  const restoring = $derived(restore.running)
+
+  /** "4.2 GB of 11 GB · 38 MB/s · about 3 min left", from whatever is known. A
+   *  restore of this set is the longest thing Maison does, and it used to report one
+   *  unchanging sentence for the whole of it. */
+  const restoreDetail = $derived.by(() => {
+    const bits: string[] = []
+    if (restore.total)
+      bits.push($t('backup_of_size', { done: renderSize(restore.done ?? 0), total: renderSize(restore.total) }))
+    const rate = renderRate(restore.rate)
+    if (rate) bits.push(rate)
+    const eta = renderDuration(restore.eta)
+    if (eta) bits.push($t('backup_time_left', { time: eta }))
+    return bits.join(' · ')
+  })
 
   /** Where a copy-mode restore lands. Under the data root so it is reachable from every
    *  app and every file share on the box, and named for the backup so two restores do
@@ -80,11 +99,11 @@
        read from a marker on disk rather than from anything in memory. It is the first
        thing on the card because the tree is currently neither the old state nor the new
        one, and nothing else on this page matters until that is resolved. -->
-  {#if data.restore.interrupted}
+  {#if restore.interrupted}
     <p class="alarm">
       {$t('user_data_interrupted')}
-      {#if data.restore.interrupted_stamp}
-        <br />{$t('user_data_interrupted_stamp', { when: renderStamp(data.restore.interrupted_stamp) })}
+      {#if restore.interrupted_stamp}
+        <br />{$t('user_data_interrupted_stamp', { when: renderStamp(restore.interrupted_stamp) })}
       {/if}
     </p>
   {/if}
@@ -100,12 +119,18 @@
     </p>
   {/if}
 
-  {#if data.restore.running}
-    <p class="running">
-      {data.restore.message || $t('user_data_restoring')}
-    </p>
-  {:else if data.restore.error}
-    <p class="err">{data.restore.error}</p>
+  {#if restoring}
+    <p class="running">{restore.message || $t('user_data_restoring')}</p>
+    <!-- Indeterminate until the engine reports something, rather than a bar pinned at
+         zero — which is indistinguishable from a bar that is stuck. -->
+    <div class="bar" class:unknown={(restore.pct ?? -1) < 0}>
+      <div class="fill" style={(restore.pct ?? -1) >= 0 ? `width:${restore.pct}%` : ''}></div>
+    </div>
+    {#if restoreDetail}
+      <p class="detail">{restoreDetail}</p>
+    {/if}
+  {:else if restore.error}
+    <p class="err">{restore.error}</p>
   {/if}
 
   {#if error}<p class="err">{error}</p>{/if}
@@ -178,6 +203,36 @@
 </section>
 
 <style>
+  .bar {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--border);
+    overflow: hidden;
+    margin: 0.35rem 0 0;
+  }
+  .fill {
+    height: 100%;
+    background: var(--primary);
+    transition: width 0.4s ease;
+  }
+  .bar.unknown .fill {
+    width: 30%;
+    animation: slide 1.4s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(333%);
+    }
+  }
+  .detail {
+    margin: 0.3rem 0 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
   .card {
     max-width: 46rem;
     background: var(--surface);

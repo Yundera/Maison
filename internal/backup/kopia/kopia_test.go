@@ -396,6 +396,66 @@ func TestProgressParsingIsToleran(t *testing.T) {
 	}
 }
 
+// The byte counts are what buy the user a transfer rate — the one number that cannot
+// be inferred from a percentage. Everything downstream is engine-agnostic, so this
+// parse is the only place kopia's output shape is known, and the only place it can
+// be got wrong.
+func TestProgressCarriesTheByteCounts(t *testing.T) {
+	const mb = 1000 * 1000 // kopia prints SI units unless told otherwise
+	cases := []struct {
+		line                string
+		wantDone, wantTotal int64
+	}{
+		{
+			// Hashed plus cached, against the estimate the percentage is computed on.
+			// "uploaded" is deliberately not the numerator: after deduplication it is a
+			// fraction of what was read, and a bar built on it would disagree with the
+			// percentage printed beside it on the same line.
+			`| 1 hashing, 0 hashed (100.8 MB), 2 cached (16 B), uploaded 95.6 MB, estimated 125.8 MB (80.1%) 0s left`,
+			100.8*mb + 16, 125.8 * mb,
+		},
+		{
+			`* 0 hashing, 1 hashed (125.8 MB), estimated 125.8 MB (100.0%) 0s left`,
+			125.8 * mb, 125.8 * mb,
+		},
+		{
+			// The opening seconds, before kopia knows the size of the tree. No total, so
+			// no rate and no ETA — the honest indeterminate case, not an error.
+			`| 3 hashing, 0 hashed (0 B), 0 cached (0 B), uploaded 0 B, estimating...`,
+			0, 0,
+		},
+		{
+			// A restore counts entries and bytes; only the bytes are of use to a bar
+			// measured in bytes.
+			`Processed 1226 (1.1 GB) of 2000 (5.5 GB).`,
+			1.1 * 1000 * mb, 5.5 * 1000 * mb,
+		},
+		{`Snapshotting maison@pcs-test:/DATA/AppData/jellyfin ...`, 0, 0},
+	}
+	for _, c := range cases {
+		var got apps.Event
+		emitLine(func(e apps.Event) { got = e }, c.line)
+		if got.Done != c.wantDone || got.Total != c.wantTotal {
+			t.Errorf("emitLine(%q) = (%d, %d), want (%d, %d)",
+				c.line, got.Done, got.Total, c.wantDone, c.wantTotal)
+		}
+	}
+}
+
+// Which unit family kopia prints is a setting. Guessing wrong is a silent 7% error in
+// every rate and ETA on the box — the kind of wrong nobody would ever notice.
+func TestBothUnitFamiliesAreRead(t *testing.T) {
+	if got, want := parseSize("1 GB"), int64(1000*1000*1000); got != want {
+		t.Errorf("parseSize(\"1 GB\") = %d, want %d", got, want)
+	}
+	if got, want := parseSize("1 GiB"), int64(1024*1024*1024); got != want {
+		t.Errorf("parseSize(\"1 GiB\") = %d, want %d", got, want)
+	}
+	if got := parseSize("not a size"); got != 0 {
+		t.Errorf("parseSize(garbage) = %d, want 0", got)
+	}
+}
+
 // The single most dangerous thing in this package: an in-place restore of the user-data
 // set must never be able to delete AppData/.
 //

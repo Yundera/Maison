@@ -52,10 +52,39 @@ export interface BackupConfig {
   smtp?: SmtpConfig
 }
 
-export interface RunResult {
-  target: { Kind: string; App: string }
+/** One target's place in a run.
+ *
+ *  The whole list arrives before the first target starts, which is what lets the page
+ *  say "3 of 9" and show what is still to come. It carries no display name on
+ *  purpose: resolving one server-side means asking Docker about every app on the box,
+ *  and the dashboard already holds the names and icons — see targetLabel(). */
+export interface TargetState {
+  /** "app:jellyfin", or "userdata". */
+  id: string
+  kind: 'app' | 'userdata'
+  /** Compose project, absent for the user-data target. */
+  app?: string
+  /** The backup this produced, once it has one. */
   name?: string
+  /** `skipped` is a target the run deliberately did not attempt — the user-data set
+   *  while a restore is rewriting it, or an app somebody is already backing up by
+   *  hand. It is not a failure and is not counted as one. */
+  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
   error?: string
+  /** Engine-agnostic step: copy | sync | start | compress | restore. `sync` is the
+   *  one where the app is actually stopped. */
+  phase?: string
+  message?: string
+  /** -1 when neither the engine nor the byte counts can say. */
+  pct: number
+  done?: number
+  total?: number
+  /** Bytes per second, absent until measurable. */
+  rate?: number
+  /** Seconds left in this phase, absent until the estimate is worth showing. */
+  eta?: number
+  started?: string
+  finished?: string
 }
 
 export interface RunState {
@@ -65,10 +94,17 @@ export interface RunState {
   ran: boolean
   started?: string
   finished?: string
+  /** ID of the target in flight. Redundant against `targets`, kept for callers that
+   *  do not want the whole plan. */
   current?: string
-  results?: RunResult[]
+  targets?: TargetState[]
   failures: number
   last_error?: string
+}
+
+/** How many targets have finished, successfully or not — the "3" in "3 of 9". */
+export function targetsDone(run: RunState): number {
+  return (run.targets ?? []).filter((t) => t.status !== 'pending' && t.status !== 'running').length
 }
 
 /** When a copy of the encryption key last left the box by mail. Absent means no

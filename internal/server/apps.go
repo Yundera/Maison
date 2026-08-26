@@ -165,3 +165,25 @@ func (s *Server) handleDismissApp(w http.ResponseWriter, r *http.Request) {
 	s.apps.ClearBackup(id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// handleAppIcon serves an installed app's icon from its folder — the copy taken
+// at install (see internal/appicon), which is what the app list points every tile
+// at. 404 when the app has no copy: the client asked for a URL the list did not
+// hand it, and there is nothing to fall back to here.
+//
+// no-cache, not no-store: the icon is unchanged between updates and worth
+// revalidating rather than refetching, but a browser holding last version's icon
+// for a heuristic hour after an update is exactly what this must not do.
+func (s *Server) handleAppIcon(w http.ResponseWriter, r *http.Request) {
+	if s.apps == nil {
+		http.NotFound(w, r)
+		return
+	}
+	path := s.apps.IconPath(chi.URLParam(r, "id"))
+	if path == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, path)
+}

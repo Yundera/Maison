@@ -85,6 +85,16 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		s.apps.OnProgress = throttle(300*time.Millisecond, s.broadcastApps)
 		s.hub.AppsSnapshot = s.appsSnapshot
 		s.watchDocker()
+		// Apps installed before Maison kept a local icon have none on disk; take the
+		// copy now, once, so their tiles stop depending on the store's CDN like every
+		// other tile. In the background: it is one HTTP GET per such app, and the
+		// dashboard must not wait on the network to come up.
+		go func() {
+			s.apps.EnsureIcons(context.Background())
+			// The tiles were listed before the copies existed; re-list so they switch
+			// to the local icons without waiting for the next thing to change.
+			s.broadcastApps()
+		}()
 	}
 
 	// Backup engines. Built after the registry so the registry can be handed the set,
@@ -191,6 +201,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Post("/apps/{id}/update", s.handleApplyUpdate)
 		r.Get("/apps/{id}/services", s.handleAppServices)
 		r.Get("/apps/{id}/reachable", s.handleReachable)
+		r.Get("/apps/{id}/icon", s.handleAppIcon)
 		r.Get("/apps/{id}/logs", s.handleAppLogs)
 		r.Get("/apps/{id}/stats", s.handleAppStats)
 		r.Post("/apps/{id}/dismiss", s.handleDismissApp)

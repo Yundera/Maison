@@ -297,6 +297,11 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 		return err
 	}
 
+	// The store's icon, copied in beside the compose for the same reason the seed
+	// tree is: the installed app carries what it needs to render itself, without
+	// the store and without the store's CDN.
+	writeIcon(ctx, app, appDir, project)
+
 	// Prefill the app's .env from the deployment's .env.app (merged with the vars
 	// Maison computes per app), so its compose resolves offline and the operator
 	// can hand-edit it afterwards — see docs/app-model.md and internal/appenv.

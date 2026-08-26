@@ -138,6 +138,10 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 	if err := writeSeed(app, dir); err != nil {
 		return in.rollBack(ctx, project, res, err)
 	}
+	// The icon comes from that same sync, so an update that changes the app's icon
+	// changes the tile. Unlike the seed tree it cannot fail the update: a tile with
+	// last version's icon is not a reason to roll an app back.
+	writeIcon(ctx, app, dir, project)
 
 	// stackup.Up creates any folder the updated compose newly introduces — declared
 	// or bind-derived — before bringing the stack back up, so the new version can

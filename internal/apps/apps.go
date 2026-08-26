@@ -306,6 +306,12 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 			si, ca := r.metaFor(name, "")
 			app = buildApp(name, si, ca, r.cfg.AppDomain(), true, StatusStopped, nil)
 		}
+		// An installed app is rendered from the icon in its own folder, so the grid
+		// does not depend on the store's CDN (see internal/appicon). The compose's
+		// icon URL stays the fallback for an app that has no copy.
+		if u := r.localIcon(name); u != "" {
+			app.Icon = u
+		}
 		app.Busy = r.isBusy(name)
 		out = append(out, app)
 		seen[name] = true

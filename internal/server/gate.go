@@ -51,6 +51,10 @@ func (s *Server) isDashboardHost(hostport string) bool {
 func (s *Server) gateRouter() http.Handler {
 	m := chi.NewRouter()
 	m.Get(brand.GateRoot+"/reachable", s.gateReachable)
+	// The launch page shows the app's icon, and the app list gives it as a path on
+	// whatever origin the page was served from — here, the app's own host. Serving
+	// it from the gate too keeps that one URL right in both modes.
+	m.Get("/api/apps/{id}/icon", s.handleAppIcon)
 	m.Post(brand.GateRoot+"/start", s.gateStart)
 	m.Handle("/*", http.HandlerFunc(s.gatePage))
 	return m

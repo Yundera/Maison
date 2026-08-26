@@ -26,6 +26,7 @@ Every app is one directory directly under the data root:
 ├── docker-compose.override.yml   # user edits from the config window (Compose override)
 ├── .env                          # prefilled by Maison on create, then user-editable
 ├── .seed/                        # the store's seed tree, copied in at install
+├── .icon.png                     # the store's icon, copied in at install (any image extension)
 ├── .init/                        # markers for init steps that run once
 └── …                             # any other files the app needs (configs, seed data, …)
 ```
@@ -41,6 +42,7 @@ what the dashboard shows.
 | `docker-compose.override.yml` | Generated from the **per-app config window** (ports, env, volumes, …). | Maison, on every config save — and on every up, for the routes it generates (see [`domains.md`](./domains.md)). | User customizations, layered on top via Compose override semantics. The running stack = `docker-compose.yml` + `docker-compose.override.yml`. |
 | `.env` | **Prefilled by Maison on create** (PUID/PGID, TZ, `REF_*`, domain, generated secrets, …), then hand-editable. | Maison on create; user thereafter. | Variable substitution for both compose files. |
 | `.seed/` | Copied from the store app's `seed/` folder at install, refreshed on update. | Maison, on install and update. | The app's initial data tree, mirroring this folder. Written out create-if-absent on every up, so a missing file is restored and an edited one is left alone. Nothing ever writes back into it. See [`x-compose-app.md`](./x-compose-app.md). |
+| `.icon.<ext>` | Copied from the store app's folder at install, refreshed on update; downloaded from the compose's `icon:` URL when the store ships no file. | Maison, on install and update. | The tile's icon, so the dashboard renders an installed app from disk instead of from the store's CDN — it keeps its icon offline, and after the store repo moves or disappears. The app list points every managed tile at `/api/apps/<app>/icon`; an app with no copy falls back to the `icon:` URL in its compose. Delete the file to force the copy to be taken again (it is refilled at the next boot). |
 | `.init/` | Written by Maison when a `when: once` init step succeeds. | Maison. | One empty file per completed step, so a seeder that must not run twice does not. It lives here rather than in Maison's own state so that it travels with the app's backup — an app restored from an archive does not re-seed a database it already has. |
 | everything else | The app (bind-mount targets, config files, databases, …). | The app at runtime, and Maison's seed/files declarations on first write. | User data. **Never** deleted by Maison (see uninstall). |
 

@@ -22,6 +22,15 @@ type Settings struct {
 	// default) means apps are reachable only at the deployment's primary domain,
 	// exactly as their store compose routes them.
 	Domains []domains.Domain `json:"domains,omitempty"`
+
+	// MetricsHistory switches the resource-history sampler on and off. It is the
+	// one thing Maison measures when nobody is looking at the dashboard, so it is
+	// the one thing worth being able to turn off.
+	//
+	// A POINTER, not a bool, and that is load-bearing: merge treats a zero value as
+	// "not supplied", so a plain bool could be turned on and then never off again —
+	// `false` would be indistinguishable from an absent field. See merge.
+	MetricsHistory *bool `json:"metrics_history,omitempty"`
 }
 
 // Defaults returns the initial settings.
@@ -30,6 +39,10 @@ func Defaults() Settings {
 		Wallpaper: "/wallpapers/default_wallpaper.jpg",
 		Language:  "en_us",
 		Widgets:   map[string]bool{"clock": true, "system": true, "storage": true},
+		// On: the cost is a sparse file that reaches 1.32 MiB after thirty days and
+		// one cheap reading a minute, and the alternative is a graph that is empty
+		// the first time anyone looks for it.
+		MetricsHistory: boolPtr(true),
 	}
 }
 
@@ -112,5 +125,18 @@ func merge(base, in Settings) Settings {
 	if in.Domains != nil {
 		base.Domains = in.Domains
 	}
+	if in.MetricsHistory != nil {
+		base.MetricsHistory = in.MetricsHistory
+	}
 	return base
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// HistoryEnabled reports whether the resource-history sampler should run. Absent
+// means on, so a settings file written before the field existed keeps the default
+// rather than silently disabling history on upgrade.
+func (s *Store) HistoryEnabled() bool {
+	v := s.Get().MetricsHistory
+	return v == nil || *v
 }

@@ -18,6 +18,7 @@
   import DomainSection from './DomainSection.svelte'
   import AppEnvSection from './AppEnvSection.svelte'
   import BackupsSection from './BackupsSection.svelte'
+  import ResourcesSection from './ResourcesSection.svelte'
 
   // route.ts guarantees the store holds a real section (it normalises the URL), so
   // this cast only re-states what the router already checked.
@@ -37,6 +38,10 @@
     backups: {
       label: 'backups',
       icon: 'M4 8h16M8 12h8M10 16h4',
+    },
+    resources: {
+      label: 'resources',
+      icon: 'M4 16l4-5 3 3 4-6 5 8',
     },
   }
 
@@ -79,6 +84,8 @@
         <AppEnvSection />
       {:else if current === 'backups'}
         <BackupsSection />
+      {:else if current === 'resources'}
+        <ResourcesSection />
       {/if}
     </main>
   </div>

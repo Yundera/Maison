@@ -30,9 +30,31 @@ const (
 	// a YAML parse per app, so tying the two together would have made a byte counter
 	// the most expensive thing on the dashboard.
 	ChannelBackup = "backup"
+	// ChannelAppStats carries per-app CPU/memory for the monitor panel: one row
+	// per compose project, sampled only while that panel is open.
+	//
+	// Separate from ChannelSystem, which it sits behind in the UI, because it is
+	// far more expensive to produce — a container listing plus a blocking stats
+	// read per running container — and the gauges must keep ticking at their own
+	// rate whether or not anyone has opened the breakdown.
+	ChannelAppStats = "appstats"
+	// ChannelResources carries the host breakdown behind the Resources page:
+	// per-interface throughput, per-device IO, the filesystem table and the process
+	// list.
+	//
+	// Separate from ChannelSystem, whose two gauges every dashboard visitor
+	// subscribes to, because this payload costs a great deal more to produce — the
+	// process table alone is a /proc read per process on the box — and only one
+	// page ever wants it. Nothing here is sampled while that page is closed.
+	ChannelResources = "resources"
 )
 
 const sampleInterval = 2 * time.Second
+
+// appStatsInterval is slower than the gauges on purpose: one round costs a
+// second or so of daemon round-trips (see appstats.Sampler), and a per-app
+// figure that moves every three seconds reads as live enough.
+const appStatsInterval = 3 * time.Second
 
 // Envelope is the wire format in both directions.
 type Envelope struct {
@@ -55,6 +77,13 @@ type Hub struct {
 	// BackupSnapshot, if set, returns the current backup run/restore state for the
 	// "backup" channel.
 	BackupSnapshot func() any
+
+	// AppStatsSnapshot, if set, returns per-app usage for the "appstats" channel.
+	AppStatsSnapshot func() any
+
+	// ResourcesSnapshot, if set, returns the host breakdown for the "resources"
+	// channel.
+	ResourcesSnapshot func() any
 }
 
 // NewHub creates a hub sampling utilization via the given collector.
@@ -64,6 +93,8 @@ func NewHub(collector *system.Collector) *Hub {
 		clients:   make(map[*client]struct{}),
 	}
 	go h.sampleLoop()
+	go h.appStatsLoop()
+	go h.resourcesLoop()
 	return h
 }
 
@@ -109,6 +140,35 @@ func (h *Hub) sampleLoop() {
 			continue
 		}
 		h.Broadcast(ChannelSystem, h.collector.Sample())
+	}
+}
+
+// appStatsLoop pushes per-app usage while the monitor panel is open. Sampling is
+// synchronous here, so a round that outlives a tick simply delays the next one
+// rather than stacking a second scan of the daemon on top of the first.
+func (h *Hub) appStatsLoop() {
+	ticker := time.NewTicker(appStatsInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if h.AppStatsSnapshot == nil {
+			continue
+		}
+		h.BroadcastLazy(ChannelAppStats, h.AppStatsSnapshot)
+	}
+}
+
+// resourcesLoop pushes the host breakdown while the Resources page is open. It
+// shares the gauges' cadence — the two are read side by side on that page, and a
+// per-interface figure that lags the CPU dial is more confusing than one that
+// moves with it.
+func (h *Hub) resourcesLoop() {
+	ticker := time.NewTicker(sampleInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if h.ResourcesSnapshot == nil {
+			continue
+		}
+		h.BroadcastLazy(ChannelResources, h.ResourcesSnapshot)
 	}
 }
 
@@ -235,6 +295,28 @@ func (c *client) snapshot(h *Hub, channel string) {
 				Data: mustJSON(h.BackupSnapshot())}); err == nil {
 				c.trySend(raw)
 			}
+		}
+	case ChannelResources:
+		// Off the read pump, like the appstats case: this snapshot walks the process
+		// table, and the pump is what carries the client's next subscribe.
+		if h.ResourcesSnapshot != nil {
+			go func() {
+				if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
+					Data: mustJSON(h.ResourcesSnapshot())}); err == nil {
+					c.trySend(raw)
+				}
+			}()
+		}
+	case ChannelAppStats:
+		// Off the read pump: this snapshot blocks for about a second on the daemon,
+		// and the pump is what carries the client's next subscribe.
+		if h.AppStatsSnapshot != nil {
+			go func() {
+				if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
+					Data: mustJSON(h.AppStatsSnapshot())}); err == nil {
+					c.trySend(raw)
+				}
+			}()
 		}
 	}
 }

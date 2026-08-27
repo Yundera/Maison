@@ -1,6 +1,7 @@
 package usersettings
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -90,5 +91,60 @@ func TestNewLoadsWhatSetWrote(t *testing.T) {
 	}
 	if reloaded.Widgets == nil {
 		t.Error("widgets = nil, want the defaults to fill in a field the file never set")
+	}
+}
+
+// The history toggle is a *bool precisely so it can be turned back off. A plain
+// bool would hit merge's "a zero value means not supplied" rule and the off
+// switch would silently do nothing — which is the bug this test exists to catch
+// if anyone ever simplifies the field.
+func TestHistoryToggleCanBeTurnedOffAgain(t *testing.T) {
+	s := newStore(t)
+	if !s.HistoryEnabled() {
+		t.Fatal("history should default to enabled")
+	}
+
+	off := false
+	if err := s.Set(Settings{MetricsHistory: &off}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if s.HistoryEnabled() {
+		t.Fatal("history still enabled after being switched off")
+	}
+
+	on := true
+	if err := s.Set(Settings{MetricsHistory: &on}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if !s.HistoryEnabled() {
+		t.Fatal("history still disabled after being switched back on")
+	}
+}
+
+// An edit that does not mention the toggle must not reset it — the dashboard's own
+// PUT /api/settings carries wallpaper and widgets only.
+func TestUnrelatedEditKeepsTheHistoryToggle(t *testing.T) {
+	s := newStore(t)
+	off := false
+	if err := s.Set(Settings{MetricsHistory: &off}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := s.Set(Settings{Wallpaper: "/wallpapers/other.jpg"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if s.HistoryEnabled() {
+		t.Fatal("changing the wallpaper re-enabled history")
+	}
+}
+
+// A settings file written before the field existed must keep history on rather
+// than reading its absence as "off".
+func TestSettingsFilePredatingTheFieldDefaultsToEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"wallpaper":"/w.jpg","language":"fr_fr"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !New(path).HistoryEnabled() {
+		t.Error("history disabled by an upgrade from a file that predates the setting")
 	}
 }

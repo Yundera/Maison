@@ -26,6 +26,11 @@ services:
       # out of this compose is what keeps the two apart: this block is what Maison
       # needs to run; .env.app is what an app receives. See docs/app-env.md.
       APPSTORE_URL: "https://github.com/Yundera/AppStore/archive/refs/heads/main.zip"
+      # Where the HOST's /proc is readable (see the mount below). Most of /proc is
+      # not namespaced, so CPU/memory/disk-IO already report the host without it;
+      # this is what makes the Resources page's network counters, process list and
+      # mount names the box's rather than this container's.
+      HOST_PROC: "/host/proc"
     # The Docker socket is root-owned here; grant the group so a non-root process
     # could reach it. On most hosts the socket is in the "docker" group.
     group_add:
@@ -43,6 +48,12 @@ services:
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
+      # Read-only host /proc, paired with HOST_PROC above. Not a new capability:
+      # the docker socket mounted above is already root-equivalent on the host.
+      - type: bind
+        source: /proc
+        target: /host/proc
+        read_only: true
 
 networks:
   mesh:

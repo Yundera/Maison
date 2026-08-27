@@ -339,6 +339,20 @@ func (c *Client) ContainerStatsStream(ctx context.Context, id string) (io.ReadCl
 	return resp.Body, nil
 }
 
+// ContainerStatsOnce returns a single stats sample for a container. The daemon
+// collects two samples before answering (~1s), so unlike a one-shot read the
+// frame carries PreCPUStats and a CPU percentage can be derived from it.
+func (c *Client) ContainerStatsOnce(ctx context.Context, id string) (container.StatsResponse, error) {
+	var out container.StatsResponse
+	resp, err := c.cli.ContainerStats(ctx, id, false)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	return out, err
+}
+
 // WatchContainers calls onEvent (debounced by the caller) whenever a container
 // lifecycle event occurs, until ctx is cancelled.
 func (c *Client) WatchContainers(ctx context.Context, onEvent func()) {

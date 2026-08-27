@@ -19,6 +19,10 @@ export interface Settings {
   language: string
   widgets: Record<string, boolean>
   domains: Domain[]
+  /** Whether the resource-history recorder runs. It is the only thing Maison
+   *  measures with nobody watching, so it is the only thing with an off switch —
+   *  see the Recording card on the Resources page. */
+  metrics_history: boolean
 }
 
 const DEFAULTS: Settings = {
@@ -26,6 +30,7 @@ const DEFAULTS: Settings = {
   language: 'en_us',
   widgets: { clock: true, system: true, storage: true },
   domains: [],
+  metrics_history: true,
 }
 
 export const settings = writable<Settings>({ ...DEFAULTS })

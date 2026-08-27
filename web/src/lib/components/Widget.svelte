@@ -3,8 +3,16 @@
   let {
     title = '',
     arrow = false,
+    onarrowclick,
     children,
-  }: { title?: string; arrow?: boolean; children?: Snippet } = $props()
+  }: {
+    title?: string
+    arrow?: boolean
+    /** When given, the arrow becomes a button opening the widget's detail view.
+     *  Without it the arrow stays the decoration it has always been. */
+    onarrowclick?: () => void
+    children?: Snippet
+  } = $props()
 </script>
 
 <section class="widget">
@@ -13,7 +21,13 @@
     {#if title}
       <header class="widget-title">
         <span>{title}</span>
-        {#if arrow}<span class="arrow">›</span>{/if}
+        {#if arrow}
+          {#if onarrowclick}
+            <button class="arrow" aria-label={title} onclick={onarrowclick}>›</button>
+          {:else}
+            <span class="arrow">›</span>
+          {/if}
+        {/if}
       </header>
     {/if}
     {@render children?.()}
@@ -48,5 +62,19 @@
   .arrow {
     color: var(--grey-400);
     font-size: 1.25rem;
+  }
+  button.arrow {
+    background: none;
+    border: none;
+    padding: 0 0.25rem;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      color 0.15s,
+      transform 0.15s;
+  }
+  button.arrow:hover {
+    color: var(--grey-100);
+    transform: translateX(2px);
   }
 </style>

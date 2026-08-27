@@ -67,6 +67,7 @@ The README is the overview. These are **authoritative** and win on any conflict:
 | [`docs/domains.md`](./docs/domains.md) | The **additional domains** apps are published on (`sslip.io` / `nip.io` / your own), and the Caddy routes Maison generates for them. |
 | [`docs/FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md) | Row-by-row scope table vs `casa-img`. |
 | [`docs/backup.md`](./docs/backup.md) | **Design, not yet implemented.** Offsite backup and disaster recovery: the two backup sets, the pluggable engine, scheduling, retention, encryption, and recovery mode. |
+| [`docs/resources.md`](./docs/resources.md) | The **Resources** page: live host breakdown, 30 days of history in a fixed-size ring file, the `HOST_PROC` mount, and the disk / network benchmarks. |
 
 > **Reference implementation:** the full CasaOS bundle Maison slims down lives at
 > `D:\workspace\yundera\yundera-root\packages\casa-img` (container path
@@ -117,6 +118,8 @@ the dashboard + app-management surface.
 | Multi-store | ✅ | ✅ |
 | Multi-service Compose apps | ✅ | ✅ |
 | System widgets (CPU / RAM / storage) | ✅ | ✅ |
+| Resource monitor with history ([`resources.md`](./docs/resources.md)) | ❌ | ✅ 30 days |
+| Disk / network benchmarks | ❌ | ✅ |
 | Per-app logs, container stats, live status | ✅ | ✅ |
 | i18n / multi-language | ✅ | ✅ |
 | Authentication / users | ✅ | ❌ |
@@ -199,6 +202,12 @@ Just the app grid — no global search bar, no promo cards.
 
 Wallpaper, **language** (`en_us`, `fr_fr`, `de_de`, `zh_cn` — one JSON per language),
 widget visibility, and the **app-store source URLs** (multi-store).
+
+The full-screen settings page (`/settings/<section>`) carries the rest: domains, the
+deployment's `.env.app`, backups, and **Resources** — the host monitor, its thirty days of
+recorded history, and the disk / network benchmarks
+([`docs/resources.md`](./docs/resources.md)). The System status widget's arrow opens the
+per-app monitor, which links through to the same page.
 
 ---
 

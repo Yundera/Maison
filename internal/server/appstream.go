@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/appstats"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/overrideform"
 )
@@ -320,8 +321,8 @@ func (s *Server) handleAppStats(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out := statsFrame{
-			CPUPercent: computeCPU(v),
-			MemUsage:   v.MemoryStats.Usage,
+			CPUPercent: appstats.CPUPercent(v),
+			MemUsage:   appstats.MemUsage(v),
 			MemLimit:   v.MemoryStats.Limit,
 			Health:     s.dx.ContainerHealth(ctx, cid),
 		}
@@ -337,20 +338,4 @@ type statsFrame struct {
 	MemUsage   uint64  `json:"mem_usage"`
 	MemLimit   uint64  `json:"mem_limit"`
 	Health     string  `json:"health"` // "", starting, healthy, unhealthy
-}
-
-// computeCPU derives a CPU percentage from a streamed stats frame (which carries
-// the previous sample for delta computation).
-func computeCPU(v container.StatsResponse) float64 {
-	cpuDelta := float64(v.CPUStats.CPUUsage.TotalUsage) - float64(v.PreCPUStats.CPUUsage.TotalUsage)
-	sysDelta := float64(v.CPUStats.SystemUsage) - float64(v.PreCPUStats.SystemUsage)
-	online := float64(v.CPUStats.OnlineCPUs)
-	if online == 0 {
-		online = float64(len(v.CPUStats.CPUUsage.PercpuUsage))
-	}
-	if sysDelta > 0 && cpuDelta > 0 {
-		pct := (cpuDelta / sysDelta) * online * 100
-		return float64(int64(pct*10+0.5)) / 10
-	}
-	return 0
 }

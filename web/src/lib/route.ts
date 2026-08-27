@@ -26,7 +26,7 @@ import { CATALOG, parseRef, refPath, type StoreRef } from './storeref'
 // vocabulary, so it lives here rather than in the component — which means the rail
 // and the deep links cannot drift, and adding a section is one entry here plus its
 // panel in SettingsPage.
-export const SETTINGS_SECTIONS = ['domain', 'env', 'backups'] as const
+export const SETTINGS_SECTIONS = ['domain', 'env', 'backups', 'resources'] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 
 const isSection = (s: string): s is SettingsSection =>

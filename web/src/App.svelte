@@ -8,12 +8,20 @@
   import SettingsPage from './lib/components/settings/SettingsPage.svelte'
   import AppSettingsModal from './lib/components/AppSettingsModal.svelte'
   import TipsModal from './lib/components/TipsModal.svelte'
+  import MonitorPanel from './lib/components/MonitorPanel.svelte'
   import UninstallDialog from './lib/components/UninstallDialog.svelte'
   import { get } from 'svelte/store'
   import { live } from './lib/live/ws'
   import { subscribeSystem } from './lib/stores/system'
   import { apps } from './lib/stores/apps'
-  import { storeOpen, settingsOpen, settingsApp, tipsApp, uninstallTarget } from './lib/stores/ui'
+  import {
+    storeOpen,
+    settingsOpen,
+    settingsApp,
+    tipsApp,
+    uninstallTarget,
+    monitorOpen,
+  } from './lib/stores/ui'
   import { openStore, start as startRouter } from './lib/route'
   import { loadSettings } from './lib/stores/settings'
 
@@ -98,6 +106,10 @@
 
 {#if $tipsApp}
   <TipsModal target={$tipsApp} />
+{/if}
+
+{#if $monitorOpen}
+  <MonitorPanel />
 {/if}
 
 {#if $uninstallTarget}

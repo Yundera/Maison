@@ -2,6 +2,7 @@
   import Widget from '../Widget.svelte'
   import RadialBar from '../RadialBar.svelte'
   import { systemStats } from '../../stores/system'
+  import { monitorOpen } from '../../stores/ui'
   import { renderSize } from '../../format'
   import { t } from '../../i18n'
 
@@ -17,7 +18,7 @@
   )
 </script>
 
-<Widget title={$t('system_status')} arrow>
+<Widget title={$t('system_status')} arrow onarrowclick={() => monitorOpen.set(true)}>
   <div class="gauges">
     <RadialBar
       percent={s?.cpu_percent ?? 0}

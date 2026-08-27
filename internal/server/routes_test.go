@@ -208,3 +208,61 @@ func TestGlobalBackupsDescribesTheUserDataSet(t *testing.T) {
 		t.Errorf("user_data = %+v; want the source and its exclusions", local.UserData)
 	}
 }
+
+// The Resources page's endpoints answer on a box with no Docker and no recorded
+// history — the page must render (empty) rather than error, since that is exactly
+// the state a fresh install is in.
+func TestResourceRoutesAnswerOnABareBox(t *testing.T) {
+	h := New(config.Config{DataRoot: t.TempDir()}, fstest.MapFS{})
+
+	for _, c := range []struct {
+		method, path string
+		wantStatus   int
+		wantBody     string
+	}{
+		{http.MethodGet, "/api/system/history?from=1&to=2", http.StatusOK, `"spans":[]`},
+		{http.MethodGet, "/api/system/resources", http.StatusOK, `"filesystems"`},
+		{http.MethodGet, "/api/system/bench", http.StatusOK, `"disk"`},
+	} {
+		req := httptest.NewRequest(c.method, c.path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.wantStatus {
+			t.Errorf("%s %s -> %d, want %d", c.method, c.path, rec.Code, c.wantStatus)
+		}
+		if !strings.Contains(rec.Body.String(), c.wantBody) {
+			t.Errorf("%s %s body %q, want it to contain %q", c.method, c.path, rec.Body.String(), c.wantBody)
+		}
+	}
+}
+
+// A history window is served as a downsampled series with the bucket width
+// alongside it — the client needs that width to tell a gap in the recording from
+// two adjacent points.
+func TestHistoryReportsTheBucketWidth(t *testing.T) {
+	h := New(config.Config{DataRoot: t.TempDir()}, fstest.MapFS{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/history?points=100", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var got struct {
+		StepMs      int64 `json:"step_ms"`
+		RetentionMs int64 `json:"retention_ms"`
+		Enabled     bool  `json:"enabled"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, rec.Body.String())
+	}
+	// The default window is an hour over 100 buckets — but never finer than the
+	// recording resolution, which is what the response has to report.
+	if got.StepMs < 60_000 {
+		t.Errorf("step_ms = %d, want at least the 60s recording resolution", got.StepMs)
+	}
+	if want := int64(30 * 24 * 60 * 60 * 1000); got.RetentionMs != want {
+		t.Errorf("retention_ms = %d, want %d (30 days)", got.RetentionMs, want)
+	}
+	if !got.Enabled {
+		t.Error("history reports disabled on a fresh box, want the default to be on")
+	}
+}

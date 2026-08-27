@@ -30,6 +30,11 @@ export const settingsApp = writable<{
   tab?: string
 } | null>(null)
 
+// Whether the per-app monitor is open — the breakdown behind the System status
+// widget's arrow. MonitorPanel subscribes to the "appstats" channel while it is
+// true, and nothing samples it while it is false.
+export const monitorOpen = writable(false)
+
 // The app whose rendered-Tips modal is open (null = closed).
 export const tipsApp = writable<{ id: string; name: string } | null>(null)
 

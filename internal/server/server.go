@@ -16,14 +16,17 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/appstats"
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/bench"
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
+	"github.com/yundera/maison/internal/metrics"
 	"github.com/yundera/maison/internal/system"
 	"github.com/yundera/maison/internal/usersettings"
 )
@@ -33,9 +36,13 @@ type Server struct {
 	cfg       config.Config
 	uiFS      fs.FS
 	collector *system.Collector
+	detailer  *system.Detailer
+	history   *metrics.Sampler
+	bench     *bench.Runner
 	hub       *live.Hub
 	dx        *dockerx.Client
 	apps      *apps.Registry
+	appstats  *appstats.Sampler
 	store     *appstore.Manager
 	installer *installer.Installer
 	settings  *usersettings.Store
@@ -64,9 +71,25 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		cfg:       cfg,
 		uiFS:      uiFS,
 		collector: collector,
+		detailer:  system.NewDetailer(cfg.DataRoot),
+		bench:     bench.New(cfg.StateDir()),
 		hub:       live.NewHub(collector),
 		settings:  settings,
 	}
+	s.hub.ResourcesSnapshot = s.resourcesSnapshot
+
+	// The resource-history recorder: the one thing here that samples the host with
+	// nobody watching, which is why it is the one thing with an off switch. It
+	// re-reads that switch every tick, so flipping it takes effect without a
+	// restart, and it never creates its file while it is off.
+	s.history = metrics.NewSampler(
+		filepath.Join(cfg.StateDir(), "metrics.ring"),
+		cfg.DataRoot,
+		metrics.DefaultStep,
+		metrics.DefaultSlots,
+		settings.HistoryEnabled,
+	)
+	go s.history.Run(context.Background())
 
 	if dx, err := dockerx.New(); err != nil {
 		log.Printf("docker: %v (app management disabled)", err)
@@ -76,6 +99,8 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		}
 		s.dx = dx
 		s.apps = apps.New(cfg, dx)
+		s.appstats = appstats.New(dx)
+		s.hub.AppStatsSnapshot = s.appStatsSnapshot
 		// Rebroadcast the app list whenever a lifecycle op enters/leaves its busy
 		// state, so tiles show/hide the "…" overlay live (docs/app-model.md).
 		s.apps.OnChange = s.broadcastApps
@@ -185,6 +210,13 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/system/stats", s.handleSystemStats)
+		r.Get("/system/appstats", s.handleAppStatsSummary)
+		r.Get("/system/resources", s.handleResources)
+		r.Get("/system/history", s.handleHistory)
+		r.Delete("/system/history", s.handleDeleteHistory)
+		r.Get("/system/bench", s.handleBenchState)
+		r.Post("/system/bench/disk", s.handleDiskBench)
+		r.Post("/system/bench/network", s.handleNetworkBench)
 		r.Get("/apps", s.handleListApps)
 		r.Get("/apps/{id}/config", s.handleGetConfig)
 		r.Put("/apps/{id}/config", s.handlePutConfig)
@@ -288,6 +320,31 @@ func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleSystemStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.collector.Sample())
+}
+
+// handleAppStatsSummary answers the same payload the "appstats" live channel
+// pushes: a one-shot read for a client that wants the breakdown without holding
+// a subscription open.
+func (s *Server) handleAppStatsSummary(w http.ResponseWriter, r *http.Request) {
+	if s.appstats == nil {
+		http.Error(w, "docker unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, s.appstats.Sample(ctx))
+}
+
+// appStatsSnapshot produces the per-app usage payload for the live channel. The
+// timeout is generous because the cost scales with how many containers the box
+// runs, and a partial round is worth more than a dropped one.
+func (s *Server) appStatsSnapshot() any {
+	if s.appstats == nil {
+		return appstats.Snapshot{Apps: []appstats.Stat{}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return s.appstats.Sample(ctx)
 }
 
 // listApps returns the reconciled app list with any in-flight installs and

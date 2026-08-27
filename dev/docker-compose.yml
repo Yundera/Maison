@@ -94,6 +94,9 @@ services:
       PGID: "1000"
       TZ: "${TZ:-UTC}"
       APPSTORE_URL: "https://github.com/Yundera/AppStore/archive/refs/heads/main.zip"
+      # Matches prod: makes the Resources page's network counters, process list and
+      # filesystem names the HOST's rather than this container's. See the mount below.
+      HOST_PROC: "/host/proc"
 
       # NOTE: what an app *receives* is not set here — it is written to .env.app by
       # the `appenv` service below, exactly as a Yundera PCS orchestrator writes it
@@ -115,6 +118,10 @@ services:
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
+      - type: bind
+        source: /proc
+        target: /host/proc
+        read_only: true
     labels:
       # Reach the dashboard by label (dev CA). The root domain also routes here
       # via the Caddyfile's DEFAULT_SERVICE_HOST/PORT.

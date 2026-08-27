@@ -45,3 +45,38 @@ export function renderElapsed(from?: string, to?: string): string {
   const end = to ? Date.parse(to) : Date.now()
   return renderDuration(Math.max(0, (end - start) / 1000))
 }
+
+/** A percentage, e.g. "37.4%". */
+export function renderPercent(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${value.toFixed(1)}%`
+}
+
+/** Link speed in megabits, which is how uplinks are sold and measured — "94.2
+ *  Mbps" rather than the 11.8 MB/s it works out to. 1 Mbps = 125,000 bytes/s. */
+export function renderMbps(bytesPerSecond?: number | null): string {
+  if (bytesPerSecond == null || !Number.isFinite(bytesPerSecond)) return '—'
+  const mbps = (bytesPerSecond * 8) / 1_000_000
+  return `${mbps < 10 ? mbps.toFixed(2) : mbps < 100 ? mbps.toFixed(1) : mbps.toFixed(0)} Mbps`
+}
+
+/** Uptime as a coarse "12d 4h" / "4h 20min" / "18min". Deliberately two units:
+ *  nobody reads the seconds of an uptime, and showing them makes the number look
+ *  like it is still moving. */
+export function renderUptime(seconds?: number | null): string {
+  if (!seconds || seconds <= 0) return '—'
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}min`
+  return `${m}min`
+}
+
+/** A throughput, always signed with a rate — unlike renderRate, which returns ''
+ *  for zero because a backup showing "0 B/s" reads as stalled. A live network
+ *  graph showing nothing is not stalled, it is idle, and "0 B/s" is the truth. */
+export function renderThroughput(bytesPerSecond?: number | null): string {
+  if (bytesPerSecond == null || !Number.isFinite(bytesPerSecond)) return '—'
+  return `${renderSize(Math.max(0, bytesPerSecond))}/s`
+}

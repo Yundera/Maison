@@ -35,6 +35,10 @@ import (
 // changes under a live repository turns a format surprise into a 3am failure.
 const DefaultImage = "kopia/kopia:0.23.1"
 
+// engineBinary is the image's own ENTRYPOINT, which `docker exec` does not apply for
+// us and so has to be named when running inside a resident container.
+const engineBinary = "/bin/kopia"
+
 // ID is this engine's permanent identifier. It is recorded on every backup it
 // writes and is how those backups are found again after the user switches engines,
 // so it can never change.
@@ -370,6 +374,16 @@ func (p *Provider) spec(rc repoConfig, secrets map[string]string, args []string,
 	if rc.Storage.Type == "filesystem" || rc.Storage.Type == "" {
 		net = engine.NetworkNone
 	}
+	// A resident container has one network, fixed where it is declared, so it cannot
+	// offer the `none` a filesystem repository gets here. Rather than quietly hand those
+	// a networked engine for the sake of latency, they keep using one-shot containers:
+	// the resident path is an optimisation, and an optimisation may not widen what the
+	// engine can reach. It is also the case that never needs it — a filesystem
+	// repository is dev and test, where nothing is waiting seven seconds for a bucket.
+	resident := ""
+	if net == engine.NetworkDefault {
+		resident = p.cfg.BackupEngineContainer
+	}
 	return engine.Spec{
 		Image:    p.image,
 		Name:     containerName(args),
@@ -387,6 +401,11 @@ func (p *Provider) spec(rc repoConfig, secrets map[string]string, args []string,
 		Secrets:         secrets,
 		Args:            append(args, "--config-file="+p.configFile()),
 		Timeout:         timeout,
+		// Everything above still describes the one-shot container, because that is what
+		// runs whenever the resident one cannot be. These two only say where the command
+		// would rather go.
+		Container:  resident,
+		Entrypoint: engineBinary,
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/yundera/maison/internal/apps"
 )
@@ -31,6 +32,30 @@ type Set struct {
 	byID    map[string]apps.Provider
 	order   []string // registration order, so listing is stable across restarts
 	written string   // ID of the engine that receives new backups
+
+	// listings caches each engine's whole listing for the store's install picker.
+	// See ListForInstall.
+	listings map[string]*engineListing
+}
+
+// listingTTL is how long the install picker reuses an engine's listing.
+//
+// It matches the TTL kopia's Provider.Status already keeps for the same reason and
+// on the same click path, so the two reads the picker makes — what an engine holds,
+// and what to call it on screen — go stale together rather than one of them
+// re-entering the repository on its own.
+const listingTTL = 30 * time.Second
+
+// engineListing is one engine's entire backup listing, app by app, with the time
+// it was taken.
+//
+// Its mutex is held across the read, not just around the fields: two apps' pickers
+// opened in quick succession should cost one query, and the second caller waiting
+// for the first is exactly the wait it would have had anyway.
+type engineListing struct {
+	mu    sync.Mutex
+	at    time.Time
+	byApp map[string][]apps.Backup
 }
 
 // New builds a Set from the engines a deployment has. The first one registered is
@@ -128,9 +153,13 @@ func (s *Set) List(ctx context.Context, app string) []apps.Backup {
 // ListIn returns one app's backups from ONE engine, newest first.
 //
 // This is the shape a caller needs when it presents a group per engine rather than one
-// merged list — the store's install-from-backup picker, which offers the app's backups
-// grouped the way the Backups page tabs them. It exists for the same reason ListAllIn
-// does: a group belongs to an engine, and so does the operation its rows start.
+// merged list. It exists for the same reason ListAllIn does: a group belongs to an
+// engine, and so does the operation its rows start.
+//
+// It is the *live* per-app read, and the one to reach for when a backup that has just
+// finished has to be in the answer — the per-app Backups tab, through List. The store's
+// install picker used to read through it too and no longer does: there the per-app shape
+// costs a subprocess per engine on a click, which is what ListForInstall exists to stop.
 //
 // An unknown engine lists nothing rather than erroring, which is the same answer the
 // engines that cannot be reached give.
@@ -151,6 +180,83 @@ func (s *Set) ListIn(ctx context.Context, engine, app string) []apps.Backup {
 		return nil
 	}
 	return sortedBackups(got)
+}
+
+// ListForInstall returns one app's backups in each engine that holds any, keyed by
+// engine ID — what the store's install-from-backup picker offers when a catalog row
+// is clicked.
+//
+// It answers from each engine's *whole* listing, cached, rather than asking each
+// engine about this one app. ListIn is the honest per-app read and stays that for
+// the pages that need it, but on this path its cost is a subprocess per engine per
+// click: opening the picker on a box with a remote engine measured at eight to
+// twenty-seven seconds, during which the Install button did nothing at all. One
+// query per engine answers every row in the catalog instead — which is what
+// Provider.ListAll is for — and having paid it once, the rest of a browsing session
+// is free.
+//
+// Staleness is bounded and cannot mislead here: the picker lists what could be
+// restored onto an app that is *not installed*, so a backup finished in the last
+// half-minute being absent from it costs a fresh install nobody was promised
+// otherwise. The per-app Backups tab, where a backup that just completed has to
+// appear, still reads live through List.
+func (s *Set) ListForInstall(ctx context.Context, app string) map[string][]apps.Backup {
+	// Guarded here for the same reason ListIn guards it: the name arrives from a URL
+	// and is matched against keys a repository supplied.
+	if !apps.ValidProjectName(app) {
+		return nil
+	}
+	out := map[string][]apps.Backup{}
+	for _, id := range s.IDs() {
+		list := s.cachedListing(ctx, id)[app]
+		if len(list) == 0 {
+			continue
+		}
+		// Copied before sorting: the slice belongs to the cached listing, and
+		// ordering it in place would reorder what every later reader is handed.
+		out[id] = sortedBackups(append([]apps.Backup(nil), list...))
+	}
+	return out
+}
+
+// cachedListing returns one engine's entire listing, reading through to the engine
+// at most once per listingTTL.
+func (s *Set) cachedListing(ctx context.Context, id string) map[string][]apps.Backup {
+	p, ok := s.Get(id)
+	if !ok {
+		return nil
+	}
+	l := s.listingFor(id)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.at.IsZero() && time.Since(l.at) < listingTTL {
+		return l.byApp
+	}
+	got, err := p.ListAll(ctx)
+	if err != nil {
+		logRead(err, "list all", p)
+		// A failed read does not evict a listing that is merely old. The picker
+		// offering what it offered a moment ago is better than it offering nothing
+		// and the install quietly landing on a clean slate.
+		return l.byApp
+	}
+	l.byApp, l.at = got, time.Now()
+	return got
+}
+
+// listingFor returns the cache slot for an engine, creating it on first use.
+func (s *Set) listingFor(id string) *engineListing {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listings == nil {
+		s.listings = map[string]*engineListing{}
+	}
+	l := s.listings[id]
+	if l == nil {
+		l = &engineListing{}
+		s.listings[id] = l
+	}
+	return l
 }
 
 // sortedBackups orders newest first.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup/backuptest"
@@ -414,5 +415,121 @@ func TestListRefusesAnAppNameThatIsNotOne(t *testing.T) {
 		if got := s.List(context.Background(), bad); got != nil {
 			t.Errorf("List(%q) = %+v; want nothing", bad, got)
 		}
+	}
+}
+
+// The store grid renders an Install button per catalog row, and each click used to
+// ask every engine about that one app. For a remote engine each of those is a
+// subprocess against the repository, so the picker's cost scaled with how many apps
+// the user clicked. One bulk query per engine answers the whole catalog.
+func TestTheInstallPickerAsksEachEngineOnceForTheWholeCatalog(t *testing.T) {
+	local := backuptest.NewLocalLike(apps.EngineLocal)
+	remote := backuptest.NewRemote("kopia")
+	local.Seed("jellyfin", older)
+	remote.Seed("nextcloud", newer)
+	s := New(local, remote)
+
+	for _, app := range []string{"jellyfin", "nextcloud", "immich", "jellyfin"} {
+		s.ListForInstall(context.Background(), app)
+	}
+
+	for _, f := range []*backuptest.Fake{local, remote} {
+		if f.ListAllCalls != 1 {
+			t.Errorf("%s was listed in bulk %d times for four clicks, want 1", f.ID(), f.ListAllCalls)
+		}
+		if f.ListCalls != 0 {
+			t.Errorf("%s got %d per-app listings, want none — the picker reads the catalog in bulk", f.ID(), f.ListCalls)
+		}
+	}
+}
+
+// The picker offers a group per engine because restoring is an operation on one
+// engine's copy: a stamp held by two engines is two rows, and the one clicked
+// decides which is fetched. Grouping is what the click path needs to stay correct,
+// so caching must not flatten it.
+func TestTheInstallPickerGroupsByEngine(t *testing.T) {
+	local := backuptest.NewLocalLike(apps.EngineLocal)
+	remote := backuptest.NewRemote("kopia")
+	local.Seed("jellyfin", older)
+	remote.Seed("jellyfin", older, newer)
+	s := New(local, remote)
+
+	got := s.ListForInstall(context.Background(), "jellyfin")
+	if len(got) != 2 {
+		t.Fatalf("ListForInstall returned %d groups, want one per engine holding something", len(got))
+	}
+	if n := names(got[apps.EngineLocal]); len(n) != 1 || n[0] != older {
+		t.Errorf("local group = %v, want [%s]", n, older)
+	}
+	// Newest first inside a group, like every other backup listing.
+	if n := names(got["kopia"]); len(n) != 2 || n[0] != newer || n[1] != older {
+		t.Errorf("kopia group = %v, want newest-first [%s %s]", n, newer, older)
+	}
+	// An engine holding nothing for this app contributes no group at all, so the
+	// picker shows no empty heading for it.
+	if _, ok := s.ListForInstall(context.Background(), "immich")[apps.EngineLocal]; ok {
+		t.Error("an engine with nothing for the app still produced a group")
+	}
+}
+
+// The name arrives from a URL and is matched against keys a repository supplied, so
+// it is guarded here as it is in ListIn — and a name no app can have reaches no
+// engine at all.
+func TestTheInstallPickerRejectsAnImpossibleAppName(t *testing.T) {
+	local := backuptest.NewLocalLike(apps.EngineLocal)
+	s := New(local)
+	if got := s.ListForInstall(context.Background(), "../etc"); got != nil {
+		t.Fatalf("ListForInstall(%q) = %v, want nothing", "../etc", got)
+	}
+	if local.ListAllCalls != 0 {
+		t.Errorf("an impossible name still reached the engine %d times", local.ListAllCalls)
+	}
+}
+
+// A broken engine must not empty the picker. Offering what it offered a moment ago
+// is better than offering nothing and letting the install land on a clean slate —
+// which is the one outcome here that loses data the user still had.
+func TestAFailingEngineKeepsThePickersLastListing(t *testing.T) {
+	remote := backuptest.NewRemote("kopia")
+	remote.Seed("jellyfin", newer)
+	s := New(remote)
+
+	if n := names(s.ListForInstall(context.Background(), "jellyfin")["kopia"]); len(n) != 1 {
+		t.Fatalf("first listing = %v, want [%s]", n, newer)
+	}
+
+	remote.ListErr = errors.New("repository unreachable")
+	expireListings(s)
+
+	if n := names(s.ListForInstall(context.Background(), "jellyfin")["kopia"]); len(n) != 1 || n[0] != newer {
+		t.Fatalf("listing after the engine broke = %v, want the last good one [%s]", n, newer)
+	}
+}
+
+// The cached listing is handed to every later reader, so a caller that sorts or
+// otherwise reorders what it was given must not reorder the cache with it.
+func TestThePickerDoesNotHandOutTheCachedSlice(t *testing.T) {
+	remote := backuptest.NewRemote("kopia")
+	remote.Seed("jellyfin", older, newer)
+	s := New(remote)
+
+	got := s.ListForInstall(context.Background(), "jellyfin")["kopia"]
+	for i := range got {
+		got[i] = apps.Backup{Name: "scribbled"}
+	}
+
+	if n := names(s.ListForInstall(context.Background(), "jellyfin")["kopia"]); len(n) != 2 || n[0] != newer {
+		t.Fatalf("second listing = %v, want [%s %s] — the first reader corrupted the cache", n, newer, older)
+	}
+}
+
+// expireListings ages every cached listing out of listingTTL, standing in for the
+// passage of time.
+func expireListings(s *Set) {
+	for _, id := range s.IDs() {
+		l := s.listingFor(id)
+		l.mu.Lock()
+		l.at = time.Time{}
+		l.mu.Unlock()
 	}
 }

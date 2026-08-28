@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yundera/maison/internal/config"
@@ -143,6 +144,27 @@ type Spec struct {
 	// Timeout bounds the run. Zero means no limit, which is right for a first full
 	// upload and wrong for anything taken while an app is stopped.
 	Timeout time.Duration
+
+	// Container names a resident engine container to invoke through `docker exec`
+	// instead of starting a throwaway one. Empty keeps the one-shot behaviour, which
+	// also remains the fallback whenever the resident container cannot be reached.
+	//
+	// The win is latency and nothing else. On a busy PCS a `docker run` costs six to
+	// seven seconds before the engine's own process starts — measured with an image
+	// whose entrypoint is /bin/true, so it is start-up cost and not the engine's work.
+	// A `docker exec` into an already-running container does not pay it.
+	//
+	// Everything Argv pins per invocation — user, capabilities, mounts, network,
+	// hostname — becomes a property of that container instead, declared where it is
+	// created. Run re-checks the one of those that can silently corrupt a repository;
+	// see residentUsable.
+	Container string
+
+	// Entrypoint is the engine binary inside the image, e.g. "/bin/kopia".
+	//
+	// `docker run` applies the image's own ENTRYPOINT; `docker exec` does not, so in
+	// exec mode the binary has to be named. Required with Container, ignored without.
+	Entrypoint string
 }
 
 // Runner invokes engine containers.
@@ -151,7 +173,24 @@ type Runner struct {
 
 	// Docker overrides the docker binary; empty means "docker". Tests set it.
 	Docker string
+
+	// mu guards resident, the memo of which resident containers have been vetted.
+	mu       sync.Mutex
+	resident map[string]residentCheck
 }
+
+// residentCheck is one cached verdict from residentUsable, with the moment it was
+// taken. It expires rather than being permanent so that redeploying the stack, or
+// starting an engine that was down, is picked up without restarting Maison.
+type residentCheck struct {
+	ok   bool
+	when time.Time
+}
+
+// residentTTL is how long a verdict stands. Short enough that a stack redeploy is
+// noticed within one backup cycle, long enough that a listing does not pay an extra
+// `docker inspect` — which on the boxes this exists for is itself a second of latency.
+const residentTTL = 5 * time.Minute
 
 // New builds a Runner.
 func New(cfg config.Config) *Runner { return &Runner{cfg: cfg} }
@@ -253,6 +292,89 @@ func Argv(s Spec) ([]string, error) {
 	return append(argv, s.Args...), nil
 }
 
+// execShell wraps an exec'd engine. Unqualified on purpose: `docker exec` resolves it
+// through the image's own PATH, and the shell does not live in the same place in every
+// image an engine might ship as.
+const execShell = "sh"
+
+// execOpsDir holds one pid file per in-flight exec. It is a tmpfs on the resident
+// container, so a restart clears whatever a crash left behind.
+const execOpsDir = "/run/maison-ops"
+
+// execStaleMinutes is when an abandoned pid file becomes litter worth collecting.
+// Comfortably longer than any engine run that could still be alive, since deleting
+// the file of a *live* run would throw away the handle used to cancel it.
+const execStaleMinutes = 720
+
+// ExecArgv builds the `docker exec` command line for a spec bound to a resident
+// container.
+//
+// The engine is wrapped in a shell that records a pid and then hands the process over
+// with `exec`, so the recorded pid is the engine's own and not the shell's. That file
+// is the exec-mode counterpart of `--name`: the only handle left on a still-running
+// engine once the docker client that started it has been killed. Without it a
+// cancelled backup would leave kopia holding an app's files open while Maison brings
+// the app back up — precisely the failure Run's reaper exists to prevent, which is why
+// failing to write it aborts the run instead of proceeding unreapable.
+//
+// The container's own properties — user, capabilities, mounts, network — are not
+// restated here. They belong to the container and are asserted where it is declared;
+// see the Container field.
+func ExecArgv(s Spec) ([]string, error) {
+	if s.Container == "" {
+		return nil, errors.New("engine: no container to exec into")
+	}
+	if s.Entrypoint == "" {
+		return nil, errors.New("engine: no entrypoint — docker exec does not apply the image's own")
+	}
+	if s.Name == "" {
+		return nil, errors.New("engine: no run name — it names the pid file that is the only handle on an abandoned exec")
+	}
+
+	argv := []string{"exec"}
+	// Sorted, by value, names-only for secrets — the same split and the same reasons as
+	// Argv, so a secret is no more visible through this path than the other.
+	for _, k := range sortedKeys(s.Env) {
+		argv = append(argv, "-e", k+"="+s.Env[k])
+	}
+	for _, k := range sortedKeys(s.Secrets) {
+		argv = append(argv, "-e", k)
+	}
+	return append(argv, s.Container, execShell, "-c", execScript(s)), nil
+}
+
+// execScript is the shell fragment ExecArgv wraps the engine in.
+func execScript(s Spec) string {
+	pid := shellQuote(execPidPath(s.Name))
+	cmd := make([]string, 0, len(s.Args)+1)
+	cmd = append(cmd, shellQuote(s.Entrypoint))
+	for _, a := range s.Args {
+		cmd = append(cmd, shellQuote(a))
+	}
+	return strings.Join([]string{
+		// Best effort, and never fatal: losing a stale file matters less than the run.
+		fmt.Sprintf("mkdir -p %s 2>/dev/null", shellQuote(execOpsDir)),
+		fmt.Sprintf("find %s -type f -mmin +%d -delete 2>/dev/null || true", shellQuote(execOpsDir), execStaleMinutes),
+		// Fatal, deliberately: an engine that cannot be cancelled must not start.
+		fmt.Sprintf("echo $$ > %s || { echo 'engine: cannot record pid' >&2; exit 97; }", pid),
+		"exec " + strings.Join(cmd, " "),
+	}, "; ")
+}
+
+// execPidPath is where one run records its engine pid. Name is already unique per
+// invocation, which is what makes it usable as the handle in both modes.
+func execPidPath(name string) string { return execOpsDir + "/" + name + ".pid" }
+
+// shellQuote renders a string as a single POSIX shell word.
+//
+// Everything reaching the shell here is Maison's own — an image path, a container
+// name, arguments it assembled — but "own" includes an app name and a snapshot stamp
+// that came back from a repository, and those are the values the rest of this codebase
+// is careful to treat as untrusted. Quoting is cheaper than deciding which is which.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // isRootUser reports whether a `--user` value names uid 0. Only the uid is consulted:
 // a root process holds its capabilities whatever its gid.
 func isRootUser(user string) bool {
@@ -276,8 +398,61 @@ func sortedKeys(m map[string]string) []string {
 // Both streams are read concurrently: buffering with CombinedOutput would interleave
 // the JSON result with progress noise *and* withhold every progress line until the
 // command exited, which for a multi-hour upload is the same as having no progress.
+//
+// A spec naming a resident container is run inside it and falls back to a one-shot
+// container when that is not possible. The fallback is not a nicety: it is what keeps
+// a freshly provisioned box, a crashed engine and an engine mid-upgrade all working,
+// and it is why the one-shot path stays even once every box has a resident engine.
 func (r *Runner) Run(ctx context.Context, s Spec, onLine func(string)) ([]byte, error) {
-	argv, err := Argv(s)
+	if s.Container != "" && r.residentUsable(ctx, s) {
+		out, err := r.runOnce(ctx, s, true, onLine)
+		if !errors.Is(err, errResidentUnavailable) {
+			return out, err
+		}
+		// There when we looked, gone when we called: a restart, an upgrade, a crash.
+		// Nothing ran, so this is a retry and not a repeat — which is the only reason it
+		// is safe to do for a command that writes.
+		log.Printf("engine: %v; falling back to a one-shot container", err)
+		r.forgetResident(s)
+	}
+	return r.runOnce(ctx, s, false, onLine)
+}
+
+// errResidentUnavailable marks an exec that never started because the resident
+// container was not there to run it — the one failure that justifies re-running the
+// same spec another way.
+//
+// Unprefixed, unlike the errors this package returns: it is never returned to a
+// caller (Run answers with the fallback's result instead) and only ever reaches a log
+// line that supplies the prefix itself.
+var errResidentUnavailable = errors.New("resident container unavailable")
+
+// residentGone reports whether the engine's stderr is the daemon refusing to exec
+// rather than the engine itself failing. Matching on text is unlovely, but `docker
+// exec` reports "container missing" through the same exit code as "the command inside
+// failed", and telling those apart is what decides whether a retry is safe.
+func residentGone(stderr string) bool {
+	s := strings.ToLower(stderr)
+	for _, sig := range []string{
+		"no such container",
+		"is not running",
+		"is paused",
+		"is restarting",
+	} {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// runOnce is a single attempt in a single mode.
+func (r *Runner) runOnce(ctx context.Context, s Spec, useExec bool, onLine func(string)) ([]byte, error) {
+	build := Argv
+	if useExec {
+		build = ExecArgv
+	}
+	argv, err := build(s)
 	if err != nil {
 		return nil, err
 	}
@@ -336,20 +511,118 @@ func (r *Runner) Run(ctx context.Context, s Spec, onLine func(string)) ([]byte, 
 	// killed mid-run leaves the engine running — still holding the app's files open,
 	// while Maison believes the backup failed and restarts the app. Removing it by
 	// name is the only way to make "the backup failed, the app is up" true.
+	//
+	// An exec has no container of its own to remove, and the same trap applies to the
+	// process inside the resident one, so it gets the same treatment through the pid
+	// file ExecArgv wrote.
 	if runCtx.Err() != nil {
-		r.forceRemove(s.Name)
+		if useExec {
+			r.killExec(s.Container, s.Name)
+		} else {
+			r.forceRemove(s.Name)
+		}
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			return out.Bytes(), fmt.Errorf("engine: timed out after %s: %s", s.Timeout, tail.String())
 		}
 		return out.Bytes(), fmt.Errorf("engine: cancelled: %w", runCtx.Err())
 	}
 	if waitErr != nil {
+		if useExec && residentGone(tail.String()) {
+			return out.Bytes(), fmt.Errorf("%w (%s): %s", errResidentUnavailable, s.Container, tail.String())
+		}
 		return out.Bytes(), fmt.Errorf("engine: %s: %w: %s", s.Image, waitErr, tail.String())
 	}
 	if copyErr != nil {
 		return out.Bytes(), fmt.Errorf("engine: reading output: %w", copyErr)
 	}
 	return out.Bytes(), nil
+}
+
+// residentUsable reports whether a resident container may stand in for a one-shot run.
+//
+// The check is the hostname, and only the hostname, because that is the invariant a
+// resident container can break without anyone noticing. kopia files snapshots under
+// user@host; the host is pinned once, host-side, into repository.config; a container
+// created before that pin — or left running across a re-connect — would file every
+// later backup under a second identity. One repository holding two lineages is not an
+// error anyone sees until a restore comes back empty.
+//
+// Everything else Argv guards either belongs to the container's own declaration or
+// fails loudly on first use. This one fails quietly and late, which is what makes it
+// worth a round trip every residentTTL.
+//
+// A container that cannot be inspected at all is simply not usable, and says nothing:
+// that is the ordinary state of a box where no engine has been deployed.
+func (r *Runner) residentUsable(ctx context.Context, s Spec) bool {
+	if s.Hostname == "" {
+		return false
+	}
+	key := s.Container + "\x00" + s.Hostname
+
+	r.mu.Lock()
+	if c, seen := r.resident[key]; seen && time.Since(c.when) < residentTTL {
+		r.mu.Unlock()
+		return c.ok
+	}
+	r.mu.Unlock()
+
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, r.docker(),
+		"inspect", "--format", "{{.Config.Hostname}}", s.Container).Output()
+	got := strings.TrimSpace(string(out))
+	ok := err == nil && got == s.Hostname
+	if err == nil && !ok {
+		log.Printf("engine: resident container %s has hostname %q, want %q — using one-shot containers so snapshots keep one identity",
+			s.Container, got, s.Hostname)
+	}
+
+	r.mu.Lock()
+	if r.resident == nil {
+		r.resident = map[string]residentCheck{}
+	}
+	r.resident[key] = residentCheck{ok: ok, when: time.Now()}
+	r.mu.Unlock()
+	return ok
+}
+
+// forgetResident drops a cached verdict so the next run re-checks instead of waiting
+// out the TTL. Called when a container that passed the check turns out to be gone.
+func (r *Runner) forgetResident(s Spec) {
+	r.mu.Lock()
+	delete(r.resident, s.Container+"\x00"+s.Hostname)
+	r.mu.Unlock()
+}
+
+// killExec stops an engine left running inside the resident container. It is the exec
+// counterpart of forceRemove and keeps the same contract for the same reasons: a fresh
+// context because the one that brought us here is already cancelled, and a failure
+// logged rather than returned because it can only ever be secondary to the failure
+// that triggered it.
+func (r *Runner) killExec(container, name string) {
+	if container == "" || name == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pid := shellQuote(execPidPath(name))
+	script := strings.Join([]string{
+		fmt.Sprintf("p=$(cat %s 2>/dev/null) || exit 0", pid),
+		`[ -n "$p" ] || exit 0`,
+		`kill -TERM "$p" 2>/dev/null`,
+		// A moment to unwind before it is taken away. Either way the repository is
+		// consistent — an interrupted snapshot is uncommitted, so it lists as nothing.
+		`i=0; while [ "$i" -lt 10 ] && kill -0 "$p" 2>/dev/null; do sleep 1; i=$((i+1)); done`,
+		`kill -KILL "$p" 2>/dev/null`,
+		fmt.Sprintf("rm -f %s", pid),
+		"exit 0",
+	}, "; ")
+
+	if out, err := exec.CommandContext(ctx, r.docker(),
+		"exec", container, execShell, "-c", script).CombinedOutput(); err != nil {
+		log.Printf("engine: stopping abandoned engine %s in %s: %v: %s", name, container, err, bytes.TrimSpace(out))
+	}
 }
 
 // forceRemove kills and removes a container by name. Best effort: it runs on a

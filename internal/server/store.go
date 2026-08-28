@@ -250,8 +250,13 @@ func (s *Server) handleStoreBackups(w http.ResponseWriter, r *http.Request) {
 
 	engines := []storeBackupEngine{}
 	if s.engines != nil {
+		// One read per engine for the whole catalog, cached, rather than one per
+		// engine per click — on this path that difference is the wait before the
+		// button does anything. See Set.ListForInstall. Engine order still comes from
+		// IDs(), so the picker's headings keep the order the Backups page tabs them in.
+		byEngine := s.engines.ListForInstall(r.Context(), project)
 		for _, id := range s.engines.IDs() {
-			list := s.engines.ListIn(r.Context(), id, project)
+			list := byEngine[id]
 			// An engine holding nothing for this app contributes no group. The picker is a
 			// dropdown on a catalog row, and an empty heading per configured engine is
 			// noise on every app that has never been installed.

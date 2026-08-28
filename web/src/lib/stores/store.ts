@@ -85,9 +85,11 @@ export interface BackupEngine {
  *  `name:`), so this is not derivable client-side from the catalog id alone. */
 export function fetchStoreBackups(
   ref: StoreRef,
+  signal?: AbortSignal,
 ): Promise<{ project: string; engines: BackupEngine[] }> {
   return api.get<{ project: string; engines: BackupEngine[] }>(
     `/api/store/${encodeURIComponent(ref.id)}/backups${refQuery(ref)}`,
+    signal,
   )
 }
 

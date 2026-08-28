@@ -152,6 +152,11 @@ type Registry struct {
 	// repository would otherwise extend an outage instead of failing a backup.
 	StoppedPassTimeout time.Duration
 
+	// containers is the host's container listing, cached. Every read of Docker
+	// state that only *describes* the box goes through it; the reads that decide
+	// whether to stop or restart an app (isRunning) deliberately do not.
+	containers *containerCache
+
 	mu         sync.Mutex
 	views      map[string]string          // app id -> view from the last listing
 	busy       map[string]int             // app id -> in-flight operation count
@@ -159,20 +164,42 @@ type Registry struct {
 	backups    map[string]*BackupState    // app id -> live backup/restore progress
 }
 
-// workingDirTimeout bounds the Docker lookup that locates an unmanaged stack's
+// workingDirTimeout bounds the container lookup that locates an unmanaged stack's
 // compose. It is only reached when the app list hasn't been built yet, so a
-// slow or wedged daemon costs one guard check, not the dashboard.
+// slow or wedged daemon costs one guard check, not the dashboard. Since the lookup
+// reads the cache, it waits at all only before the first listing has landed.
 const workingDirTimeout = 5 * time.Second
 
 // New creates a Registry.
 func New(cfg config.Config, dx *dockerx.Client) *Registry {
-	return &Registry{
+	r := &Registry{
 		cfg:        cfg,
 		dx:         dx,
 		busy:       map[string]int{},
 		uninstalls: map[string]*UninstallState{},
 		backups:    map[string]*BackupState{},
 	}
+	r.containers = &containerCache{
+		list: func(ctx context.Context) ([]dockerx.Container, error) {
+			if dx == nil {
+				return nil, errNoDocker
+			}
+			return dx.ListProjectContainers(ctx)
+		},
+		// A refresh that landed after its reader had already been served has to
+		// announce itself, or the grid keeps the answer it was given. changed() is
+		// the same signal a busy tile uses, so this needs no new plumbing — and it
+		// reads OnChange at call time, which the server sets after construction.
+		onRefresh: r.changed,
+	}
+	return r
+}
+
+// InvalidateContainers marks the cached container listing out of date. The server
+// calls it when Docker reports a container event, before rebroadcasting the app
+// list.
+func (r *Registry) InvalidateContainers() {
+	r.containers.invalidate()
 }
 
 // enter/leave bracket an in-flight lifecycle operation on id. A counter (not a
@@ -248,17 +275,22 @@ func (ps *projectState) health() string {
 //
 // Existence is driven by the filesystem, appearance by Docker (docs/app-model.md):
 // managed apps come from the on-disk `AppData/<app>/` folders — a cheap, always-
-// available local read — and Docker state is layered on top as best-effort. A
-// failed or slow Docker query therefore yields greyed (stopped) tiles rather than
-// an empty grid, and never returns an error to the caller. Externally-created
-// x-casaos stacks are only surfaced when Docker actually answers.
+// available local read — and Docker state is layered on top as best-effort, so a
+// Docker query that cannot be answered yields greyed (stopped) tiles rather than an
+// empty grid, and never returns an error to the caller. Externally-created x-casaos
+// stacks are only surfaced when Docker actually answers.
+//
+// A *slow* query is not one that cannot be answered, and no longer greys anything:
+// the listing is read through containerCache, which serves the last good answer
+// while a refresh runs behind it. That distinction is the whole point of the cache —
+// see the note there on what the call actually costs.
 func (r *Registry) List(ctx context.Context) ([]App, error) {
-	conts, err := r.dx.ListProjectContainers(ctx)
-	if err != nil {
-		// Best-effort: fall through with no container state so installed apps still
-		// render (greyed) instead of the grid blanking on a Docker hiccup.
-		log.Printf("apps: docker list failed, showing installed apps as stopped: %v", err)
-	}
+	// Best-effort: no container state means installed apps still render (greyed)
+	// instead of the grid blanking on a Docker hiccup. The cache logs its own
+	// failures and serves the last good listing rather than none for as long as one
+	// is worth serving, so reaching here empty means Docker has been silent for a
+	// while — by which point greyed tiles are the truth.
+	conts, _ := r.containers.get(ctx)
 
 	projects := map[string]*projectState{}
 	for _, c := range conts {
@@ -722,7 +754,10 @@ func (r *Registry) workingDirOf(project string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), workingDirTimeout)
 	defer cancel()
-	conts, err := r.dx.ListProjectContainers(ctx)
+	// Through the cache: this is a lookup, not a probe, and the answer it wants —
+	// where a project's compose lives — cannot change without recreating the
+	// containers, which invalidates the cache anyway.
+	conts, err := r.containers.get(ctx)
 	if err != nil {
 		return ""
 	}

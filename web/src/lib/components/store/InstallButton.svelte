@@ -4,13 +4,27 @@
   import { engineLabel, renderStamp } from '../../stores/backups'
   import { sanitizeProject } from '../../project'
   import { t } from '../../i18n'
+  import { clickOutside } from '../../actions'
   import type { StoreRef } from '../../storeref'
 
   let {
     ref,
     installed = false,
     size = 'small',
-  }: { ref: StoreRef; installed?: boolean; size?: 'small' | 'normal' } = $props()
+    offerBackups = false,
+  }: {
+    ref: StoreRef
+    installed?: boolean
+    size?: 'small' | 'normal'
+    /** Offer to reinstall on top of a backup instead of installing straight away.
+     *
+     *  Only the app page does. In the catalog grid a click installs, full stop: looking
+     *  for backups is a query against a repository that takes seconds, and making every
+     *  install in the store wait on it — or take a second click to dismiss a menu — to
+     *  serve the rare reinstall is the wrong trade. Someone who wants their old data
+     *  back opens the app first, which is where the choice lives. */
+    offerBackups?: boolean
+  } = $props()
 
   // Progress is not owned here — it rides the live "apps" channel, the same
   // source the dashboard tile reads. This button just kicks the install off and
@@ -25,7 +39,13 @@
   // against the repository, which makes prefetching per row worse than slow.
   let engines = $state<BackupEngine[]>([])
   let picking = $state(false) // the backup picker is open
-  let loading = $state(false) // looking for backups after a click
+  let loading = $state(false) // looking for backups, with the picker already open
+  let lookupFailed = $state(false)
+
+  // The in-flight lookup, so picking "Fresh install" or dismissing the menu can call
+  // it off. Abandoning the request cancels the engine run behind it rather than
+  // leaving a container working on an answer nobody is waiting for.
+  let lookup: AbortController | null = null
 
   const hasBackups = $derived(engines.some((e) => e.backups.length > 0))
 
@@ -47,29 +67,61 @@
     if (entry?.installing || entry?.install_error) starting = false
   })
 
-  /** Click → look for this app's backups. None (the common case): install straight
-   *  away, one click as before. Some: offer them, so a reinstall can land on the
-   *  old data instead of a clean slate. */
-  async function onclick(e: MouseEvent) {
+  /** Click → install, or offer the choice, depending on where this button is.
+   *
+   *  Where it offers the choice, the menu opens *first* and the backups arrive into it.
+   *  Looking them up takes seconds against a repository, and blocking the click on that
+   *  is what made this button look broken: the one thing a user always wants — install
+   *  it — was the thing they could not do until an unrelated question had been answered.
+   *  Now "Fresh install" is there immediately and the rest fills in beside it. */
+  function onclick(e: MouseEvent) {
     e.stopPropagation()
-    if (isInstalled || busy || loading) return
-    loading = true
-    error = ''
-    try {
-      engines = (await fetchStoreBackups(ref)).engines
-    } catch {
-      engines = [] // a failed lookup must not block a plain install
-    }
-    loading = false
-    if (!hasBackups) {
-      await install()
+    if (picking) {
+      closePicker()
       return
     }
+    if (isInstalled || busy) return
+    if (!offerBackups) {
+      void install()
+      return
+    }
+    openPicker()
+  }
+
+  function openPicker() {
+    engines = []
+    lookupFailed = false
+    error = ''
     picking = true
+    loading = true
+
+    const ctl = new AbortController()
+    lookup = ctl
+    fetchStoreBackups(ref, ctl.signal)
+      .then((r) => {
+        if (lookup === ctl) engines = r.engines
+      })
+      .catch(() => {
+        // A lookup that failed or was called off must never block a plain install, so
+        // this only decides what the menu says — never whether it can be used.
+        if (lookup === ctl && !ctl.signal.aborted) lookupFailed = true
+      })
+      .finally(() => {
+        if (lookup !== ctl) return // superseded by a later click
+        loading = false
+        lookup = null
+      })
+  }
+
+  function closePicker() {
+    lookup?.abort()
+    lookup = null
+    loading = false
+    picking = false
   }
 
   async function install(from?: { name: string; engine?: string }) {
-    picking = false
+    closePicker()
     starting = true
     error = ''
     try {
@@ -83,15 +135,15 @@
     }
   }
 
-  // The picker lives inside a store row that opens the app detail on click, so
-  // every event it handles stops there.
+  // The app header this sits in does its own click handling; the menu's events are
+  // its own business and stop here.
   function stop(e: MouseEvent) {
     e.stopPropagation()
   }
 
   function onPickerKey(e: KeyboardEvent) {
     e.stopPropagation()
-    if (e.key === 'Escape') picking = false
+    if (e.key === 'Escape') closePicker()
   }
 
   /** What a row is, in a few words.
@@ -123,7 +175,7 @@
 
 <svelte:window
   onkeydown={(e) => {
-    if (e.key === 'Escape') picking = false
+    if (e.key === 'Escape') closePicker()
   }}
 />
 
@@ -139,7 +191,10 @@
     <span class="pct">{pct}%</span>
   </span>
 {:else}
-  <span class="wrap">
+  <!-- The action goes on the wrapper, not the menu, so the trigger counts as inside:
+       the button then owns its own toggle instead of racing the capture-phase listener
+       that would close the menu just before the click reopened it. -->
+  <span class="wrap" use:clickOutside={closePicker}>
     <button
       class="pill"
       class:done={isInstalled}
@@ -153,47 +208,50 @@
     </button>
 
     {#if picking}
-      <!-- Click-away backdrop: closes the picker without triggering the row
-           underneath (the store grid opens the app detail on row click). -->
-      <div
-        class="backdrop"
-        role="presentation"
-        onclick={(e) => {
-          stop(e)
-          picking = false
-        }}
-      ></div>
-
       <div class="picker" role="menu" tabindex="-1" onclick={stop} onkeydown={onPickerKey}>
+        <!-- First, and available before the lookup has answered: it is the only item
+             here that is always valid, and the one most people came for. -->
         <button class="row fresh" role="menuitem" onclick={() => install()}>
           {$t('fresh_install')}
         </button>
-        <!-- A heading per engine, not one merged list: a stamp held by two engines is
-             two backups, and the row the user clicks decides which one is fetched. The
-             engine is part of each row's key for the same reason — two engines holding
-             the same stamp would otherwise collide. -->
-        {#each engines as e (e.engine)}
-          {#if e.backups.length > 0}
-            <p class="head">
-              {$t('restore_from_backup')} · {engineLabel(e.engine, e.name, (k) => $t(k))}
-            </p>
-            {#each e.backups as b (b.name)}
-              <button
-                class="row"
-                role="menuitem"
-                onclick={() => install({ name: b.name, engine: e.engine })}
-                title={b.name}
-              >
-                <!-- The time, not just the date: an app backed up nightly and then
-                     uninstalled has two backups on the same day, and two rows reading
-                     "2026-08-21" are a choice the user cannot make. -->
-                <span class="date">{renderStamp(b.stamp)}</span>
-                <span class="meta">{describe(b)}</span>
-              </button>
-            {/each}
-          {/if}
-        {/each}
-        <p class="note">{$t('restore_from_backup_hint')}</p>
+
+        {#if loading}
+          <!-- Three states, not two. Rows arriving late make "no rows yet" ambiguous
+               between still looking and nothing there, and a user with no backups would
+               otherwise watch a space that never fills. -->
+          <p class="note pending" aria-live="polite">{$t('looking_for_backups')}</p>
+        {:else if lookupFailed}
+          <p class="note">{$t('backups_unavailable')}</p>
+        {:else if !hasBackups}
+          <p class="note">{$t('no_backups_to_restore')}</p>
+        {:else}
+          <!-- A heading per engine, not one merged list: a stamp held by two engines is
+               two backups, and the row the user clicks decides which one is fetched. The
+               engine is part of each row's key for the same reason — two engines holding
+               the same stamp would otherwise collide. -->
+          {#each engines as e (e.engine)}
+            {#if e.backups.length > 0}
+              <p class="head">
+                {$t('restore_from_backup')} · {engineLabel(e.engine, e.name, (k) => $t(k))}
+              </p>
+              {#each e.backups as b (b.name)}
+                <button
+                  class="row"
+                  role="menuitem"
+                  onclick={() => install({ name: b.name, engine: e.engine })}
+                  title={b.name}
+                >
+                  <!-- The time, not just the date: an app backed up nightly and then
+                       uninstalled has two backups on the same day, and two rows reading
+                       "2026-08-21" are a choice the user cannot make. -->
+                  <span class="date">{renderStamp(b.stamp)}</span>
+                  <span class="meta">{describe(b)}</span>
+                </button>
+              {/each}
+            {/if}
+          {/each}
+          <p class="note">{$t('restore_from_backup_hint')}</p>
+        {/if}
       </div>
     {/if}
   </span>
@@ -204,16 +262,14 @@
     position: relative;
     display: inline-flex;
   }
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 20;
-  }
   .picker {
     position: absolute;
-    z-index: 21;
+    z-index: 20;
     top: calc(100% + 0.35rem);
-    right: 0;
+    /* Anchored to the button's left edge, which is where the app page puts it. It used
+       to hang from the right, back when this could also open from a card in the grid
+       whose button sits against the card's right edge. */
+    left: 0;
     min-width: 15rem;
     padding: 0.3rem;
     border-radius: 0.6rem;
@@ -230,6 +286,9 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     opacity: 0.55;
+  }
+  .picker .note.pending {
+    font-variant-numeric: tabular-nums;
   }
   .picker .note {
     margin: 0.3rem 0.5rem 0.15rem;

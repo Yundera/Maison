@@ -45,10 +45,13 @@ type Fake struct {
 
 	mu    sync.Mutex
 	store map[string][]apps.Backup // app -> committed backups
-	// ListAllCalls counts bulk listings. It is a counter rather than a Calls entry
-	// because what matters about it is *how many*: for a remote engine each one is a
-	// subprocess against the repository, so the global page must cost one regardless of
-	// how many apps it shows.
+	// ListCalls counts per-app listings, and ListAllCalls bulk ones. They are counters
+	// rather than Calls entries because what matters about them is *how many*: for a
+	// remote engine each one is a subprocess against the repository, so the pages that
+	// list many apps must cost one regardless of how many they show — the global page,
+	// and the store's install picker, which reads the catalog through ListAll for the
+	// same reason.
+	ListCalls    int
 	ListAllCalls int
 	// Calls records every operation in order, as "verb:app/stamp" (Snapshot carries
 	// its pass, e.g. "snapshot:jellyfin/2026-01-01_000000#2", and appends "+consume"
@@ -143,6 +146,9 @@ func (f *Fake) Abort(ctx context.Context, app, stamp string) error {
 }
 
 func (f *Fake) List(ctx context.Context, app string) ([]apps.Backup, error) {
+	f.mu.Lock()
+	f.ListCalls++
+	f.mu.Unlock()
 	if f.ListErr != nil {
 		return nil, f.ListErr
 	}

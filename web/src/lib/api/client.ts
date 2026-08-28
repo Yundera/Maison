@@ -1,10 +1,16 @@
 // Thin typed wrapper over fetch for the REST API.
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function req<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   })
   if (!res.ok) throw await apiError(method, path, res)
   if (res.status === 204) return undefined as T
@@ -35,7 +41,10 @@ async function apiError(method: string, path: string, res: Response): Promise<Er
 }
 
 export const api = {
-  get: <T>(path: string) => req<T>('GET', path),
+  // The signal is here for reads a user can walk away from: abandoning the request
+  // also cancels the work behind it, which for a backup lookup is a container running
+  // against a repository for an answer nobody will read.
+  get: <T>(path: string, signal?: AbortSignal) => req<T>('GET', path, undefined, signal),
   post: <T>(path: string, body?: unknown) => req<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => req<T>('PUT', path, body),
   del: <T>(path: string, body?: unknown) => req<T>('DELETE', path, body),

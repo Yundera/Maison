@@ -367,3 +367,214 @@ func TestEnvAppearsByValueAndSecretsDoNot(t *testing.T) {
 		t.Errorf("secret name missing from argv: %v", argv)
 	}
 }
+
+func execArgvString(t *testing.T, s Spec) string {
+	t.Helper()
+	argv, err := ExecArgv(s)
+	if err != nil {
+		t.Fatalf("ExecArgv: %v", err)
+	}
+	return strings.Join(argv, " ")
+}
+
+func residentSpec() Spec {
+	s := baseSpec()
+	s.Container = "maison-engine"
+	s.Entrypoint = "/bin/kopia"
+	return s
+}
+
+// Each of these is a handle without which a cancelled exec cannot be cleaned up, or a
+// command that cannot be assembled at all. None may be inferred silently.
+func TestExecArgvRequiresItsHandles(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*Spec)
+		want string
+	}{
+		{"no container", func(s *Spec) { s.Container = "" }, "container"},
+		{"no entrypoint", func(s *Spec) { s.Entrypoint = "" }, "entrypoint"},
+		{"no name", func(s *Spec) { s.Name = "" }, "name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := residentSpec()
+			tc.mut(&s)
+			_, err := ExecArgv(s)
+			if err == nil {
+				t.Fatalf("ExecArgv should have refused a spec with %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to name the missing %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// The same rule as the one-shot path: a repository password must not be readable in
+// the process table, whichever way the engine is reached.
+func TestExecArgvPassesSecretsByNameOnly(t *testing.T) {
+	s := residentSpec()
+	s.Secrets = map[string]string{"KOPIA_PASSWORD": "hunter2"}
+
+	got := execArgvString(t, s)
+	if strings.Contains(got, "hunter2") {
+		t.Fatalf("the secret's value leaked into argv: %s", got)
+	}
+	if !strings.Contains(got, "-e KOPIA_PASSWORD") {
+		t.Fatalf("argv = %s\nwant it to pass the variable by name", got)
+	}
+}
+
+// The pid file is the exec-mode equivalent of --name, and it is only a handle on the
+// *engine* if the shell hands its own process over rather than forking a child. Both
+// halves are asserted: the pid is recorded first, and `exec` replaces the shell.
+func TestExecArgvRecordsTheEnginesOwnPid(t *testing.T) {
+	got := execArgvString(t, residentSpec())
+
+	wrote := strings.Index(got, "echo $$ > '/run/maison-ops/maison-engine-jellyfin.pid'")
+	handed := strings.Index(got, "exec '/bin/kopia'")
+	if wrote < 0 {
+		t.Fatalf("argv = %s\nwant it to record the pid under the run's name", got)
+	}
+	if handed < 0 {
+		t.Fatalf("argv = %s\nwant the shell to exec the engine, so the recorded pid is the engine's", got)
+	}
+	if wrote > handed {
+		t.Errorf("argv = %s\nwant the pid recorded before the shell is replaced", got)
+	}
+	// Failing to record it must abort: an engine nothing can cancel is worse than one
+	// that never started.
+	if !strings.Contains(got, "exit 97") {
+		t.Errorf("argv = %s\nwant a run with no cancellation handle to refuse to start", got)
+	}
+}
+
+// App names and snapshot stamps reach this shell from a repository, which the rest of
+// the package treats as untrusted input. They must arrive as one word each.
+func TestExecArgvQuotesEngineArguments(t *testing.T) {
+	s := residentSpec()
+	s.Args = []string{"snapshot", "create", "/DATA/AppData/od'; rm -rf /; #"}
+
+	got := execArgvString(t, s)
+	if strings.Contains(got, "rm -rf /;") && !strings.Contains(got, `'\''`) {
+		t.Fatalf("argv = %s\nwant the quote in the argument escaped rather than closing the word", got)
+	}
+	if !strings.Contains(got, `'/DATA/AppData/od'\''; rm -rf /; #'`) {
+		t.Errorf("argv = %s\nwant the whole argument to survive as a single quoted word", got)
+	}
+}
+
+// Retrying a command that writes is only safe when nothing ran. That distinction is
+// the daemon refusing to exec at all, and it must not be confused with the engine
+// itself failing — which a retry would repeat.
+func TestResidentGoneOnlyMatchesTheDaemonRefusing(t *testing.T) {
+	for _, s := range []string{
+		"Error response from daemon: No such container: maison-engine",
+		"Error response from daemon: Container maison-engine is not running",
+		"Error response from daemon: Container abc is paused",
+	} {
+		if !residentGone(s) {
+			t.Errorf("residentGone(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{
+		"ERROR error connecting to repository: repository is not connected",
+		"ERROR unable to open snapshot: no such snapshot",
+		"",
+	} {
+		if residentGone(s) {
+			t.Errorf("residentGone(%q) = true, want false — the engine failed, a retry would repeat it", s)
+		}
+	}
+}
+
+// A box with no resident engine is the ordinary case, not an error: the command must
+// still run, in a one-shot container.
+func TestRunFallsBackWhenThereIsNoResidentContainer(t *testing.T) {
+	skipWithoutDocker(t)
+	r := New(config.Config{DataRoot: "/DATA", DataHostPath: "/DATA"})
+
+	out, err := r.Run(context.Background(), Spec{
+		Image:      "alpine:3.20",
+		Name:       "maison-engine-test-fallback",
+		Hostname:   "pcs-test",
+		Network:    NetworkNone,
+		Container:  "maison-engine-test-does-not-exist",
+		Entrypoint: "/bin/sh",
+		Args:       []string{"sh", "-c", `printf 'fell-back'`},
+		Timeout:    2 * time.Minute,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := string(out); !strings.Contains(got, "fell-back") {
+		t.Errorf("stdout = %q, want the command to have run anyway", got)
+	}
+}
+
+// startResident brings up a throwaway container to exec into, and removes it after.
+func startResident(t *testing.T, name, hostname string) {
+	t.Helper()
+	_ = exec.Command("docker", "rm", "-f", name).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "run", "-d", "--rm",
+		"--name", name, "--hostname", hostname, "--network", "none",
+		"alpine:3.20", "sleep", "600").CombinedOutput()
+	if err != nil {
+		t.Skipf("could not start a resident container: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+}
+
+// The exec-mode half of the invariant this package is shaped around. Cancelling kills
+// the docker client; without the pid file the engine would keep running inside the
+// resident container, holding the app's files, while Maison restarts the app and
+// reports a merely failed backup.
+func TestRunLeavesNoEngineBehindOnTimeoutInExecMode(t *testing.T) {
+	skipWithoutDocker(t)
+	const name = "maison-engine-test-resident"
+	startResident(t, name, "pcs-test")
+	r := New(config.Config{DataRoot: "/DATA", DataHostPath: "/DATA"})
+
+	_, err := r.Run(context.Background(), Spec{
+		Image:      "alpine:3.20",
+		Name:       "maison-engine-test-exec-timeout",
+		Hostname:   "pcs-test",
+		Network:    NetworkNone,
+		Container:  name,
+		Entrypoint: "/bin/sleep",
+		Args:       []string{"120"},
+		Timeout:    5 * time.Second,
+	}, nil)
+	if err == nil {
+		t.Fatal("Run should have timed out")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ps, psErr := exec.CommandContext(ctx, "docker", "exec", name, "ps").CombinedOutput()
+	if psErr != nil {
+		t.Fatalf("listing processes in %s: %v: %s", name, psErr, ps)
+	}
+	if strings.Contains(string(ps), "sleep 120") {
+		t.Errorf("the engine outlived its run:\n%s", ps)
+	}
+}
+
+// A resident container whose hostname disagrees with the repository's would file every
+// snapshot under a second identity — one repository, two lineages, noticed only when a
+// restore comes back empty. Latency is never worth that, so the run goes one-shot.
+func TestResidentContainerWithTheWrongHostnameIsNotUsed(t *testing.T) {
+	skipWithoutDocker(t)
+	const name = "maison-engine-test-wrong-host"
+	startResident(t, name, "some-other-box")
+	r := New(config.Config{DataRoot: "/DATA", DataHostPath: "/DATA"})
+
+	if r.residentUsable(context.Background(), Spec{Container: name, Hostname: "pcs-test"}) {
+		t.Fatal("a container pinned to another hostname must not be used")
+	}
+	if !r.residentUsable(context.Background(), Spec{Container: name, Hostname: "some-other-box"}) {
+		t.Error("the matching hostname should have been accepted")
+	}
+}

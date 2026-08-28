@@ -362,6 +362,12 @@ func (s *Server) listApps(ctx context.Context) []apps.App {
 }
 
 // appsSnapshot returns the current app list for the live "apps" channel.
+//
+// The deadline no longer bounds the Docker listing — that runs on its own budget
+// inside the container cache, and a broadcast is served whatever the cache already
+// holds. It bounds only the cold start, before any listing has landed: the first
+// broadcast after boot gives up here and goes out with greyed tiles, and the
+// listing rebroadcasts the moment it arrives.
 func (s *Server) appsSnapshot() any {
 	if s.apps == nil {
 		return []any{}
@@ -540,6 +546,11 @@ func (s *Server) watchDocker() {
 		})
 		for range trigger {
 			time.Sleep(400 * time.Millisecond) // debounce bursts
+			// The event is the news, so the cached listing has to be retired before
+			// the list is rebuilt from it — otherwise the broadcast describes the
+			// box as it was before the container started or stopped. The listing is
+			// still served while its replacement is fetched; it is stale, not wrong.
+			s.apps.InvalidateContainers()
 			s.broadcastApps()
 		}
 	}()

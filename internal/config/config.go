@@ -64,6 +64,21 @@ type Config struct {
 	// nil means the feature is unwired (a Config built outside the server); apps
 	// then get only the variables Maison computes for itself.
 	AppEnv func() map[string]string
+
+	// BackupEngineContainer names a resident backup-engine container to run engine
+	// commands inside, instead of starting a throwaway one per command. On a box where
+	// starting a container costs seconds, that is the difference between a store click
+	// that answers and one that looks broken.
+	//
+	// On a PCS it is the `backup-engine` stack, deployed beside Maison rather than by
+	// it: the repository and its credentials belong to the host's self-check scripts,
+	// and Maison is one consumer of the engine that reads them.
+	//
+	// The deployment declares the container; Maison only addresses it, and falls back to
+	// a one-shot container whenever it cannot be used — so a wrong name here costs
+	// latency and never correctness. Empty disables the resident path entirely, which is
+	// the kill switch if it ever misbehaves in the field.
+	BackupEngineContainer string
 }
 
 // appEnv is AppEnv, tolerating a Config that never wired it.
@@ -95,6 +110,7 @@ func FromEnv() Config {
 		TZ:            os.Getenv("TZ"),
 		StoreURLs: splitList(envOr("APPSTORE_URL",
 			"https://github.com/Yundera/AppStore/archive/refs/heads/main.zip")),
+		BackupEngineContainer: envOr("BACKUP_ENGINE_CONTAINER", "backup-engine"),
 	}
 	return c
 }

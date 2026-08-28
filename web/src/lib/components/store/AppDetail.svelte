@@ -67,7 +67,9 @@
       <div class="meta">
         <h1>{app.name}</h1>
         <p class="tagline">{app.tagline}</p>
-        <InstallButton ref={refOf(app)} {installed} size="normal" />
+        <!-- The one place that offers to reinstall onto a backup: the catalog grid
+             installs in a single click, and someone after their old data comes here. -->
+        <InstallButton ref={refOf(app)} {installed} size="normal" offerBackups />
       </div>
     </header>
 

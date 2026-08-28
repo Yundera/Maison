@@ -62,13 +62,21 @@ type App struct {
 	WebUIScheme string `yaml:"webui-scheme,omitempty"`
 	WebUIPath   string `yaml:"webui-path,omitempty"`
 
-	// Update reference: where this app was installed from, so Maison can pull a
-	// fresher docker-compose.yml from the same store and re-apply it. Written into
-	// the override's x-compose-app block at install time (see installer). Store is
-	// the reference store URL; StoreAppID is the catalog id within that store;
-	// StoreAppsPath is the folder inside the archive it was found in, absent when
-	// the store uses the default layout — an app installed from a store that keeps
-	// its apps somewhere else must be able to find them again at update time.
+	// StoreRef is where this app was installed from, so Maison can pull a fresher
+	// docker-compose.yml from the same store and re-apply it. Written into the
+	// override's x-compose-app block at install time (see installer), and editable
+	// from the Update tab to point an app at a different store.
+	//
+	// It is one locator — `<store>/-/<apps folder>/<app id>`, the same grammar the
+	// store's own deep links use (appstore.ParseRef, which is the authority) — so
+	// what a person copies out of the store address bar is what they can paste
+	// here. See docs/app-model.md.
+	StoreRef string `yaml:"store-ref,omitempty"`
+
+	// Store / StoreAppID / StoreAppsPath are the superseded three-field spelling of
+	// StoreRef, still read so an app installed before the single-locator form keeps
+	// updating. Nothing writes them any more: the first install or retarget after
+	// the change replaces them with store-ref (see installer.writeUpdateRef).
 	Store         string `yaml:"store,omitempty"`
 	StoreAppID    string `yaml:"store-app-id,omitempty"`
 	StoreAppsPath string `yaml:"store-apps-path,omitempty"`

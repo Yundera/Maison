@@ -7,6 +7,7 @@
     getServices,
     checkUpdate,
     applyUpdate,
+    setUpdateRef,
     getEnv,
     setEnv,
     validateOverride,
@@ -17,6 +18,8 @@
     type EnvVar,
   } from '../stores/apps'
   import { BRAND } from '../brand'
+  import { bare, isAddressableRef } from '../storeref'
+  import { fetchStoreSources, type StoreSource } from '../stores/store'
   import { openStream } from '../live/stream'
   import { renderSize } from '../format'
   import OverrideForm from './OverrideForm.svelte'
@@ -242,22 +245,64 @@
   let updateMsg = $state('')
   let updateChecked = $state(false) // one-shot: don't re-auto-check on error
 
+  // The update source, editable: one locator — `<store>/-/<folder>/<app id>` —
+  // which is the same string the store's own address bar carries, so retargeting an
+  // app is a copy and a paste rather than three fields.
+  let refInput = $state('')
+  let savingRef = $state(false)
+  let sources = $state<StoreSource[]>([])
+  const refDirty = $derived(refInput.trim() !== (update?.ref ?? ''))
+  const refValid = $derived(isAddressableRef(refInput))
+
   async function runCheckUpdate() {
     checkingUpdate = true
     updateChecked = true
     updateMsg = ''
     try {
       update = await checkUpdate(id)
+      // Only when the operator has nothing half-typed: a check that lands while
+      // they are editing must not take the box back.
+      if (!refDirty || !refInput) refInput = update.ref ?? ''
     } catch (e) {
       updateMsg = String(e)
     } finally {
       checkingUpdate = false
     }
   }
-  // Auto-check the first time the Update tab is opened.
+  // Auto-check the first time the Update tab is opened, and load the configured
+  // stores alongside it so the suggestions below the box name the ones this box
+  // already trusts.
   $effect(() => {
-    if (tab === 'update' && !updateChecked) runCheckUpdate()
+    if (tab === 'update' && !updateChecked) {
+      runCheckUpdate()
+      fetchStoreSources()
+        .then((r) => (sources = r.sources ?? []))
+        .catch(() => {}) // suggestions are a convenience; their absence is not an error
+    }
   })
+
+  /** A suggestion for each configured store: this app's id in that store's default
+   *  folder. It is a starting point to edit, not a promise the app is there — which
+   *  is why saving resolves it server-side before recording it. */
+  const refSuggestions = $derived(
+    sources
+      .map((src) => `${bare(src.url)}/-/Apps/${update?.store_app_id || id}`)
+      .filter((r) => r !== (update?.ref ?? '')),
+  )
+
+  async function saveRef() {
+    savingRef = true
+    updateMsg = ''
+    try {
+      update = await setUpdateRef(id, refInput.trim())
+      refInput = update.ref
+      updateMsg = 'Update source saved.'
+    } catch (e) {
+      updateMsg = String(e)
+    } finally {
+      savingRef = false
+    }
+  }
 
   async function runApplyUpdate() {
     applyingUpdate = true
@@ -564,30 +609,45 @@
         {/if}
       {:else if tab === 'update'}
         <p class="hint">
-          Pulls a fresher <code>docker-compose.yml</code> from the store this app was installed
-          from and re-applies it (<code>docker compose up -d</code>). Your
+          Pulls a fresher <code>docker-compose.yml</code> from the app's update source and
+          re-applies it (<code>docker compose up -d</code>). Your
           <code>docker-compose.override.yml</code> and <code>.env</code> are left untouched.
+          The source starts out as the store the app was installed from, and can be pointed
+          at another store — paste what the store's own address bar shows.
         </p>
         {#if checkingUpdate && update === null}
           <p class="hint">Checking the store…</p>
-        {:else if update && !update.has_ref}
-          <p class="hint">
-            This app has no store reference recorded, so {BRAND} can't check for updates.
-            Reinstall it from the store to enable updates.
-          </p>
         {:else if update}
           <div class="update-box">
             <div class="update-row">
-              <span class="k">Reference store</span>
-              <span class="v mono">{update.store || '(merged catalog)'}</span>
-            </div>
-            <div class="update-row">
-              <span class="k">Store app</span>
-              <span class="v mono">{update.store_app_id}</span>
+              <span class="k">Update source</span>
+              <div class="ref-edit">
+                <input
+                  class="mono"
+                  bind:value={refInput}
+                  list="ref-suggestions-{id}"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="store.example.com/archive/main.zip/-/Apps/AppName"
+                />
+                <datalist id="ref-suggestions-{id}">
+                  {#each refSuggestions as s (s)}
+                    <option value={s}></option>
+                  {/each}
+                </datalist>
+                <button
+                  disabled={!refDirty || !refValid || savingRef || checkingUpdate}
+                  onclick={saveRef}
+                >
+                  {savingRef ? 'Saving…' : 'Save'}
+                </button>
+              </div>
             </div>
             <div class="update-row">
               <span class="k">Status</span>
-              {#if update.error}
+              {#if !update.has_ref}
+                <span class="v badge health-unhealthy">No source</span>
+              {:else if update.error}
                 <span class="v badge health-unhealthy">Couldn't check</span>
               {:else if update.available}
                 <span class="v badge health-starting">Update available</span>
@@ -595,8 +655,27 @@
                 <span class="v badge health-healthy">Up to date</span>
               {/if}
             </div>
-            {#if update.error}
+            {#if !update.has_ref}
+              <p class="hint">
+                This app records no store, so {BRAND} doesn't know where its updates come
+                from. Paste a reference above — or reinstall it from the store, which
+                records one.
+              </p>
+            {:else if update.error}
               <p class="hint">{update.error}</p>
+            {/if}
+            {#if refDirty && refInput && !refValid}
+              <p class="hint">
+                A reference names the app inside the store:
+                <code>&lt;store&gt;/-/&lt;folder&gt;/&lt;app id&gt;</code>. A store URL on its
+                own doesn't say which app to follow.
+              </p>
+            {:else if refDirty}
+              <p class="hint">
+                Saving points this app at a different store. Nothing changes until you
+                update — and the update replaces the app's <code>docker-compose.yml</code>,
+                so point it at the same app, not a different one.
+              </p>
             {/if}
           </div>
         {/if}
@@ -940,6 +1019,34 @@
   .update-row .v {
     font-size: 0.82rem;
     word-break: break-all;
+  }
+  .ref-edit {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    min-width: 0;
+  }
+  .ref-edit input {
+    flex: 1;
+    min-width: 0;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+  }
+  .ref-edit button {
+    flex: none;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.35rem 0.8rem;
+    font-size: 0.8rem;
+  }
+  .ref-edit button:disabled {
+    opacity: 0.5;
   }
   /* Service picker */
   .picker {

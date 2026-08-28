@@ -1,6 +1,8 @@
 package appstore
 
 import (
+	"errors"
+	"fmt"
 	"net/url"
 	"path"
 	"regexp"
@@ -126,6 +128,41 @@ func ParseRef(s string) Ref {
 		return r
 	}
 	return splitInZip(s)
+}
+
+// ParseUserRef reads a reference a person typed or pasted, and refuses the two
+// spellings ParseRef reads as something other than what was meant.
+//
+// ParseRef is deliberately forgiving: anything without the separator is an in-zip
+// path against the merged catalog, which is what keeps a plain /store/<id> link
+// working. That is right for a URL the SPA generated, and wrong for a box a person
+// types into — pasting a store's archive URL on its own,
+//
+//	github.com/Yundera/AppStore/archive/main.zip
+//
+// parses as the app "main.zip" in the folder "github.com/Yundera/AppStore/archive"
+// of the merged catalog. No error, and a confusing "app not found" much later. So a
+// multi-segment input without the separator is rejected here, and a single segment
+// (a bare app id, the merged catalog) is kept.
+func ParseUserRef(s string) (Ref, error) {
+	s = strings.Trim(strings.TrimSpace(s), "/")
+	if s == "" {
+		return Ref{}, errors.New("a store reference is required")
+	}
+	if !strings.Contains(s, refSep) {
+		if strings.Contains(s, "/") {
+			return Ref{}, fmt.Errorf("%q names no app: a reference is <store>%s<folder>/<app id>, e.g. github.com/Yundera/AppStore/archive/main.zip%sApps/FileBrowser", s, refSep, refSep)
+		}
+		return Ref{ID: s}, nil // a bare app id: the merged catalog answers
+	}
+	r := ParseRef(s)
+	if r.URL == "" {
+		return Ref{}, fmt.Errorf("%q has no store before %s", s, refSep)
+	}
+	if r.ID == "" {
+		return Ref{}, fmt.Errorf("%q has no app id after %s", s, refSep)
+	}
+	return r, nil
 }
 
 // NewRef builds a reference from the pieces a query string carries.

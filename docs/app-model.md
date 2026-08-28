@@ -60,16 +60,31 @@ byte-identical to the store):
 ```yaml
 # docker-compose.override.yml
 x-compose-app:
-  store: https://github.com/Yundera/AppStore/archive/refs/heads/main.zip  # reference store
-  store-app-id: jellyfin                                                  # catalog id within it
-  store-apps-path: catalog/apps        # apps folder, only when it is not the default Apps/
+  store-ref: github.com/Yundera/AppStore/archive/refs/heads/main.zip/-/catalog/apps/jellyfin
 ```
 
-`store-apps-path` is written only when the app came from a store that keeps its apps
-somewhere other than `Apps/` — an app installed before the field existed reads back with
-the default, which is what it was installed from. Together the three fields are the store
-reference the store panel uses (`internal/appstore/ref.go`), so an update resolves to the
-same store *and* the same folder the install came from.
+One key, holding the whole reference: `<store>/-/<apps folder>/<app id>`. It is the same
+grammar the store's own deep links use (`internal/appstore/ref.go`, which is the
+authority), so what a person copies out of the store's address bar is exactly what they
+can paste into the Update tab to point the app somewhere else. The scheme is implied —
+`https` unless written out — and the apps folder is part of the reference rather than a
+constant, so an update resolves to the same store *and* the same folder the install came
+from.
+
+An app installed before the single-locator form recorded three fields instead:
+
+```yaml
+x-compose-app:
+  store: https://github.com/Yundera/AppStore/archive/refs/heads/main.zip
+  store-app-id: jellyfin
+  store-apps-path: catalog/apps        # only when it was not the default Apps/
+```
+
+Those are still **read** when `store-ref` is absent, so such an app keeps updating from
+where it came from. Nothing writes them any more: the next install or retarget replaces
+them with `store-ref` and removes them, because two records of where an app updates from
+— one of them stale after a retarget — is only ever noticed once it has sent an app back
+to the store it was moved off.
 
 The same block carries the manifest of the **Caddy routes Maison generates** to
 publish the app on the deployment's additional domains (`generated-routes`) — the
@@ -78,8 +93,7 @@ never touch the operator's. See [`docs/domains.md`](./domains.md).
 
 The per-app **Update** tab uses this to:
 
-1. fetch the store's current listing for `store-app-id` from `store` (in
-   `store-apps-path`, when set), and
+1. fetch the store's current listing for the app named by `store-ref`, and
 2. compare it byte-for-byte with the installed `docker-compose.yml`.
 
 The comparison is that simple only because the base is the store's bytes and nothing
@@ -90,6 +104,18 @@ When they differ, **Update now** overwrites the strict base with the store's
 version and runs `docker compose up -d` (base + override). The override and
 `.env` are never touched. Apps with no recorded reference (installed before this
 feature, or unmanaged stacks) simply report "no update reference".
+
+The reference is **editable** from that tab (`PUT /api/apps/{id}/update/ref`), which is
+how an app follows a different store — a fork, a lab store, a pinned tag — without being
+reinstalled. The reference is resolved against its store *before* it is recorded, so a
+locator that names nothing fails in the box it was typed into rather than as a "couldn't
+check" later; and because nothing Docker can see changes, the stack is left running. An
+app with no reference at all can be given one this way, including one Maison merely
+discovered. What that buys is real and so is the risk: the next update overwrites the
+app's `docker-compose.yml` with whatever the new reference names, so pointing an app at a
+*different app* replaces it in place, over its existing volumes. The update takes a
+rollback point first (see [`lifecycle.md`](./lifecycle.md)), which bounds the damage but
+does not undo the choice.
 
 ### Editing the override — form and YAML
 

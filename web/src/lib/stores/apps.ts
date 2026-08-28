@@ -432,6 +432,10 @@ export interface UpdateStatus {
   has_ref: boolean
   /** The store's compose differs from the installed one. */
   available: boolean
+  /** The whole reference as one locator — `<store>/-/<folder>/<app id>`, the same
+   *  grammar the store's deep links use. This is what the Update tab shows and
+   *  takes back; the two fields below are the same thing taken apart. */
+  ref: string
   /** Reference store URL and the catalog id within it. */
   store: string
   store_app_id: string
@@ -452,6 +456,15 @@ export async function applyUpdate(id: string): Promise<boolean> {
   )
   await loadApps()
   return res?.updated ?? false
+}
+
+/** Point the app at a different store, app or folder. The reference is resolved
+ *  server-side before it is recorded, so a locator that does not exist throws here
+ *  rather than turning into a "couldn't check" later. The stack keeps running —
+ *  only where the next update comes from changed — and the fresh status against the
+ *  new store comes back. */
+export function setUpdateRef(id: string, ref: string): Promise<UpdateStatus> {
+  return api.put<UpdateStatus>(`/api/apps/${encodeURIComponent(id)}/update/ref`, { ref })
 }
 
 /** One container of a multi-service stack, with live state and health. */

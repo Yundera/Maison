@@ -177,7 +177,7 @@ and so an operator reading the file knows what they are:
 
 | Key | Written by |
 |---|---|
-| `store` / `store-app-id` | The install, recording where the app came from so it can be updated later. |
+| `store-ref` | The install, recording where the app came from — `<store>/-/<folder>/<app id>` — so it can be updated later; rewritten when the Update tab points the app at another store. (`store` / `store-app-id` / `store-apps-path` are the superseded three-field spelling, still read, never written.) |
 | `generated-routes` | Route generation: the Caddy label keys Maison added to publish the app on the deployment's **additional domains**, and will delete before rewriting them. See [`domains.md`](./domains.md). |
 
 Route generation is the other reason to keep `webui-host` and the app's `caddy_N`

@@ -74,6 +74,22 @@ export function refQuery(r: StoreRef): string {
   return q.length ? `?${q.join('&')}` : ''
 }
 
+/** Whether a reference a person typed addresses an app.
+ *
+ *  The mirror of appstore.ParseUserRef, and it exists for the same reason: parseRef
+ *  reads anything without the separator as an in-zip path against the merged
+ *  catalog, so a store's archive URL pasted on its own —
+ *  `github.com/Yundera/AppStore/archive/main.zip` — parses as the app `main.zip` in
+ *  a folder named after the forge. Silently. The server refuses that too; this is
+ *  only so the button greys out before the round trip. */
+export function isAddressableRef(s: string): boolean {
+  const trimmed = s.replace(/^\/+|\/+$/g, '').trim()
+  if (!trimmed) return false
+  if (!trimmed.includes(SEP)) return !trimmed.includes('/') // a bare id: the merged catalog
+  const r = parseRef(trimmed)
+  return !!r.url && !!r.id
+}
+
 /** The reference a catalog entry came from, so an install goes back to the store
  *  and the folder the app was read from rather than to the merged catalog. */
 export function refOf(app: { id: string; store?: string; apps_path?: string }): StoreRef {

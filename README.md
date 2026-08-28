@@ -292,8 +292,9 @@ edits persist**:
 - The store's `docker-compose.yml` is **never modified**.
 - Edits are written to a separate **`docker-compose.override.yml`**, layered on via Compose
   override semantics. The running app = base + override.
-- The override also carries the **update reference** (which store, which catalog id) — so
-  it survives a base re-copy on update.
+- The override also carries the **update reference** (`store-ref`: one locator naming the
+  store, the folder and the app) — so it survives a base re-copy on update, and can be
+  repointed at another store from the Update tab.
 
 ---
 

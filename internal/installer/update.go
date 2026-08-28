@@ -25,6 +25,11 @@ type UpdateStatus struct {
 	HasRef bool `json:"has_ref"`
 	// Available is true when the store's compose differs from the installed one.
 	Available bool `json:"available"`
+	// Ref is the whole reference as one locator — `<store>/-/<folder>/<app id>` —
+	// which is what the Update tab shows and takes back when the app is pointed at
+	// a different store. The three fields below are the same reference taken apart,
+	// kept because a caller that wants only the store should not have to parse.
+	Ref string `json:"ref"`
 	// Store is the reference store URL; StoreAppID the catalog id within it;
 	// StoreAppsPath the folder inside the archive, when it is not the default.
 	Store         string `json:"store"`
@@ -50,7 +55,7 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 	if ref.ID == "" {
 		return UpdateStatus{HasRef: false}, nil
 	}
-	st := UpdateStatus{HasRef: true, Store: ref.URL, StoreAppID: ref.ID, StoreAppsPath: ref.AppsPath}
+	st := statusOf(ref)
 
 	newBase, err := in.store.AppComposeFrom(ctx, ref)
 	if err != nil {
@@ -197,7 +202,26 @@ func (in *Installer) readUpdateRef(project string) appstore.Ref {
 	if err != nil {
 		return appstore.Ref{}
 	}
+	if ca.StoreRef != "" {
+		return appstore.ParseRef(ca.StoreRef)
+	}
+	// The superseded three-field spelling, still read so an app installed before
+	// store-ref keeps updating from where it came from. Its next retarget — or its
+	// next install from the store — writes the single locator instead.
 	return appstore.Ref{URL: ca.Store, AppsPath: ca.StoreAppsPath, ID: ca.StoreAppID}
+}
+
+// statusOf is the part of an UpdateStatus that is just the reference, rendered
+// both ways. One place, so the whole-locator form and the fields taken apart
+// cannot drift.
+func statusOf(ref appstore.Ref) UpdateStatus {
+	return UpdateStatus{
+		HasRef:        true,
+		Ref:           ref.Path(),
+		Store:         ref.URL,
+		StoreAppID:    ref.ID,
+		StoreAppsPath: ref.AppsPath,
+	}
 }
 
 // writeUpdateRef merges the store reference into the app's override x-compose-app
@@ -221,15 +245,15 @@ func writeUpdateRef(dir string, ref appstore.Ref) error {
 	if xca == nil {
 		xca = map[string]any{}
 	}
-	if ref.URL != "" {
-		xca["store"] = ref.URL
-	}
-	xca["store-app-id"] = ref.ID
-	// Only when it differs from the default, so the common app's override stays as
-	// short as it was.
-	if ref.AppsPath != "" && ref.AppsPath != appstore.DefaultAppsPath {
-		xca["store-apps-path"] = ref.AppsPath
-	}
+	xca["store-ref"] = ref.Path()
+	// The three-field spelling this replaces. Removed rather than left behind: two
+	// records of where an app updates from, one of them stale after a retarget, is
+	// the kind of thing that is only noticed once it has sent an app back to the
+	// store it was moved off. readUpdateRef still reads them, for the apps that
+	// have not been through here since.
+	delete(xca, "store")
+	delete(xca, "store-app-id")
+	delete(xca, "store-apps-path")
 	doc["x-compose-app"] = xca
 
 	out, err := yaml.Marshal(doc)
@@ -237,4 +261,40 @@ func writeUpdateRef(dir string, ref appstore.Ref) error {
 		return err
 	}
 	return os.WriteFile(overridePath, out, 0o644)
+}
+
+// SetUpdateRef points an app at a different store, app or folder: it parses the
+// reference, checks that it actually resolves, and records it in the app's
+// override. The stack is NOT recreated — the reference says where the next update
+// comes from and nothing Docker can see changes — so what comes back is the fresh
+// update status against the new store, which is the next thing the operator wants
+// to know.
+//
+// The reference is resolved before it is written, so a typo fails here, in the box
+// it was typed into, rather than later as a "couldn't check" on a tile.
+func (in *Installer) SetUpdateRef(ctx context.Context, project, refStr string) (UpdateStatus, error) {
+	dir := filepath.Join(in.cfg.AppsDir(), project)
+	if _, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err != nil {
+		return UpdateStatus{}, err // not a managed app: nothing to update from a store
+	}
+
+	ref, err := appstore.ParseUserRef(refStr)
+	if err != nil {
+		return UpdateStatus{}, err
+	}
+	current, err := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
+	if err != nil {
+		return UpdateStatus{}, err
+	}
+	_, newBase, err := in.store.AppSyncedFrom(ctx, ref)
+	if err != nil {
+		return UpdateStatus{}, fmt.Errorf("%s: %w", ref.Path(), err)
+	}
+	if err := writeUpdateRef(dir, ref); err != nil {
+		return UpdateStatus{}, err
+	}
+
+	st := statusOf(ref)
+	st.Available = !bytes.Equal(current, newBase)
+	return st, nil
 }

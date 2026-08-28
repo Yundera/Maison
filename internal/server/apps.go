@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -79,6 +80,40 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	st, err := s.installer.CheckUpdate(ctx, chi.URLParam(r, "id"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// handleSetUpdateRef points the app at a different store: it takes one locator
+// (`<store>/-/<folder>/<app id>`, the grammar the store's own links use), resolves
+// it, and records it in the app's override. The stack is left running — only where
+// the next update comes from changed — and the fresh status against the new store
+// comes back in the same round trip.
+//
+// A reference that does not resolve is a 400 with the store's own words, because it
+// is nearly always a mistyped locator and the operator is looking at the box they
+// typed it into.
+func (s *Server) handleSetUpdateRef(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	if s.installer == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
+		return
+	}
+	var body struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	st, err := s.installer.SetUpdateRef(ctx, chi.URLParam(r, "id"), body.Ref)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, st)

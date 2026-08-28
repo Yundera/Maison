@@ -156,10 +156,10 @@ menu (see `app-model.md`).
 ## Update
 
 `Installer.ApplyUpdate`, driven by the update reference recorded in the override at
-install time (`store` + `store-app-id`).
+install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdateRef`).
 
 ```
-1. fetch the store's current compose for store-app-id
+1. fetch the store's current compose for the app store-ref names
 2. equal to what's on disk, byte for byte? → nothing to do, report "up to date"
 3. back up the app  ← the rollback point, taken before anything is written
 4. overwrite docker-compose.yml (the strict base only)

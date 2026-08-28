@@ -111,3 +111,48 @@ func TestNewRefCanonicalisesTheLocator(t *testing.T) {
 		t.Errorf("ID = %q", r.ID)
 	}
 }
+
+// ParseUserRef is the parse for a box a person types into, where ParseRef's
+// forgiving reading of an input without the separator is a trap rather than a
+// convenience.
+
+func TestParseUserRefReadsAFullLocator(t *testing.T) {
+	r, err := ParseUserRef(" github.com/Yundera/AppStore/archive/main.zip/-/Apps/FileBrowser ")
+	if err != nil {
+		t.Fatalf("ParseUserRef: %v", err)
+	}
+	if r.URL != "https://github.com/Yundera/AppStore/archive/main.zip" {
+		t.Errorf("URL = %q, want the canonicalised locator", r.URL)
+	}
+	if r.Apps() != "Apps" || r.ID != "FileBrowser" {
+		t.Errorf("apps/id = %q/%q, want Apps/FileBrowser", r.Apps(), r.ID)
+	}
+}
+
+// The whole point of the strict parse: a store's archive URL on its own names no
+// app, and ParseRef reads it as the app "main.zip" in a folder named after the
+// forge. Failing at the box beats "app not found" minutes later.
+func TestParseUserRefRejectsAStoreURLThatNamesNoApp(t *testing.T) {
+	if _, err := ParseUserRef("github.com/Yundera/AppStore/archive/main.zip"); err == nil {
+		t.Fatal("a locator with no app was accepted")
+	}
+}
+
+// A bare id still means the merged catalog, exactly as /store/<id> always has.
+func TestParseUserRefKeepsABareAppID(t *testing.T) {
+	r, err := ParseUserRef("FileBrowser")
+	if err != nil {
+		t.Fatalf("ParseUserRef: %v", err)
+	}
+	if !r.Merged() || r.ID != "FileBrowser" {
+		t.Errorf("ref = %+v, want the merged catalog's FileBrowser", r)
+	}
+}
+
+func TestParseUserRefRejectsHalfAReference(t *testing.T) {
+	for _, in := range []string{"", "   ", "/-/Apps/FileBrowser", "github.com/store.zip/-/"} {
+		if _, err := ParseUserRef(in); err == nil {
+			t.Errorf("ParseUserRef(%q) was accepted", in)
+		}
+	}
+}

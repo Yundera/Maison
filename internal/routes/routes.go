@@ -70,7 +70,7 @@ import (
 
 // ManifestKey names the generated-key manifest inside the override's
 // x-compose-app block — the same block that already carries Maison's other
-// bookkeeping (store, store-app-id, tips).
+// bookkeeping (store-ref, tips).
 //
 // The name is deliberately brand-free. It is written into files that belong to
 // the operator and outlive any one release, so it is the one identifier a rename

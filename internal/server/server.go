@@ -231,6 +231,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Put("/apps/{id}/tips", s.handlePutTips)
 		r.Get("/apps/{id}/update", s.handleCheckUpdate)
 		r.Post("/apps/{id}/update", s.handleApplyUpdate)
+		r.Put("/apps/{id}/update/ref", s.handleSetUpdateRef)
 		r.Get("/apps/{id}/services", s.handleAppServices)
 		r.Get("/apps/{id}/reachable", s.handleReachable)
 		r.Get("/apps/{id}/icon", s.handleAppIcon)

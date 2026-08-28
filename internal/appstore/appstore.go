@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yundera/maison/internal/asset"
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/xcasaos"
 )
@@ -62,12 +63,22 @@ type CatalogApp struct {
 	Primary bool `json:"primary"`
 
 	composePath string // absolute path to the app's compose file
+	// iconRel is the icon as the compose declared it when that was a file beside
+	// the compose, kept because Icon above has by then been rewritten into the URL
+	// the browser fetches. The installer copies the file, not the URL — it is
+	// reading bytes already on this disk, and the copy has to survive the store the
+	// URL points into being refreshed or removed.
+	iconRel string
 }
 
 // Dir is the app's folder inside the extracted store — the directory holding its
 // docker-compose.yml, and beside it whatever else the store ships for the app
 // (its seed tree, its icon). The installer reads it to copy the seed tree in.
 func (a *CatalogApp) Dir() string { return filepath.Dir(a.composePath) }
+
+// IconRel is the app's icon as a path inside Dir, or "" when the compose declared
+// a URL instead. See the field.
+func (a *CatalogApp) IconRel() string { return a.iconRel }
 
 // Source is one configured store, named for display.
 type Source struct {
@@ -819,7 +830,7 @@ func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPat
 	if name == "" {
 		name = id
 	}
-	return &CatalogApp{
+	app := &CatalogApp{
 		ID:          id,
 		Name:        name,
 		Tagline:     xcasaos.Localized(si.Tagline),
@@ -836,6 +847,41 @@ func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPat
 		StoreName:   storeName,
 		composePath: composePath,
 	}
+	app.resolveAssets(NewRef(storeURL, appsPath, id))
+	return app
+}
+
+// resolveAssets turns the app's compose-relative asset values into URLs that
+// fetch the file out of the extracted store, and leaves absolute URLs alone.
+//
+// It happens here, at the one place a CatalogApp is built, so that everything
+// downstream — the browse grid, the detail page, the install placeholder tile —
+// gets a value it can put straight into an <img src> without knowing a store
+// exists. A value that is neither a URL nor a resolvable relative path is dropped
+// rather than passed on: it would render as a request to the dashboard for a path
+// that means nothing there.
+func (a *CatalogApp) resolveAssets(ref Ref) {
+	resolve := func(raw string) string {
+		if asset.IsURL(raw) {
+			return raw
+		}
+		if rel, ok := asset.Rel(raw); ok {
+			return AssetURL(ref, rel)
+		}
+		return ""
+	}
+	if rel, ok := asset.Rel(a.Icon); ok {
+		a.iconRel = rel
+	}
+	a.Icon = resolve(a.Icon)
+	a.Thumbnail = resolve(a.Thumbnail)
+	shots := a.Screenshots[:0:0]
+	for _, s := range a.Screenshots {
+		if u := resolve(s); u != "" {
+			shots = append(shots, u)
+		}
+	}
+	a.Screenshots = shots
 }
 
 // readStoreName reads what a store calls itself, from store.json at the store

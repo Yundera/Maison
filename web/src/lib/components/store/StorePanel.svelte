@@ -135,6 +135,17 @@
     }
     return out
   })
+
+  // A thumbnail goes into a CSS url() token, which — unlike an <img src> — is
+  // parsed by the CSS tokenizer: quotes, parentheses and whitespace in the value
+  // end the token and break the rule. An asset served from this box carries a
+  // query string (the store it came from), and one named as a URL is whatever the
+  // store wrote, so the value is quoted and the two characters that could still
+  // escape those quotes are escaped.
+  function cssUrl(src: string | undefined): string | undefined {
+    if (!src) return undefined
+    return `url("${src.replace(/["\\]/g, '\\$&')}")`
+  }
 </script>
 
 <div class="backdrop" onclick={closeStore} role="presentation">
@@ -208,7 +219,7 @@
 
 {#snippet hero(app: StoreApp)}
   <div class="hero" onclick={() => openStoreApp(refOf(app))} role="presentation">
-    <div class="thumb" style:background-image={app.thumbnail ? `url(${app.thumbnail})` : undefined}></div>
+    <div class="thumb" style:background-image={cssUrl(app.thumbnail)}></div>
     <div class="hero-body">
       <img class="plate" src={app.icon} alt="" loading="lazy" />
       <div class="hero-meta">

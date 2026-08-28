@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yundera/maison/internal/asset"
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
@@ -554,6 +555,14 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 		if hp := reachableHostPort(svcPorts, main, webui); hp > 0 {
 			app.Port = strconv.Itoa(hp)
 		}
+	}
+	// A compose-relative icon names a file beside the compose, which is not something
+	// a browser can fetch: an installed app's tile gets it from the copy in the app's
+	// own folder (localIcon, filled by the installer or EnsureIcons), and until that
+	// copy exists there is no icon to show. Passing the raw value on would render as
+	// a request to the dashboard for a path that means nothing there.
+	if app.Icon != "" && !asset.IsURL(app.Icon) {
+		app.Icon = ""
 	}
 	return app
 }

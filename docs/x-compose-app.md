@@ -49,14 +49,14 @@ x-compose-app:
   schema_version: 1
   id: jellyfin
   title: Jellyfin
-  icon: https://cdn.example.com/jellyfin.svg
+  icon: icon.png
   category: Media
   tagline: Free software media system
   description: |
     Jellyfin is a media server for organizing and streaming your collection.
   developer: Jellyfin
   screenshots:
-    - https://cdn.example.com/jellyfin/1.png
+    - screenshot-1.png
 
   # --- the click URL ---
   webui-host: jellyfin-${domain}
@@ -70,14 +70,14 @@ x-compose-app:
 | `schema_version` | int | no (default `1`) | Spec version (currently **2**). `secrets`, `variables`, `files`, `init` and the seed tree are **additive** and do not raise it — an older build ignores what it does not know instead of dropping the whole block (which would cost the app its folders and routes too). A build that predates the declared version falls back to `x-casaos` for the whole block — note that it **does not refuse to install the app**, so raising the version degrades an app rather than gating it. v1 files keep working. | — |
 | `id` | string | no | Stable app identifier (should equal the Compose project `name`). Defaults to the project name. | `store_app_id` |
 | `title` | string \| localized | no | Tile + store display name. | `title` |
-| `icon` | url | no | Tile icon. | `icon` |
+| `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
 | `category` | string | no | Store grouping. | `category` |
 | **`view`** | `apps` \| `system` \| `hidden` | no (default `apps`) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
 | `description` | string \| localized | no | Store long description (Markdown). | `description` |
 | `developer` | string | no | Store attribution. | `developer` / `author` |
-| `screenshots` | url[] | no | Store gallery. | `screenshot_link` |
-| `thumbnail` | url | no | Store card image. | `thumbnail` |
+| `screenshots` | path[] \| url[] | no | Store gallery. See [Assets](#assets). | `screenshot_link` |
+| `thumbnail` | path \| url | no | Store card image. See [Assets](#assets). | `thumbnail` |
 | `architectures` | string[] | no | e.g. `[amd64, arm64]`. Advisory. | `architectures` |
 | **`webui-host`** | string | **yes\*** | The web UI's **host** — the final URL host, templated exactly like the app's Caddy route (e.g. `jellyfin-${domain}`). Omit for headless apps. | derived from `hostname` |
 | `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). | derived from `port_map` |
@@ -98,6 +98,48 @@ action.
 
 **Localized** means either a plain string (`title: Jellyfin`) or a locale map
 (`title: { en_us: Jellyfin, fr_fr: Jellyfin }`). Maison prefers `en_us`.
+
+### Assets
+
+`icon`, `thumbnail` and `screenshots` follow one rule: **a value that is not an
+absolute URL names a file beside the compose.**
+
+```yaml
+icon: icon.png                 # the app's own folder — the normal way
+thumbnail: thumbnail.png
+screenshots:
+  - screenshot-1.png
+  - assets/screenshot-2.png    # subfolders are fine
+```
+
+The same line works on both sides of an install, because on both sides the compose
+is on disk: in a store, it resolves inside the app's folder in the extracted store
+tree; once installed, inside `/DATA/AppData/<app>/`. Maison serves store assets
+from `/api/store/<id>/asset/<path>` and the installed tile's icon from
+`/api/apps/<app>/icon`, so nothing on the page is a request to a third party.
+
+Prefer this to a URL. A store that ships its own art — which is every store; the
+CDN links in them point back at the store's own repository — otherwise pays a
+round trip to read bytes it has already downloaded and extracted, and inherits
+that host's cache, outages and link rot to do it. A box behind a filtering proxy,
+or with no egress, shows blank tiles.
+
+Rules:
+
+- **Absolute URLs stay valid.** `https://…` is fetched as before. It is simply no
+  longer the normal way to say where an icon is.
+- **The path may not leave the app's folder.** `../`, absolute paths and
+  backslashes are rejected, and a rejected value is *dropped*, not retried as a
+  URL — a broken path should show a missing image, not a silent request to
+  somebody else's server.
+- **The extension must be an image one** (`.png .svg .jpg .jpeg .webp .gif .ico
+  .avif`) — it is what types the response.
+- **`icon.<ext>` is found without being declared.** An app folder holding a plain
+  `icon.png` gets a tile whether or not its compose says so, which is the CasaOS
+  layout every store already ships.
+- The icon is **copied into the app folder at install** and refreshed on update
+  (see [`app-model.md`](./app-model.md)), so an installed tile keeps working after
+  the store is refreshed, removed, or was never on this box at all.
 
 ---
 

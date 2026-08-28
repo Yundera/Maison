@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -189,6 +190,38 @@ func (s *Server) handleStoreApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, app)
+}
+
+// handleStoreAsset serves one file out of a store app's folder — its icon,
+// thumbnail or a screenshot, named in the compose as a path beside it. The
+// browser has no way to read the extracted store tree, so a relative asset is
+// handed out here; appstore.AssetURL is what builds the URLs that land on this
+// route, and internal/asset is what decides which values are relative at all.
+//
+// The wildcard, rather than a single segment, because a store is free to keep its
+// art in a subfolder. Everything the path could be is settled inside OpenAsset:
+// the name is re-validated there, the app id is confined, and nothing is fetched.
+func (s *Server) handleStoreAsset(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	rel := chi.URLParam(r, "*")
+	if unescaped, err := url.PathUnescape(rel); err == nil {
+		rel = unescaped
+	}
+	f, st, err := s.store.OpenAsset(storeRef(r), rel)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	// Revalidate every time. The file behind this URL is replaced in place by a
+	// store refresh — same store, same app, same name, new bytes — so a cached copy
+	// with no revalidation is how an app keeps last month's icon. The check costs a
+	// stat and a 304 against a local file.
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeContent(w, r, st.Name(), st.ModTime(), f)
 }
 
 // storeRef builds the store reference addressed by a request: the {id} path

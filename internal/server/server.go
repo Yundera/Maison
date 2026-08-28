@@ -275,6 +275,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Delete("/store/sources", s.handleRemoveStoreSource)
 		r.Post("/store/sources/refresh", s.handleRefreshStoreSource)
 		r.Get("/store/app/{id}", s.handleStoreApp)
+		r.Get("/store/{id}/asset/*", s.handleStoreAsset)
 		r.Get("/store/{id}/backups", s.handleStoreBackups)
 		r.Post("/store/{id}/install", s.handleInstall)
 

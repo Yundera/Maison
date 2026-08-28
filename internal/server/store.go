@@ -18,6 +18,11 @@ type storeResponse struct {
 	Apps       []*appstore.CatalogApp `json:"apps"`
 	Categories []string               `json:"categories"`
 	Recommend  []string               `json:"recommend"`
+	// Sources rides along so the panel can group the catalog by store in the order
+	// the box has them configured, and name each group as the store names itself.
+	// Deriving either from Apps would lose the order and, for a store that ships no
+	// app at all, the store.
+	Sources []appstore.Source `json:"sources"`
 }
 
 func (s *Server) handleStore(w http.ResponseWriter, _ *http.Request) {
@@ -25,10 +30,16 @@ func (s *Server) handleStore(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
 	}
+	// CatalogAll, not Catalog: the browse is grouped by store, not merged across
+	// them, so the payload carries every configured store's copy of an app rather
+	// than only the one that won the id collision. Primary still marks the copy a
+	// bare id resolves to, which is what the featured row and /store/<id> use —
+	// see appstore.CatalogApp.
 	writeJSON(w, http.StatusOK, storeResponse{
-		Apps:       s.store.Catalog(),
+		Apps:       s.store.CatalogAll(),
 		Categories: s.store.Categories(),
 		Recommend:  s.store.Recommend(),
+		Sources:    s.store.Sources(),
 	})
 }
 

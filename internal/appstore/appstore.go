@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -53,6 +54,12 @@ type CatalogApp struct {
 	// StoreName is what the store calls itself (store.json), falling back to its
 	// URL. Shown wherever a store has to be named to a person.
 	StoreName string `json:"store_name,omitempty"`
+	// Primary is true for the copy that won the merge — the one the id alone
+	// resolves to. Two stores may both ship an app under the same folder name, and
+	// only one of them can answer a bare id; the others are still in the payload,
+	// reachable by naming their store, and marked false here so a merged view can
+	// leave them out and show each app once.
+	Primary bool `json:"primary"`
 
 	composePath string // absolute path to the app's compose file
 }
@@ -87,9 +94,14 @@ type Manager struct {
 	// Writers hold it for two renames; readers for one os.ReadFile.
 	filesMu sync.RWMutex
 
-	mu        sync.RWMutex
-	catalog   map[string]*CatalogApp
-	order     []string // stable catalog order
+	mu      sync.RWMutex
+	catalog map[string]*CatalogApp
+	order   []string // stable catalog order
+	// all is every store's copy of every app, including the ones that lost an id
+	// collision — the merged catalog above holds only the winners. Kept so a
+	// filter that names one store can show that store's own copy, and so an
+	// install from it goes to the store it was read from.
+	all       []*CatalogApp
 	cats      []string
 	recommend []string
 	// names is what each store called itself at the last refresh, by URL. Cached
@@ -162,6 +174,20 @@ func (m *Manager) Catalog() []*CatalogApp {
 		out = append(out, m.catalog[id])
 	}
 	return out
+}
+
+// CatalogAll returns every store's copy of every app, sorted by name — the
+// merged catalog plus the copies that lost an id collision, each carrying the
+// store it came from and a Primary flag saying whether it won.
+//
+// Catalog() is the merged view and stays the one that answers a bare id. This is
+// for the caller that has to show what each configured store actually offers: a
+// store whose every app is shadowed contributes nothing to Catalog(), and a UI
+// built on that alone cannot tell it from a store that failed to load.
+func (m *Manager) CatalogAll() []*CatalogApp {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]*CatalogApp(nil), m.all...)
 }
 
 // Categories returns the distinct category list.
@@ -288,6 +314,7 @@ func (m *Manager) Refresh(ctx context.Context) error {
 
 	catalog := map[string]*CatalogApp{}
 	var order []string
+	var all []*CatalogApp
 	catSet := map[string]bool{}
 	var recommend []string
 	var errs []error
@@ -308,9 +335,16 @@ func (m *Manager) Refresh(ctx context.Context) error {
 			names[u] = n
 		}
 		for _, a := range apps {
-			if _, exists := catalog[a.ID]; exists {
-				continue // first store wins on id collision
+			all = append(all, a)
+			if won, exists := catalog[a.ID]; exists {
+				// First store wins on id collision. The loser stays in `all` — it is
+				// still installable by naming its store — but it cannot answer the bare
+				// id. Logged because it is otherwise invisible: a store whose apps all
+				// lost looks, from the catalog alone, like a store that never loaded.
+				log.Printf("appstore: %s: app %q shadowed by the copy in %s", u, a.ID, won.StoreURL)
+				continue
 			}
+			a.Primary = true
 			catalog[a.ID] = a
 			order = append(order, a.ID)
 		}
@@ -323,6 +357,15 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	sort.Slice(order, func(i, j int) bool {
 		return strings.ToLower(catalog[order[i]].Name) < strings.ToLower(catalog[order[j]].Name)
 	})
+	// Same order as the merged catalog, with the store URL breaking the tie two
+	// copies of one app would otherwise leave to sort.Slice's instability.
+	sort.Slice(all, func(i, j int) bool {
+		ni, nj := strings.ToLower(all[i].Name), strings.ToLower(all[j].Name)
+		if ni != nj {
+			return ni < nj
+		}
+		return all[i].StoreURL < all[j].StoreURL
+	})
 	cats := make([]string, 0, len(catSet))
 	for c := range catSet {
 		cats = append(cats, c)
@@ -332,6 +375,7 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	m.mu.Lock()
 	m.catalog = catalog
 	m.order = order
+	m.all = all
 	m.cats = cats
 	m.recommend = recommend
 	m.names = names

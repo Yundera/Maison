@@ -82,7 +82,7 @@ export function refOf(app: { id: string; store?: string; apps_path?: string }): 
 
 /** Drop an implied scheme for display. http is kept: it is not the default, and a
  *  store fetched over it is one anyone on the path can replace. */
-const bare = (u: string): string => u.replace(/^https:\/\//, '')
+export const bare = (u: string): string => u.replace(/^https:\/\//, '')
 
 /** The last segment is the app; everything before it is the apps folder. */
 function splitInZip(p: string): StoreRef {

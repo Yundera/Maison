@@ -17,12 +17,23 @@ export interface StoreApp {
   apps_path?: string
   /** What the store calls itself (store.json), falling back to its URL. */
   store_name?: string
+  /** True for the copy that answers the bare id. Two stores can ship the same app
+   *  folder and only one of them wins that; the others are still in the payload,
+   *  found by naming their store. Absent means primary (an older server). */
+  primary?: boolean
 }
 
 export interface StoreData {
+  /** Every configured store's copy of every app — NOT merged. An app shipped by
+   *  two stores appears twice, once per store, each carrying its own version and
+   *  metadata; the catalog is browsed grouped by store. `primary` still marks the
+   *  copy a bare id resolves to. */
   apps: StoreApp[]
   categories: string[]
   recommend: string[]
+  /** The configured stores, in the order the box has them, each named as it names
+   *  itself in store.json (falling back to its URL). The grouping follows this. */
+  sources?: StoreSource[]
 }
 
 export function fetchStore(): Promise<StoreData> {

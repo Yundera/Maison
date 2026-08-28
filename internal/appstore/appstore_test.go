@@ -282,6 +282,44 @@ func TestRefreshReportsStaleFallback(t *testing.T) {
 	}
 }
 
+// Two stores shipping the same app folder is normal — a fork of a store, or the
+// same store at two branches while one is being tested. Only one of them can answer
+// the bare id, but the other must not be *dropped*: it stays in CatalogAll, marked
+// non-primary, so the panel can browse it by naming its store and install that
+// store's copy rather than the copy that happened to be listed first.
+func TestCollidingAppIsKeptPerStore(t *testing.T) {
+	first := newStoreServer(t, `"v1"`, storeZipNamed(t, DefaultAppsPath, "MetaWatch", "First Store"))
+	second := newStoreServer(t, `"v1"`, storeZipNamed(t, DefaultAppsPath, "MetaWatch", "Second Store"))
+
+	m := New([]string{first.URL, second.URL}, t.TempDir())
+	if err := m.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	merged := m.Catalog()
+	if len(merged) != 1 {
+		t.Fatalf("merged catalog has %d apps, want the colliding id to appear once", len(merged))
+	}
+	if merged[0].StoreName != "First Store" {
+		t.Fatalf("merged copy came from %q, want the first store to win", merged[0].StoreName)
+	}
+
+	all := m.CatalogAll()
+	if len(all) != 2 {
+		t.Fatalf("CatalogAll has %d apps, want both stores' copies", len(all))
+	}
+	byStore := map[string]*CatalogApp{}
+	for _, a := range all {
+		byStore[a.StoreName] = a
+	}
+	if a := byStore["First Store"]; a == nil || !a.Primary {
+		t.Fatalf("first store's copy = %+v, want it present and primary", a)
+	}
+	if a := byStore["Second Store"]; a == nil || a.Primary {
+		t.Fatalf("second store's copy = %+v, want it present and NOT primary", a)
+	}
+}
+
 // The catalog must never be observable as "missing" while a refresh swaps in a new
 // copy of a store — that window is what makes a browse or an install fail on a
 // store that is perfectly fine (see swapIn).

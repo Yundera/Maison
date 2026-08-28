@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { storeApp } from '../../stores/ui'
   import { backToCatalog, closeStore, openStoreApp } from '../../route'
-  import { refOf } from '../../storeref'
+  import { bare, refOf, refPath } from '../../storeref'
   import { fetchStore, type StoreApp, type StoreData } from '../../stores/store'
   import { apps } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
@@ -41,43 +41,87 @@
   const installedIds = $derived(new Set($apps.map((a) => a.id)))
   const isInstalled = (a: StoreApp) => installedIds.has(sanitizeProject(a.id))
 
+  // The merged catalog: one entry per app, the copy that won the id collision.
+  // The payload carries every store's copy — see StoreApp.primary — so anything
+  // that must show each app once reads this rather than data.apps.
+  const catalog = $derived(data ? data.apps.filter((a) => a.primary !== false) : [])
+  // Developers across the whole payload, not just the merged catalog: the browse
+  // is grouped by store and shows every store's own copy, so a developer that only
+  // appears in a non-primary copy must still be selectable.
   const developers = $derived(
-    data ? [...new Set(data.apps.map((a) => a.developer).filter(Boolean))].sort() : [],
+    [...new Set((data?.apps ?? []).map((a) => a.developer).filter(Boolean))].sort(),
   )
-  // Distinct store URLs across the merged catalog; the "All" default keeps every
-  // store merged into a single browse.
-  const stores = $derived(
-    data ? [...new Set(data.apps.map((a) => a.store).filter(Boolean))].sort() : [],
-  )
-  // Short "owner/repo" (or host) label for a store URL — mirrors StoreSources.
-  function storeLabel(u: string): string {
-    try {
-      const p = new URL(u)
-      const seg = p.pathname.split('/').filter(Boolean)
-      return seg.length >= 2 ? `${seg[0]}/${seg[1]}` : p.hostname
-    } catch {
-      return u
+  // The configured stores, in the order the box has them — from the payload when
+  // the server sends them, else recovered from the apps themselves (older server).
+  // Order matters here: it is the order the groups appear in.
+  const stores = $derived.by(() => {
+    if (data?.sources?.length) return data.sources
+    const byURL = new Map<string, string>()
+    for (const a of data?.apps ?? []) {
+      if (a.store && !byURL.has(a.store)) byURL.set(a.store, a.store_name || a.store)
     }
-  }
+    return [...byURL].map(([url, name]) => ({ url, name }))
+  })
+  // What to call a store: the name it declares in store.json, else its address
+  // minus the implied scheme. Never "owner/repo" derived from the path — that is
+  // one forge's layout, meaningless elsewhere, and it collapses two refs of the
+  // same repository (main and a test branch) into one label you cannot tell apart.
+  // Same rule the server states in appstore.readStoreName. Two stores that declare
+  // the *same* name hit that problem anyway — two branches of one repo share their
+  // store.json — so a name used twice falls back to the address for both.
+  const storeLabels = $derived.by(() => {
+    const uses = new Map<string, number>()
+    for (const s of stores) {
+      const n = s.name && s.name !== s.url ? s.name : ''
+      if (n) uses.set(n, (uses.get(n) ?? 0) + 1)
+    }
+    const out = new Map<string, string>()
+    for (const s of stores) {
+      const n = s.name && s.name !== s.url ? s.name : ''
+      out.set(s.url, n && uses.get(n) === 1 ? n : bare(s.url))
+    }
+    return out
+  })
+  const storeLabel = (url: string): string => storeLabels.get(url) ?? bare(url)
   const browsing = $derived(
     category === 'All' && developer === 'All' && store === 'All' && !search.trim(),
   )
 
+  // Everything matching the toolbar, across every store. The store is NOT filtered
+  // here — it decides which *group* an app lands in, below.
   const filtered = $derived.by(() => {
     if (!data) return [] as StoreApp[]
     const q = search.trim().toLowerCase()
     return data.apps.filter((a) => {
       if (category !== 'All' && a.category !== category) return false
       if (developer !== 'All' && a.developer !== developer) return false
-      if (store !== 'All' && a.store !== store) return false
       if (q && !`${a.name} ${a.tagline} ${a.category}`.toLowerCase().includes(q)) return false
       return true
     })
   })
 
+  // The browse, grouped by store rather than merged. Stores are never folded into
+  // one another: an app shipped by two of them appears under each, with that
+  // store's own version and metadata, and installing from a tile installs the copy
+  // it belongs to. Picking a store in the toolbar narrows this to that one group —
+  // the heading stays, so what you are looking at is always named.
+  //
+  // A store contributing nothing to the current filter drops out; a store with no
+  // apps at all never appears. The toolbar is not repeated per group.
+  const groups = $derived(
+    stores
+      .filter((s) => store === 'All' || s.url === store)
+      .map((s) => ({
+        url: s.url,
+        name: storeLabel(s.url),
+        apps: filtered.filter((a) => a.store === s.url),
+      }))
+      .filter((g) => g.apps.length > 0),
+  )
+
   const featured = $derived.by(() => {
     if (!data) return [] as StoreApp[]
-    const byId = new Map(data.apps.map((a) => [a.id.toLowerCase(), a]))
+    const byId = new Map(catalog.map((a) => [a.id.toLowerCase(), a]))
     // Dedupe: a store's recommend-list may repeat an id, which would otherwise
     // produce duplicate keys in the featured {#each} (Svelte each_key_duplicate).
     const seen = new Set<string>()
@@ -136,7 +180,9 @@
           {#if stores.length > 1}
             <select bind:value={store} aria-label={$t('store')}>
               <option value="All">{$t('store')}: {$t('all')}</option>
-              {#each stores as s}<option value={s}>{storeLabel(s)}</option>{/each}
+              {#each stores as s (s.url)}
+                <option value={s.url} title={s.url}>{storeLabel(s.url)}</option>
+              {/each}
             </select>
           {/if}
           <input class="search" placeholder={$t('search_apps')} bind:value={search} />
@@ -144,14 +190,17 @@
           <StoreSources count={data.apps.length} onchanged={refresh} />
         </div>
 
-        <section>
-          {#if !browsing}
-            <h4 class="section-title">{filtered.length} apps</h4>
-          {/if}
-          <div class="grid">
-            {#each filtered as app (app.id)}{@render card(app)}{/each}
-          </div>
-        </section>
+        {#each groups as g (g.url)}
+          <section>
+            <h4 class="section-title" title={g.url}>
+              {g.name}
+              {#if !browsing}<span class="count">{g.apps.length}</span>{/if}
+            </h4>
+            <div class="grid">
+              {#each g.apps as app (refPath(refOf(app)))}{@render card(app)}{/each}
+            </div>
+          </section>
+        {/each}
       {/if}
     </div>
   </div>
@@ -278,6 +327,11 @@
     font-weight: 400;
     margin: 0 0 0.9rem;
     color: #29343d;
+  }
+  .section-title .count {
+    margin-left: 0.5rem;
+    font-size: 0.8rem;
+    color: #8b98a5;
   }
   section {
     margin-bottom: 1.75rem;

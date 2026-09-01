@@ -293,7 +293,11 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// the SPA catch-all so it wins.
 	r.Get("/launch", s.handleLaunch)
 
-	r.Handle("/*", spaHandler(uiFS))
+	// The SPA, behind the first-run setup gate: while the deployment still owes an
+	// onboarding step, a browser navigation gets the interstitial instead of the
+	// dashboard (see onboarding.go). With no onboarding file — every standalone
+	// Maison — the wrapper is inert and this is just the SPA.
+	r.Handle("/*", s.onboardingGate(spaHandler(uiFS)))
 
 	return s.rootHandler(r)
 }

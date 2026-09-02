@@ -190,6 +190,15 @@ type Scheduler struct {
 	Backup func(ctx context.Context, t Target) (string, error)
 	Notify func(subject, body string) error
 
+	// Mail resolves the transport that notification goes out on. A hook rather than a
+	// settings store, because the scheduler needs one answer and not a dependency on
+	// where the answer is kept — which changed once already, when the mail
+	// configuration moved out of backup.json and into settings.json.
+	//
+	// Nil means the deployment's relay with no box-level override, which is what a
+	// test and a standalone install both want.
+	Mail func() notify.SMTP
+
 	mu    sync.Mutex
 	state RunState
 	// lastRun is persisted so a box that was off at its scheduled time backs up when
@@ -721,7 +730,14 @@ func (s *Scheduler) notify(subject, body string) error {
 	if s.Notify != nil {
 		return s.Notify(subject, body)
 	}
-	return notify.Send(s.store.Get().SMTP, subject, body)
+	return notify.Send(s.mail(), subject, body)
+}
+
+func (s *Scheduler) mail() notify.SMTP {
+	if s.Mail != nil {
+		return s.Mail()
+	}
+	return s.cfg.ProvisionedSMTP()
 }
 
 // failureMail writes what the operator actually needs: which targets failed, why,

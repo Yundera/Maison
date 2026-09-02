@@ -5,10 +5,12 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/notify"
 )
 
 // Config is the process-wide runtime configuration.
@@ -79,6 +81,15 @@ type Config struct {
 	// latency and never correctness. Empty disables the resident path entirely, which is
 	// the kill switch if it ever misbehaves in the field.
 	BackupEngineContainer string
+
+	// SMTP is the mail transport the deployment provides, read from SMTP_* at boot.
+	// It is the layer *below* whatever the box itself has configured — see
+	// usersettings.Settings.EffectiveSMTP — and reaches Maison already resolved
+	// through ProvisionedSMTP, which is what callers should use.
+	//
+	// Read once, unlike Domains and AppEnv, because these are process environment
+	// rather than a file the deployment rewrites while Maison runs.
+	SMTP notify.SMTP
 }
 
 // appEnv is AppEnv, tolerating a Config that never wired it.
@@ -111,8 +122,64 @@ func FromEnv() Config {
 		StoreURLs: splitList(envOr("APPSTORE_URL",
 			"https://github.com/Yundera/AppStore/archive/refs/heads/main.zip")),
 		BackupEngineContainer: envOr("BACKUP_ENGINE_CONTAINER", "backup-engine"),
+		SMTP:                  smtpFromEnv(),
 	}
 	return c
+}
+
+// smtpFromEnv reads the deployment's mail transport.
+//
+// SMTP_HOST is the switch, and it has NO DEFAULT on purpose. A deployment that ships
+// a relay names it; one that does not gets no mail, rather than a nightly connection
+// refused against a guessed sibling container. Maison also runs as a standalone local
+// install, where there is nothing on the other end of such a guess.
+//
+// An unparseable or out-of-range port falls back to 587 rather than failing the boot:
+// a dashboard that will not start is a worse outcome than a mail that goes to the
+// submission port.
+func smtpFromEnv() notify.SMTP {
+	host := os.Getenv("SMTP_HOST")
+	if host == "" {
+		return notify.SMTP{}
+	}
+	port, err := strconv.Atoi(os.Getenv("SMTP_PORT"))
+	if err != nil || port < 1 || port > 65535 {
+		port = 587
+	}
+	return notify.SMTP{
+		Host:     host,
+		Port:     port,
+		User:     os.Getenv("SMTP_USER"),
+		Pass:     os.Getenv("SMTP_PASS"),
+		From:     os.Getenv("SMTP_FROM"),
+		To:       os.Getenv("SMTP_TO"),
+		Security: os.Getenv("SMTP_SECURITY"),
+	}
+}
+
+// ProvisionedSMTP is the deployment's transport with its addresses filled in.
+//
+// From and To fall back to the deployment's own identity — .env.app's APP_DOMAIN and
+// APP_EMAIL — read live rather than at boot, like every other value that comes from
+// that file. A box that changes owner or domain must not keep mailing the previous
+// one until someone restarts the dashboard.
+//
+// The fallbacks are why SMTP_FROM and SMTP_TO are optional: on a deployment that
+// already declares who owns the box, naming the relay is the only thing left to say.
+func (c Config) ProvisionedSMTP() notify.SMTP {
+	s := c.SMTP
+	if s.Host == "" {
+		return notify.SMTP{}
+	}
+	if s.From == "" {
+		if d := c.AppDomain(); d != "" {
+			s.From = "noreply@" + d
+		}
+	}
+	if s.To == "" {
+		s.To = c.appEnv()["APP_EMAIL"]
+	}
+	return s
 }
 
 // AppsDir is the flat root that holds one directory per app

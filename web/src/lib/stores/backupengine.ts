@@ -29,16 +29,6 @@ export interface Retention {
   annual: number
 }
 
-export interface SmtpConfig {
-  host: string
-  port: number
-  user?: string
-  pass?: string
-  from: string
-  to: string
-  security?: string
-}
-
 export interface BackupConfig {
   enabled: boolean
   /** The user's chosen engine, or absent to follow whatever the deployment
@@ -49,7 +39,6 @@ export interface BackupConfig {
   user_data: boolean
   keep: Retention
   keep_local: number
-  smtp?: SmtpConfig
 }
 
 /** One target's place in a run.

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/yundera/maison/internal/backup/kopia"
-	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/notify"
 )
@@ -114,11 +113,15 @@ func keyMailBody(pw string) string {
 // logged rather than returned: the mail is already gone, so reporting a failure to
 // the user would be false. The cost of that choice is a duplicate mail on the next
 // boot, which is the right way round.
-func sendKeyMail(cfg config.Config, conf backupconfig.Config, pw string, auto bool) error {
-	if err := notify.Send(conf.SMTP, "Your backup encryption key", keyMailBody(pw)); err != nil {
+// The transport is passed in already resolved, so the receipt below records the
+// address the mail actually went to. It used to be resolved here from the backup
+// configuration; the mail settings now live in usersettings, and every caller has to
+// resolve them the same way or the two paths could disagree about the recipient.
+func sendKeyMail(cfg config.Config, smtp notify.SMTP, pw string, auto bool) error {
+	if err := notify.Send(smtp, "Your backup encryption key", keyMailBody(pw)); err != nil {
 		return err
 	}
-	rec := keySentRecord{SentAt: time.Now(), To: conf.SMTP.To, Engine: kopia.ID, Auto: auto}
+	rec := keySentRecord{SentAt: time.Now(), To: smtp.To, Engine: kopia.ID, Auto: auto}
 	if err := writeKeySent(cfg, rec); err != nil {
 		log.Printf("backup: key mailed but the receipt could not be written: %v", err)
 	}
@@ -155,8 +158,8 @@ func (s *Server) EnsureKeyEmailed() {
 		if i > 0 {
 			time.Sleep(wait)
 		}
-		conf := s.backupConf.Get()
-		if !conf.SMTP.Configured() {
+		smtp := s.settings.EffectiveSMTP(s.cfg.ProvisionedSMTP())
+		if !smtp.Configured() {
 			continue
 		}
 		// Re-checked inside the loop: the user may have pressed the button, or a
@@ -164,11 +167,11 @@ func (s *Server) EnsureKeyEmailed() {
 		if _, sent := readKeySent(s.cfg); sent {
 			return
 		}
-		if err := sendKeyMail(s.cfg, conf, pw, true); err != nil {
+		if err := sendKeyMail(s.cfg, smtp, pw, true); err != nil {
 			log.Printf("backup: could not mail the encryption key: %v", err)
 			continue
 		}
-		log.Printf("backup: mailed the encryption key to %s (first send on this box)", conf.SMTP.To)
+		log.Printf("backup: mailed the encryption key to %s (first send on this box)", smtp.To)
 		return
 	}
 	log.Printf("backup: the encryption key has never been mailed — no mail server is configured")
@@ -188,8 +191,8 @@ func (s *Server) handleEmailKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "backups unavailable"})
 		return
 	}
-	conf := s.backupConf.Get()
-	if !conf.SMTP.Configured() {
+	smtp := s.settings.EffectiveSMTP(s.cfg.ProvisionedSMTP())
+	if !smtp.Configured() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no mail server configured"})
 		return
 	}
@@ -198,7 +201,7 @@ func (s *Server) handleEmailKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no repository password on this box"})
 		return
 	}
-	if err := sendKeyMail(s.cfg, conf, pw, false); err != nil {
+	if err := sendKeyMail(s.cfg, smtp, pw, false); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}

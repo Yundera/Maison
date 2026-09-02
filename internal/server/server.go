@@ -27,6 +27,7 @@ import (
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
 	"github.com/yundera/maison/internal/metrics"
+	"github.com/yundera/maison/internal/notify"
 	"github.com/yundera/maison/internal/system"
 	"github.com/yundera/maison/internal/usersettings"
 )
@@ -136,6 +137,17 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// replaced when the engine changes.
 	s.userData = backup.NewUserData(cfg, s.engines, s.backupConf)
 	s.backupSched = backup.NewScheduler(cfg, s.apps, s.engines, s.backupConf)
+	// Where the failure mail goes. Resolved on every send rather than captured here,
+	// so a relay changed in the settings takes effect without a restart — and read
+	// from the settings store, which is where the mail configuration lives now.
+	s.backupSched.Mail = func() notify.SMTP { return s.settings.EffectiveSMTP(cfg.ProvisionedSMTP()) }
+	// A box upgraded across that move still has its relay under backup.json's `smtp`
+	// key; carry it over once, then clear it. See adoptLegacySMTP.
+	if conf := s.backupConf.Get(); adoptLegacySMTP(s.settings, &conf) {
+		if err := s.backupConf.Set(conf); err != nil {
+			log.Printf("backup: clearing the adopted mail configuration: %v", err)
+		}
+	}
 	// The two must not write the same tree at once, in either order: a restore during a
 	// run would be restoring under a snapshot, and a run during a restore would snapshot
 	// a half-restored state. Each refuses while the other is working.

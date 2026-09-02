@@ -3,6 +3,8 @@ package usersettings
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/yundera/maison/internal/domains"
@@ -146,5 +148,63 @@ func TestSettingsFilePredatingTheFieldDefaultsToEnabled(t *testing.T) {
 	}
 	if !New(path).HistoryEnabled() {
 		t.Error("history disabled by an upgrade from a file that predates the setting")
+	}
+}
+
+// A box nobody has ever configured must still say what it is running on. Before
+// seeding, an untouched box carried no settings.json at all, so the only way to
+// answer "what wallpaper, which widgets?" was to read this package.
+func TestNewSeedsTheFileWhenItIsAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	New(path)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no file after New: %v", err)
+	}
+	// Read back through a second store rather than by unmarshalling here: what
+	// matters is that the seeded document loads as the defaults, not that it holds
+	// any particular bytes.
+	if got := New(path).Get(); got.Wallpaper != Defaults().Wallpaper || got.Language != Defaults().Language {
+		t.Errorf("seeded file loads as %+v, want the defaults", got)
+	}
+}
+
+// The seed must never reach a file that already exists. An unparseable one is the
+// only copy of whatever the user configured, and overwriting it with defaults would
+// destroy the evidence needed to recover it.
+func TestNewLeavesAMalformedFileAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	const broken = `{"wallpaper": "/wallpapers/mine.jpg"` // truncated on purpose
+	if err := os.WriteFile(path, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := New(path).Get(); got.Wallpaper != Defaults().Wallpaper {
+		t.Errorf("wallpaper %q, want the in-memory default", got.Wallpaper)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != broken {
+		t.Errorf("file rewritten to %q, want it untouched", b)
+	}
+}
+
+// Empty, not rendered: a seeded file must not pin the box to today's widget set, so a
+// widget added in a later version still appears on a box nobody has configured.
+func TestTheSeedIsAnEmptyDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	New(path)
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(b)) != "{}" {
+		t.Errorf("seeded %q, want an empty document", b)
+	}
+	if got := New(path).Get(); !reflect.DeepEqual(got, Defaults()) {
+		t.Errorf("empty document loads as %+v, want the defaults %+v", got, Defaults())
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -221,5 +222,124 @@ func TestSaneIsIdempotent(t *testing.T) {
 		if !reflect.DeepEqual(once, twice) {
 			t.Errorf("%s: sane is not idempotent:\n once: %+v\ntwice: %+v", name, once, twice)
 		}
+	}
+}
+
+// The same seeding contract as usersettings: a box nobody has configured still gets a
+// backup.json, so the state directory says what the schedule and retention are.
+func TestNewSeedsTheFileWhenItIsAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.json")
+	New(path)
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no file after New: %v", err)
+	}
+	// 03:30 and the smart tiers, not the zero value — a seed that wrote an empty
+	// document would move every box's nightly run to midnight and its retention to
+	// "latest only", since this store replaces rather than merging onto Defaults.
+	got := New(path).Get()
+	if got.Hour != 3 || got.Minute != 30 {
+		t.Errorf("schedule %02d:%02d, want 03:30", got.Hour, got.Minute)
+	}
+	if got.Keep != SmartKeep() {
+		t.Errorf("keep %+v, want the smart preset %+v", got.Keep, SmartKeep())
+	}
+}
+
+// Seeding must not turn "this box has no opinion" into an override. The seeded
+// document carries the smart tiers, and migrate() has to keep reading those as
+// "never decided" so the deployment's provisioned layer still wins.
+func TestASeededFileStillInheritsFromTheProvisionedLayer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.json")
+	New(path)
+
+	prov := Provisioned{Settings: EngineSettings{Mode: ModeAge, MaxAgeDays: 90}}
+	got := New(path).Get().Effective("kopia", prov)
+	if got.Source != SourceProvisioned || got.Mode != ModeAge {
+		t.Fatalf("mode %q from %q, want age from provisioned", got.Mode, got.Source)
+	}
+}
+
+// An existing file is never replaced by the seed, malformed or not.
+func TestNewLeavesAMalformedFileAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.json")
+	const broken = `{"enabled": true, "hour": 5`
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := New(path).Get(); got.Enabled || got.Hour != Defaults().Hour {
+		t.Errorf("loaded %+v, want the in-memory defaults", got)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != broken {
+		t.Errorf("file rewritten to %q, want it untouched", b)
+	}
+}
+
+// The seed is empty on purpose: a rendered one would pin the box to the defaults of
+// the day it first booted, so a later change to Defaults() would never reach it.
+func TestTheSeedIsAnEmptyDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.json")
+	New(path)
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(b)) != "{}" {
+		t.Errorf("seeded %q, want an empty document", b)
+	}
+}
+
+// The property that makes an empty seed safe. Every zero in this struct is a valid
+// value that sane() will not correct — midnight is a real time, 0 archives is a real
+// choice — so a field the file omits has to come back as the default, not the zero.
+func TestAnAbsentFieldKeepsTheCompiledDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.json")
+	// Only one field set: everything else must still resolve to Defaults().
+	if err := os.WriteFile(path, []byte(`{"enabled":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := New(path).Get()
+	if !got.Enabled {
+		t.Error("enabled did not survive the load")
+	}
+	if got.Hour != 3 || got.Minute != 30 {
+		t.Errorf("schedule %02d:%02d, want the default 03:30", got.Hour, got.Minute)
+	}
+	if !got.UserData {
+		t.Error("user data dropped out of the run")
+	}
+	if got.Keep != SmartKeep() {
+		t.Errorf("keep %+v, want the smart preset %+v", got.Keep, SmartKeep())
+	}
+	if got.KeepLocal != 2 {
+		t.Errorf("keep local %d, want the default 2", got.KeepLocal)
+	}
+}
+
+// An explicit zero is still an opinion and must not be mistaken for an absence — this
+// is what a merge-based store could not express, and why the file is decoded onto the
+// defaults rather than merged onto them.
+func TestAnExplicitZeroBeatsTheDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.json")
+	if err := os.WriteFile(path, []byte(`{"hour":0,"minute":0,"user_data":false,"keep_local":0}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := New(path).Get()
+	if got.Hour != 0 || got.Minute != 0 {
+		t.Errorf("schedule %02d:%02d, want the requested 00:00", got.Hour, got.Minute)
+	}
+	if got.UserData {
+		t.Error("user_data:false was ignored")
+	}
+	if got.KeepLocal != 0 {
+		t.Errorf("keep local %d, want the requested 0", got.KeepLocal)
 	}
 }

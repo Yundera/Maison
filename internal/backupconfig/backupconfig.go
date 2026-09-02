@@ -14,6 +14,9 @@ package backupconfig
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -71,9 +74,20 @@ type Config struct {
 	// to is a silent loss of a choice they made.
 	Engines map[string]EngineSettings `json:"engines,omitempty"`
 
-	// SMTP is where failure alerts go. Empty means no alerting — which is a real
-	// choice a user can make, and the reason this is not validated into existence.
-	SMTP notify.SMTP `json:"smtp,omitempty"`
+	// LegacySMTP is where failure alerts were configured before they moved to
+	// usersettings — see the SMTP field there for why.
+	//
+	// It stays declared, and keeps the same `smtp` name on the wire, for exactly one
+	// job: a box that configured a relay here must not silently stop alerting after an
+	// upgrade. server.adoptLegacySMTP moves the value across on boot and clears it,
+	// after which this is always empty. Nothing reads it to send mail.
+	//
+	// Do not use it for new work. When enough time has passed that no box can still
+	// carry one, the field and the adoption can go.
+	// A POINTER so that omitempty actually works: it does nothing for a struct, which
+	// is why an adopted box used to keep emitting an empty `smtp` block that nothing
+	// read. Nil is the state every box reaches and stays in.
+	LegacySMTP *notify.SMTP `json:"smtp,omitempty"`
 
 	// KeepLocal is how many on-disk archives of an app to retain. It is separate
 	// from Keep because local archives cost real disk while remote ones cost a
@@ -113,20 +127,69 @@ type Store struct {
 	cur  Config
 }
 
-// New reads the file if it exists. A malformed file falls back to defaults rather
-// than failing the boot: backups not being configured is recoverable, a dashboard
-// that will not start is not.
+// New reads the file if it exists, and writes Defaults() there when it does not. A
+// malformed file falls back to defaults rather than failing the boot: backups not
+// being configured is recoverable, a dashboard that will not start is not.
+//
+// THE SEEDED DOCUMENT IS EMPTY — `{}` — and that is only safe because of how it is
+// read back. Decoding happens ONTO a Defaults() value, so a field the file does not
+// carry keeps the compiled default rather than becoming the zero value. Without that,
+// an empty document would mean midnight, no user data, no local archives and a
+// one-snapshot retention policy pushed into the repository, since sane() only clamps
+// values that are out of range and every zero here is in range.
+//
+// An empty seed rather than a rendered one is what keeps the fleet unpinned: a box
+// states an opinion only about fields someone actually set, so a later change to
+// Defaults() reaches every box that has not overridden that field. A rendered seed
+// would freeze each box on the defaults of the day it first booted.
+//
+// A file that exists but does not parse is never overwritten — it is the only copy of
+// whatever the user configured. A seed that fails is logged and ignored: the
+// configuration in memory is the same either way.
 func New(path string) *Store {
 	s := &Store{path: path, cur: Defaults()}
-	if b, err := os.ReadFile(path); err == nil {
-		var loaded Config
-		if json.Unmarshal(b, &loaded) == nil {
-			// Normalised on read as well as on write: a file that predates modes has to
-			// resolve correctly on a box where nobody ever opens the settings page.
-			s.cur = sane(migrate(loaded))
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := s.seed(); err != nil {
+				log.Printf("backupconfig: could not seed %s: %v", path, err)
+			}
+		} else {
+			log.Printf("backupconfig: %s unreadable: %v (running on defaults)", path, err)
 		}
+		return s
+	}
+	// Onto the defaults, not onto the zero value. This is also what makes a file
+	// written by an older Maison correct: a field added since is absent from it, and
+	// absent now means "the default", not "off".
+	loaded := Defaults()
+	if json.Unmarshal(b, &loaded) == nil {
+		// Normalised on read as well as on write: a file that predates modes has to
+		// resolve correctly on a box where nobody ever opens the settings page.
+		s.cur = sane(migrate(loaded))
 	}
 	return s
+}
+
+// seed writes the empty document that says "this box has no opinion about anything".
+//
+// O_EXCL rather than a plain write: New reads and then writes, and two Maison
+// processes booting against the same state directory must not have the second one
+// blank the file the first has already started using.
+func (s *Store) seed() error {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(s.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil // someone else got there first, which is the outcome we wanted
+		}
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString("{}\n")
+	return err
 }
 
 // Get returns the current configuration.

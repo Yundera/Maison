@@ -11,6 +11,8 @@ import (
 	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/usersettings"
 )
 
 // Backup engines, their configuration, and the schedule.
@@ -74,6 +76,36 @@ func applyChosenEngine(set *backup.Set, store *backupconfig.Store) {
 			_ = set.SetWriter(kopia.ID)
 		}
 	}
+}
+
+// adoptLegacySMTP moves a mail configuration written under backup.json's `smtp` key
+// into settings.json, where it now lives, and clears it from the old place.
+//
+// Two callers, one rule: at boot, for a box upgraded across the move, and on PUT
+// /api/backup/config, for a client still sending it there. Both are one-way, and the
+// settings store wins if it already holds one — a value the user has since set in the
+// new place must not be reverted by the stale copy left in the old.
+//
+// It reports whether it changed conf, so the caller knows to persist the cleared
+// document rather than leaving the old key on disk to be adopted again next boot.
+func adoptLegacySMTP(settings *usersettings.Store, conf *backupconfig.Config) bool {
+	if conf.LegacySMTP == nil || *conf.LegacySMTP == (notify.SMTP{}) {
+		return false
+	}
+	legacy := *conf.LegacySMTP
+	conf.LegacySMTP = nil
+	if settings == nil || settings.Get().SMTP != nil {
+		return true // already configured in the new place: drop the stale copy
+	}
+	if err := settings.Set(usersettings.Settings{SMTP: &legacy}); err != nil {
+		// Keep the value where it is rather than losing it: leaving the old key on
+		// disk means the next boot tries again, which is the better failure.
+		log.Printf("settings: adopting the mail configuration from backup.json: %v", err)
+		conf.LegacySMTP = &legacy
+		return false
+	}
+	log.Printf("settings: moved the mail configuration from backup.json into settings.json")
+	return true
 }
 
 // engineStatus is what the settings page renders.
@@ -172,6 +204,9 @@ func (s *Server) handlePutBackupConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A client still sending `smtp` here is honoured once and moved, rather than
+	// having its mail configuration stored where nothing reads it any more.
+	adoptLegacySMTP(s.settings, &in)
 	if err := s.backupConf.Set(in); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

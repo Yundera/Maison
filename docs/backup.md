@@ -584,6 +584,42 @@ The button remains, unconditionally: a user asking for the key again has a reaso
 because a receipt exists would leave them with no way to reach a secret that is theirs. Both paths
 are **clearly labelled as unrecoverable**.
 
+### Where the transport comes from
+
+Two layers, resolved by `usersettings.Settings.EffectiveSMTP` under the same "store only the
+override" rule as retention: **the deployment provisions it, the box may override it.**
+
+The deployment's layer is the environment, read at boot into `config.Config.SMTP`:
+
+| Variable | Meaning |
+|---|---|
+| `SMTP_HOST` | The relay. **The switch — no default.** Unset means this deployment ships no mail, which is the standalone local install and must stay silent rather than dial a guess. |
+| `SMTP_PORT` | Defaults to 587. An unparseable or out-of-range value falls back rather than failing the boot. |
+| `SMTP_USER` / `SMTP_PASS` | Optional; sent only if the relay advertises `AUTH`. |
+| `SMTP_FROM` | Defaults to `noreply@${APP_DOMAIN}`. |
+| `SMTP_TO` | Defaults to `${APP_EMAIL}` — the box's owner. |
+| `SMTP_SECURITY` | `starttls` (default, opportunistic), `tls`, or `none`. |
+
+`From` and `To` fall back to `.env.app`, read **live** like every other value from that file: a box
+that changes owner or domain must not keep mailing the previous one until someone restarts the
+dashboard. Those two fallbacks are why a PCS only has to name its relay.
+
+Overriding: the box's own `smtp` block in **`settings.json`** wins field by field, except that the
+**transport travels together** — host, port, credentials and security — for the reason `Mode` carries
+its own parameter in `Effective`: a host set on the box with the deployment's credentials inherited
+is a login sent to the wrong server. `From` and `To` resolve independently, because the recipient is
+the one a user actually changes.
+
+It sits in the settings rather than in `backup.json`, where it started, because it is a property of
+the box and not of the backup schedule — the next thing worth mailing about, a certificate about to
+expire or a disk filling up, should not have to reach into the backup configuration to find a relay.
+A box configured before the move keeps its `smtp` key under `backup.json`; `server.adoptLegacySMTP`
+carries it across on the next boot and clears the old one, so alerting never lapses across the
+upgrade.
+
+On a PCS `SMTP_HOST` is the sibling `smtp` container, which advertises neither STARTTLS nor AUTH;
+the opportunistic default handles that without configuration, and `SMTP_SECURITY=none` states it.
+
 ---
 
 ## Restore
@@ -880,7 +916,6 @@ handling lives on this side and retrofitting it during an incident is expensive.
 
 ## Not yet decided
 
-- **Which SMTP transport** Maison uses.
 - **What "custom" means** in the engine picker. *User supplies a command* means Maison
   executes an arbitrary binary as root with app data and storage credentials in
   scope — a deliberate remote-execution surface that deserves an explicit decision.

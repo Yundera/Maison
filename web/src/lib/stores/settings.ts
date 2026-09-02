@@ -12,6 +12,20 @@ export interface Domain {
   directives?: Record<string, string>
 }
 
+// Where Maison's outbound mail goes — the backup failure alerts and the
+// encryption-key mail. Absent means the box adds nothing to whatever relay the
+// deployment provisioned; a host set here carries its own credentials with it,
+// while `from` and `to` resolve on their own (see usersettings.EffectiveSMTP).
+export interface SmtpConfig {
+  host: string
+  port: number
+  user?: string
+  pass?: string
+  from: string
+  to: string
+  security?: string
+}
+
 // Operator preferences, persisted server-side via /api/settings so they follow
 // the server rather than a single browser.
 export interface Settings {
@@ -23,6 +37,9 @@ export interface Settings {
    *  measures with nobody watching, so it is the only thing with an off switch —
    *  see the Recording card on the Resources page. */
   metrics_history: boolean
+  /** Mail transport. It lived under the backup configuration until it moved here,
+   *  because it is a property of the box rather than of the backup schedule. */
+  smtp?: SmtpConfig
 }
 
 const DEFAULTS: Settings = {

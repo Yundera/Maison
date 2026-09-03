@@ -180,6 +180,24 @@
       })}
     {/if}
   </p>
+  <!-- What the app asked to leave out, said before the backup runs and again beside
+       every restore below. A backup that does not contain something has to say so:
+       an app that comes back without its cache is working as declared, and one that
+       comes back missing something its author wrongly marked derived is a bug report
+       — and only naming the paths tells a user which of the two they are looking at. -->
+  {#if estimate.excluded?.length}
+    <p class="hint fine">
+      {$t('backup_excluded', {
+        list: estimate.excluded.join(', '),
+        size: renderSize(estimate.excludedSize ?? 0),
+      })}
+    </p>
+  {/if}
+  {#if estimate.excludeErrors?.length}
+    <p class="warn fine">
+      {$t('backup_excluded_bad', { list: estimate.excludeErrors.join('; ') })}
+    </p>
+  {/if}
 {/if}
 
 {#if error}
@@ -220,6 +238,7 @@
     {engineNames}
     showEngine={false}
     busy={busy || running}
+    excluded={estimate?.excluded ?? []}
     onrestore={restore}
     ondelete={remove}
   />
@@ -311,6 +330,16 @@
     margin: 0 0 0.9rem;
     font-size: 0.85rem;
     color: var(--red);
+  }
+  /* The exclusion lines sit under the size line and belong to it, so they are
+     quieter than a hint and tighter against it. A refused entry is a warning rather
+     than an error: the backup still runs, it simply carries more than was asked. */
+  .fine {
+    margin: -0.7rem 0 0.9rem;
+    font-size: 0.78rem;
+  }
+  .warn.fine {
+    color: var(--orange, var(--red));
   }
   .empty {
     margin: 0;

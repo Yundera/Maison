@@ -432,3 +432,42 @@ func TestRestoreForInstallRefusesAnAppThatIsInstalled(t *testing.T) {
 		t.Errorf("live app was modified = %q, %v", body, err)
 	}
 }
+
+// An engine that streams to a repository never walks the app folder, so the only way
+// it can honour an app's exclusions is by being handed them. This is the half of the
+// chain the local engine's own tests cannot see: the registry reading the app's
+// compose and passing the parsed rules down, on both passes, in their canonical
+// spelling.
+func TestBackupHandsTheAppsExclusionsToTheEngine(t *testing.T) {
+	r, cfg := newRegistry(t)
+	compose := "services: {}\nx-compose-app:\n  schema_version: 2\n  backup:\n    exclude:\n      - cache/\n      - \"**/thumbs/\"\n"
+	if err := os.WriteFile(filepath.Join(cfg.AppsDir(), "jellyfin", "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := backuptest.NewRemote("kopia")
+	r.Engines = backup.New(fake)
+
+	if _, err := r.Backup(context.Background(), "jellyfin", "", false, nil); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	got := strings.Join(fake.Calls, " ")
+	if n := strings.Count(got, "+exclude(cache/,**/thumbs/)"); n != 2 {
+		t.Errorf("engine calls = %v; both passes must carry the declaration, saw %d", fake.Calls, n)
+	}
+}
+
+// An app that declares nothing must reach the engine with nothing — the absence is
+// what tells a repository engine to clear whatever rules it is still holding.
+func TestBackupWithoutADeclarationCarriesNoExclusions(t *testing.T) {
+	r, _ := newRegistry(t)
+	fake := backuptest.NewRemote("kopia")
+	r.Engines = backup.New(fake)
+
+	if _, err := r.Backup(context.Background(), "jellyfin", "", false, nil); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if got := strings.Join(fake.Calls, " "); strings.Contains(got, "+exclude") {
+		t.Errorf("engine calls = %v, want no exclusions", fake.Calls)
+	}
+}

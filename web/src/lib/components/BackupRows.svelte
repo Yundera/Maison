@@ -21,6 +21,7 @@
     engineNames = {},
     showEngine = true,
     busy = false,
+    excluded = [],
     onrestore,
     ondelete,
   }: {
@@ -32,6 +33,11 @@
      *  every app would be noise rather than information. */
     showEngine?: boolean
     busy?: boolean
+    /** What the app declares as derived and leaves out of its backups. Said at the
+     *  moment of restoring, because that is when its absence is about to be visible:
+     *  these paths do not come back, and the app rebuilds them. Empty where the caller
+     *  has no app in hand — the global page lists many apps at once. */
+    excluded?: string[]
     onrestore: (b: Backup) => void
     ondelete: (b: Backup) => void
   } = $props()
@@ -106,6 +112,9 @@
           {#if pending?.key === b.engine + ':' + b.name}
             <span class="warn">
               {pending.action === 'delete' ? $t('backup_delete_confirm') : $t('backup_restore_confirm')}
+              {#if pending.action === 'restore' && excluded.length}
+                <span class="fine">{$t('backup_restore_excluded', { list: excluded.join(', ') })}</span>
+              {/if}
             </span>
             <button class="btn" onclick={() => (pending = null)}>{$t('cancel')}</button>
             <button class="btn danger" disabled={busy} onclick={() => confirm(b)}>
@@ -179,6 +188,13 @@
     color: var(--red);
     flex-basis: 100%;
     order: 9;
+  }
+  /* Quieter than the confirmation it hangs off: what a restore will not bring back
+     is context for the decision, not a second warning about it. */
+  .warn .fine {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.78rem;
   }
   .btn {
     border: 1px solid var(--border-strong);

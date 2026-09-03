@@ -91,6 +91,7 @@ x-compose-app:
 | **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
 | **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
+| **`backup`** | object | no | `{ exclude }` — directories of **derived** data to leave out of backups. See [Backup exclusions](#backup-exclusions). | — |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
 `webui-host` (and no `x-casaos` fallback) is headless — its tile has no "open"
@@ -573,6 +574,76 @@ deliberately set for itself.
 
 It is not free — the walk is proportional to the size of the tree, so don't put it
 on a multi-terabyte media folder that is already correct.
+
+---
+
+## Backup exclusions
+
+Maison backs up `AppData/<app>` whole. Apps keep large **regenerable** data inside
+that same folder — thumbnails, transcodes, search indexes, downloaded models — and
+without a way to say so, every byte of it is copied on every backup and stored
+offsite forever. On a media app the derived tree can rival the real data.
+
+`backup.exclude` is how the app's author says which directories those are. It sits
+next to `folders` for a reason: what a backup leaves out is exactly what the next
+`up` has to recreate.
+
+```yaml
+x-compose-app:
+  schema_version: 2
+  backup:
+    exclude:
+      - cache/                                   # <app folder>/cache and everything under it
+      - data/transcodes/                         # nested
+      - "**/thumbs/"                             # a directory of that name at any depth
+      - /DATA/AppData/${AppID}/models            # the absolute spelling folders: uses
+```
+
+| Form | Matches |
+|---|---|
+| `cache/` | the directory `cache` **at the app folder's root**, and its whole subtree |
+| `data/transcodes/` | the same, nested. A trailing slash is optional |
+| `"**/thumbs/"` | a directory named `thumbs` at **any** depth, including the root |
+| `/DATA/AppData/${AppID}/models` | interpolated, then normalised to `models/` — accepted **only** inside this app's own folder |
+
+Everything else is refused, one entry at a time: negations (`!keep`), `..`,
+absolute paths outside the app's folder, bare `*`, and file globs such as `*.log`.
+The grammar is deliberately this small because **two independent backup engines have
+to implement it identically** — the local one walks the folder itself, kopia pushes
+ignore rules into its repository — and an app whose backup contents depend on which
+engine is selected is worse than one that cannot express a clever pattern.
+
+A refused entry is **dropped, not fatal**. The app keeps every entry that parsed, and
+the backup carries the refused path instead of skipping it — more data, never less.
+The refusals are shown in the app's Backups tab, which is the only way a typo in a
+store app ever gets noticed.
+
+### `**/` must be quoted
+
+```yaml
+- "**/thumbs/"   # ✅
+- **/thumbs/     # ❌ `*` is YAML's alias indicator — this fails to parse, and it
+                 #    takes the WHOLE compose file with it, not just this entry.
+```
+
+### What is excluded is not restored
+
+A restore replaces the app folder with the backup's contents, so an excluded
+directory comes back **empty, not stale** — the app rebuilds it, which is the whole
+premise of declaring it. Declare the directory in `folders` as well if the app needs
+it to exist, with the right owner, before it starts.
+
+This is also why an exclusion is a **declaration and never a heuristic**: Maison will
+not guess that a directory looks like a cache, because a wrong guess drops real data
+from a backup silently and the loss surfaces only during a restore. If a path is
+excluded, it is because the app's author said so.
+
+### Where it does not apply
+
+The local engine's **uninstall** archive keeps everything. Uninstalling with a backup
+is a folder rename there — instant, and the exclusions would cost work to apply
+rather than save it — so that archive is a superset. A repository engine's uninstall
+snapshot honours the exclusions like any other.
 
 ---
 

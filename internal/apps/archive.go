@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/yundera/maison/internal/exclude"
 )
 
 // StampLayout is the time format every archive is named with. Seconds are part of
@@ -385,6 +387,40 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // dirSize sums the size of every regular file under dir. It is a stat-only walk
 // (no reads), and returns 0 for an unreadable tree — the caller then just shows
 // an indeterminate archive step rather than failing.
+// measureDir measures a directory in two halves: what a backup would copy, and what
+// the app declared as derived and asked it to skip.
+//
+// One walk for both, because the second number is only ever wanted next to the first
+// — the dialog says "2.1 GB excluded" beside the size, and the free-space guard must
+// reserve for the kept half alone or it refuses a backup that fits comfortably. An
+// empty Set makes this the plain walk, so callers never branch on it.
+func measureDir(dir string, skip *exclude.Set) (kept, skipped int64) {
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // best-effort measurement
+		}
+		rel, rerr := filepath.Rel(dir, p)
+		excluded := rerr == nil && skip.Match(filepath.ToSlash(rel))
+		if d.IsDir() {
+			if excluded {
+				// Measured whole here rather than descended into: the caller only needs the
+				// total, and the tree being skipped is exactly the one worth not walking.
+				skipped += dirSize(p)
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if excluded {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil {
+			kept += fi.Size()
+		}
+		return nil
+	})
+	return kept, skipped
+}
+
 func dirSize(dir string) int64 {
 	var total int64
 	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {

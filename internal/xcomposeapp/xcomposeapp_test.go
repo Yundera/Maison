@@ -118,3 +118,43 @@ func TestNormalizeView(t *testing.T) {
 		}
 	}
 }
+
+// The exclusion list has to survive the map[string]any round trip composefile puts
+// the extension block through, and a build that does not understand `backup` must
+// still read the rest of the block — which is what not raising SchemaVersion buys.
+func TestParseBackupExclude(t *testing.T) {
+	a, err := Parse(map[string]any{
+		"schema_version": 2,
+		"title":          "Jellyfin",
+		"backup": map[string]any{
+			"exclude": []any{"cache/", "/DATA/AppData/${AppID}/transcodes", "**/thumbs/"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"cache/", "/DATA/AppData/${AppID}/transcodes", "**/thumbs/"}
+	if len(a.Backup.Exclude) != len(want) {
+		t.Fatalf("exclude = %v, want %v", a.Backup.Exclude, want)
+	}
+	for i := range want {
+		if a.Backup.Exclude[i] != want[i] {
+			t.Fatalf("exclude[%d] = %q, want %q", i, a.Backup.Exclude[i], want[i])
+		}
+	}
+	if a.Title.Value() != "Jellyfin" {
+		t.Fatalf("the rest of the block was lost: title = %q", a.Title.Value())
+	}
+}
+
+// An app that declares nothing must produce a zero BackupSpec rather than anything a
+// caller has to guard — every backup path holds this value unconditionally.
+func TestParseWithoutBackupBlock(t *testing.T) {
+	a, err := Parse(map[string]any{"title": "Jellyfin"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if a.Backup.Exclude != nil {
+		t.Fatalf("exclude = %v, want nil", a.Backup.Exclude)
+	}
+}

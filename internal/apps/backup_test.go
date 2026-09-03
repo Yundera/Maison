@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yundera/maison/internal/exclude"
 )
 
 // read is a small helper: the tests care about file *contents* surviving a
@@ -210,7 +212,7 @@ func TestMirrorCopiesOnlyTheDelta(t *testing.T) {
 	seedApp(t, src)
 
 	var firstPass int64
-	if err := mirror(src, dst, func(_, total int64) { firstPass = total }); err != nil {
+	if err := mirror(src, dst, nil, func(_, total int64) { firstPass = total }); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if firstPass == 0 {
@@ -220,7 +222,7 @@ func TestMirrorCopiesOnlyTheDelta(t *testing.T) {
 	// Nothing changed: the second pass has nothing to do. This is what makes the
 	// app's downtime short rather than proportional to its size.
 	var secondPass int64 = -1
-	if err := mirror(src, dst, func(_, total int64) { secondPass = total }); err != nil {
+	if err := mirror(src, dst, nil, func(_, total int64) { secondPass = total }); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if secondPass != 0 {
@@ -237,7 +239,7 @@ func TestMirrorCopiesOnlyTheDelta(t *testing.T) {
 	if err := os.Remove(filepath.Join(src, ".env")); err != nil {
 		t.Fatal(err)
 	}
-	if err := mirror(src, dst, nil); err != nil {
+	if err := mirror(src, dst, nil, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -257,7 +259,7 @@ func TestMirrorCopiesOnlyTheDelta(t *testing.T) {
 func TestMirrorPrunesDeletedSubtreesAndPartials(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	seedApp(t, src)
-	if err := mirror(src, dst, nil); err != nil {
+	if err := mirror(src, dst, nil, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -269,7 +271,7 @@ func TestMirrorPrunesDeletedSubtreesAndPartials(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dst, "stale.partial"), []byte("half"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := mirror(src, dst, nil); err != nil {
+	if err := mirror(src, dst, nil, nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 
@@ -290,7 +292,7 @@ func TestMirrorSkipsIrregularFiles(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	if err := mirror(src, dst, nil); err != nil {
+	if err := mirror(src, dst, nil, nil); err != nil {
 		t.Fatalf("mirror over an irregular file: %v", err)
 	}
 	if got := read(t, filepath.Join(dst, "db", "data.sqlite")); got != "rows" {
@@ -383,5 +385,165 @@ func TestASecondBackupOfTheSameAppIsRefusedNotDuplicated(t *testing.T) {
 	_, err := r.BackupTracked(context.Background(), "jellyfin", "", false, nil)
 	if !errors.Is(err, ErrBackupInFlight) {
 		t.Errorf("err = %v, want ErrBackupInFlight", err)
+	}
+}
+
+// seedExcluded writes an app whose compose declares a derived directory, plus the
+// data that directory holds. It is the fixture for everything below: the declaration
+// and the bytes it covers have to travel together, since the whole feature is the
+// relationship between them.
+func seedExcluded(t *testing.T, appsDir, id string, patterns ...string) string {
+	t.Helper()
+	dir := filepath.Join(appsDir, id)
+	seedApp(t, dir)
+	var list strings.Builder
+	for _, p := range patterns {
+		// Quoted, always: a bare `**/thumbs/` opens with YAML's alias indicator and
+		// fails the whole compose file. See docs/x-compose-app.md.
+		list.WriteString("\n      - \"" + p + "\"")
+	}
+	compose := "services: {}\nx-compose-app:\n  schema_version: 2\n  backup:\n    exclude:" + list.String() + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"cache", filepath.Join("media", "thumbs")} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, sub, "blob"), []byte("derived-derived"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// A declared directory must not reach the archive — and the progress total must not
+// count it either, or the bar promises bytes that are never moved.
+func TestMirrorSkipsDeclaredExclusions(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	seedApp(t, src)
+	if err := os.MkdirAll(filepath.Join(src, "cache", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "cache", "deep", "blob"), []byte("derived"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	all, _ := measureDir(src, nil)
+	skip, errs := exclude.Parse([]string{"cache/"}, src)
+	if len(errs) != 0 {
+		t.Fatalf("Parse: %v", errs)
+	}
+
+	var total int64
+	if err := mirror(src, dst, skip, func(_, t int64) { total = t }); err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "cache")); !os.IsNotExist(err) {
+		t.Errorf("the excluded directory reached the snapshot (err = %v)", err)
+	}
+	if got := read(t, filepath.Join(dst, "db", "data.sqlite")); got != "rows" {
+		t.Errorf("real data = %q, want %q — an exclusion must cost only what it names", got, "rows")
+	}
+	if total >= all {
+		t.Errorf("progress total = %d, want less than the whole folder (%d)", total, all)
+	}
+}
+
+// A directory that stops being copied must also stop being *kept*. The copy pass
+// simply never visits an excluded path, so without prune's own check a tree staged
+// before the declaration existed would sit in the snapshot forever.
+func TestMirrorPrunesAPreviouslyStagedExclusion(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	seedApp(t, src)
+	if err := os.MkdirAll(filepath.Join(src, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "cache", "blob"), []byte("derived"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := mirror(src, dst, nil, nil); err != nil { // staged while nothing was declared
+		t.Fatalf("mirror: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "cache", "blob")); err != nil {
+		t.Fatalf("fixture: the first pass should have staged it: %v", err)
+	}
+
+	skip, _ := exclude.Parse([]string{"cache/"}, src)
+	if err := mirror(src, dst, skip, nil); err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "cache")); !os.IsNotExist(err) {
+		t.Errorf("a now-excluded directory survived in the snapshot (err = %v)", err)
+	}
+}
+
+// The end of the chain: what the compose file declares is what the archive lacks.
+func TestBackupHonoursTheAppsDeclaration(t *testing.T) {
+	r, appsDir, backupsDir := newTestRegistry(t)
+	seedExcluded(t, appsDir, "jellyfin", "cache/", "**/thumbs/")
+
+	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	snap := filepath.Join(backupsDir, "jellyfin", name)
+	for _, gone := range []string{"cache", filepath.Join("media", "thumbs")} {
+		if _, err := os.Stat(filepath.Join(snap, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s was backed up but the app declared it derived (err = %v)", gone, err)
+		}
+	}
+	if got := read(t, filepath.Join(snap, "db", "data.sqlite")); got != "rows" {
+		t.Errorf("snapshot data = %q, want %q", got, "rows")
+	}
+}
+
+// The estimate is what the free-space guard refuses on and what the dialog shows, so
+// it has to size the copy that will actually happen — and name what it left out.
+func TestEstimateBackupSubtractsExclusionsAndReportsThem(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	dir := seedExcluded(t, appsDir, "jellyfin", "cache/", "**/thumbs/")
+
+	whole, _ := measureDir(dir, nil)
+	est, err := r.EstimateBackup("jellyfin", "", false)
+	if err != nil {
+		t.Fatalf("EstimateBackup: %v", err)
+	}
+	if est.Size >= whole {
+		t.Errorf("Size = %d, want less than the whole folder (%d)", est.Size, whole)
+	}
+	if est.Size+est.ExcludedSize != whole {
+		t.Errorf("Size(%d) + ExcludedSize(%d) = %d, want the whole folder (%d)",
+			est.Size, est.ExcludedSize, est.Size+est.ExcludedSize, whole)
+	}
+	if got := strings.Join(est.Excluded, " "); got != "cache/ **/thumbs/" {
+		t.Errorf("Excluded = %q, want the canonical spelling of both rules", got)
+	}
+	if len(est.ExcludeErrors) != 0 {
+		t.Errorf("ExcludeErrors = %v, want none", est.ExcludeErrors)
+	}
+}
+
+// A pattern Maison cannot honour must be reported rather than swallowed: the backup
+// is a superset, which is safe, but the app is not getting what it asked for and the
+// only way that is ever noticed is by being on the screen.
+func TestEstimateBackupReportsRefusedPatterns(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	dir := seedExcluded(t, appsDir, "jellyfin", "cache/", "../../etc")
+
+	est, err := r.EstimateBackup("jellyfin", "", false)
+	if err != nil {
+		t.Fatalf("EstimateBackup: %v", err)
+	}
+	if len(est.ExcludeErrors) != 1 || !strings.Contains(est.ExcludeErrors[0], "../../etc") {
+		t.Errorf("ExcludeErrors = %v, want the refused entry named", est.ExcludeErrors)
+	}
+	// The good pattern still applies. One bad entry must not cost the app the rest.
+	if got := strings.Join(est.Excluded, " "); got != "cache/" {
+		t.Errorf("Excluded = %q, want the entry that parsed", got)
+	}
+	whole, _ := measureDir(dir, nil)
+	if est.Size >= whole {
+		t.Errorf("Size = %d, want the surviving exclusion applied (whole = %d)", est.Size, whole)
 	}
 }

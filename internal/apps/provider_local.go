@@ -68,6 +68,10 @@ func (p *LocalProvider) stagingDir(app, stamp string) string {
 // second one cheap: mirror skips any file already present with the same size and
 // modification time, so pass 2 copies only what the app wrote during pass 1. The
 // app's downtime is therefore proportional to that delta rather than to its size.
+//
+// SnapshotOpts.Exclude is applied by mirror, so a directory the app declared as
+// derived is never copied into the staging folder and never reaches the archive —
+// including the zip, which compresses that same folder.
 func (p *LocalProvider) Snapshot(ctx context.Context, app, stamp string, opts SnapshotOpts, emit func(Event)) error {
 	if !projectRe.MatchString(app) {
 		return fmt.Errorf("invalid app name: %s", app)
@@ -96,7 +100,7 @@ func (p *LocalProvider) Snapshot(ctx context.Context, app, stamp string, opts Sn
 			return fmt.Errorf("clear staging: %w", err)
 		}
 	}
-	return mirror(appDir, staging, func(copied, total int64) {
+	return mirror(appDir, staging, opts.Exclude, func(copied, total int64) {
 		emitBytes(emit, copied, total, "Copying "+app)
 	})
 }

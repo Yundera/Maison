@@ -14,6 +14,7 @@ import (
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/engine"
+	"github.com/yundera/maison/internal/exclude"
 )
 
 // These are contract tests against kopia's actual CLI — JSON field names, the tag
@@ -730,5 +731,84 @@ func TestEngineEnvOverridesTheImagesBakedInPaths(t *testing.T) {
 		if strings.HasPrefix(v, "/app") {
 			t.Errorf("%s still points inside the image at %q", k, v)
 		}
+	}
+}
+
+// THE test for per-app exclusions. Kopia has no per-run ignore flag, so what an app
+// declares only takes effect if Snapshot pushes it into the repository as policy
+// first — and the same call must retire a rule the app has stopped declaring, or a
+// policy written once goes on dropping a directory from every future backup with
+// nothing on the box to explain why.
+//
+// Both halves are here because they fail in opposite, equally silent directions: the
+// first stores what the author asked to skip, the second skips what they now want.
+func TestAppExclusionsAreAppliedAndRetired(t *testing.T) {
+	p, cfg := newRepo(t)
+	ctx := context.Background()
+
+	appDir := filepath.Join(cfg.AppsDir(), "jellyfin")
+	for _, sub := range []string{"cache", filepath.Join("media", "thumbs")} {
+		if err := os.MkdirAll(filepath.Join(appDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(appDir, sub, "blob"), []byte("derived"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	set, errs := exclude.Parse([]string{"cache/", "**/thumbs/"}, appDir)
+	if len(errs) != 0 {
+		t.Fatalf("Parse: %v", errs)
+	}
+	if err := p.Snapshot(ctx, "jellyfin", stamp1, apps.SnapshotOpts{Pass: 1, Exclude: set}, nil); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	listed := p.contents(t, "jellyfin")
+	if !strings.Contains(listed, "db/data.sqlite") {
+		t.Errorf("the app's real data is missing from the snapshot:\n%s", listed)
+	}
+	for _, unwanted := range []string{"cache/blob", "thumbs/blob"} {
+		if strings.Contains(listed, unwanted) {
+			t.Errorf("%s was backed up but the app declared it derived:\n%s", unwanted, listed)
+		}
+	}
+
+	// The app stops declaring anything: the next backup must carry the lot again.
+	if err := p.Snapshot(ctx, "jellyfin", stamp2, apps.SnapshotOpts{Pass: 1}, nil); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	listed = p.contents(t, "jellyfin")
+	for _, want := range []string{"cache/blob", "thumbs/blob"} {
+		if !strings.Contains(listed, want) {
+			t.Errorf("%s is still excluded after the declaration was removed:\n%s", want, listed)
+		}
+	}
+}
+
+// The stopped pass runs inside the app's downtime, so it must not spend two more
+// container starts on a policy pass 1 has already written.
+func TestTheStoppedPassDoesNotRewriteThePolicy(t *testing.T) {
+	p, cfg := newRepo(t)
+	ctx := context.Background()
+
+	appDir := filepath.Join(cfg.AppsDir(), "jellyfin")
+	if err := os.MkdirAll(filepath.Join(appDir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "cache", "blob"), []byte("derived"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	set, _ := exclude.Parse([]string{"cache/"}, appDir)
+
+	if err := p.Snapshot(ctx, "jellyfin", stamp1, apps.SnapshotOpts{Pass: 1, Exclude: set}, nil); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	// Pass 2 carries the same Set — and would carry the same policy even if it did not,
+	// which is the property that lets it skip the write.
+	if err := p.Snapshot(ctx, "jellyfin", stamp1, apps.SnapshotOpts{Pass: 2, Exclude: set}, nil); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if listed := p.contents(t, "jellyfin"); strings.Contains(listed, "cache/blob") {
+		t.Errorf("the stopped pass carried the excluded directory:\n%s", listed)
 	}
 }

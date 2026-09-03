@@ -8,11 +8,15 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/disk"
+
+	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/exclude"
 )
 
 // Backup phases, in order. A folder backup skips `compress`.
@@ -90,6 +94,64 @@ type Estimate struct {
 	// guard below does not apply. The dialog uses this to explain why it is not
 	// showing a space requirement, rather than showing "0 bytes needed".
 	Streamed bool `json:"streamed"`
+
+	// Excluded is what the app declared as derived and asked to be left out
+	// (x-compose-app backup.exclude), in its canonical spelling, and ExcludedSize is
+	// what that comes to on disk. Size above already has it subtracted.
+	//
+	// They are here because a backup that does not contain something has to say so:
+	// an app that comes back from a restore without its cache is working as declared,
+	// and an app that comes back missing something its author wrongly marked derived
+	// is a bug report — and only a UI that names the paths tells the two apart. Read
+	// from the parsed rules, never echoed from the compose file, so what is shown
+	// cannot drift from what is applied.
+	Excluded     []string `json:"excluded,omitempty"`
+	ExcludedSize int64    `json:"excludedSize,omitempty"`
+
+	// ExcludeErrors are the entries Maison refused, in the author's own spelling.
+	// A refused pattern excludes nothing — the backup is a superset, never short —
+	// but it means the app is not getting what it asked for, and the only way that
+	// ever gets fixed is by being visible here.
+	ExcludeErrors []string `json:"excludeErrors,omitempty"`
+}
+
+// exclusionsFor resolves what app `id` declared as derived data — the directories
+// x-compose-app `backup.exclude` asks Maison to leave out of its backups — together
+// with the entries it had to refuse.
+//
+// Read from the app's compose on every call rather than cached. The declaration
+// moves when a store update lands or an operator edits the override, and a backup
+// running against a stale copy either stores what the author has retired or drops
+// what they have just added back.
+//
+// A refused entry is dropped, never fatal: what it costs is a backup that carries
+// MORE than was asked, which is not data loss, while refusing the whole declaration
+// over one typo would be. The refusals are returned so the dialog can show them —
+// a mistake in a store app should be visible, not silent.
+func (r *Registry) exclusionsFor(id string) (*exclude.Set, []error) {
+	_, ca := r.metaFor(id, "")
+	if ca == nil || len(ca.Backup.Exclude) == 0 {
+		return nil, nil
+	}
+	patterns := make([]string, 0, len(ca.Backup.Exclude))
+	for _, p := range ca.Backup.Exclude {
+		// Rendered the way a folder path is, then mapped back into this container's
+		// data mount — so the absolute spelling an author copies out of `folders:`
+		// (/DATA/AppData/${AppID}/cache, a HOST path) is compared against the app
+		// folder Maison actually reads.
+		patterns = append(patterns, envinject.ContainerPath(envinject.Render(p, r.cfg, id, nil), r.cfg))
+	}
+	return exclude.Parse(patterns, filepath.Join(r.cfg.AppsDir(), id))
+}
+
+// excludeSet is exclusionsFor for the paths that only need the answer, logging what
+// it refused so a rejected pattern leaves a trace even where nothing renders it.
+func (r *Registry) excludeSet(id string) *exclude.Set {
+	set, errs := r.exclusionsFor(id)
+	for _, err := range errs {
+		log.Printf("backup %s: ignoring backup.exclude entry: %v", id, err)
+	}
+	return set
 }
 
 // EstimateBackup measures what a backup of `id` would cost. The size walk is
@@ -103,7 +165,18 @@ func (r *Registry) EstimateBackup(id, engine string, zip bool) (Estimate, error)
 	if _, err := os.Stat(appDir); err != nil {
 		return Estimate{}, fmt.Errorf("%s has no folder to back up", id)
 	}
-	size := dirSize(appDir)
+	// What the app declared as derived is not copied, so it must not be reserved for
+	// either: sizing the whole folder would refuse a backup that fits comfortably.
+	skip, skipErrs := r.exclusionsFor(id)
+	size, excludedSize := measureDir(appDir, skip)
+	// Carried on every return below, including the refusals: what was left out is
+	// exactly the thing a user needs to see when a backup — or a restore from it —
+	// does not contain what they expected.
+	est := Estimate{
+		Size: size, Zip: zip,
+		Excluded: skip.Patterns(), ExcludedSize: excludedSize,
+		ExcludeErrors: errorStrings(skipErrs),
+	}
 
 	// An engine that streams to a repository needs no room beside the app, so the
 	// guard is skipped entirely rather than computed and passed. This is what lets an
@@ -120,25 +193,40 @@ func (r *Registry) EstimateBackup(id, engine string, zip bool) (Estimate, error)
 		return Estimate{}, err
 	}
 	if !target.Caps().NeedsLocalSpace {
-		return Estimate{Size: size, Needed: 0, Free: freeSpace(r.cfg.DataRoot), Enough: true, Zip: zip, Streamed: true}, nil
+		est.Free, est.Enough, est.Streamed = freeSpace(r.cfg.DataRoot), true, true
+		return est, nil
 	}
 
 	headroom := folderHeadroom
 	if zip {
 		headroom = zipHeadroom
 	}
-	needed := int64(float64(size) * headroom)
+	est.Needed = int64(float64(size) * headroom)
 
-	var free int64
-	if u, err := disk.Usage(r.cfg.DataRoot); err == nil {
-		free = int64(u.Free)
-	} else {
+	u, err := disk.Usage(r.cfg.DataRoot)
+	if err != nil {
 		// Without a usable reading we cannot refuse honestly, so we let the backup
 		// proceed and fail on ENOSPC rather than blocking it on a guess.
 		log.Printf("backup: disk usage for %s: %v (skipping free-space guard)", r.cfg.DataRoot, err)
-		return Estimate{Size: size, Needed: needed, Free: -1, Enough: true, Zip: zip}, nil
+		est.Free, est.Enough = -1, true
+		return est, nil
 	}
-	return Estimate{Size: size, Needed: needed, Free: free, Enough: free >= needed, Zip: zip}, nil
+	est.Free = int64(u.Free)
+	est.Enough = est.Free >= est.Needed
+	return est, nil
+}
+
+// errorStrings renders refusals for the wire. Nil rather than an empty slice when
+// there are none, so the field is simply absent from the JSON.
+func errorStrings(errs []error) []string {
+	if len(errs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(errs))
+	for _, err := range errs {
+		out = append(out, err.Error())
+	}
+	return out
 }
 
 // StartBackup launches a detached backup of app `id` and tracks its progress so it
@@ -392,7 +480,10 @@ func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bo
 	r.enter(id)
 	defer r.leave(id)
 
-	opts := SnapshotOpts{Zip: zip}
+	// Resolved once, here, and carried through both passes: re-reading it between them
+	// would let a store update landing mid-backup make pass 2 disagree with pass 1
+	// about what the snapshot is supposed to contain.
+	opts := SnapshotOpts{Zip: zip, Exclude: r.excludeSet(id)}
 	stamp := time.Now().Format(StampLayout)
 
 	// Nothing the engine stages is durable until Commit, so an interrupted backup
@@ -758,7 +849,11 @@ func (r *Registry) restoreInPlace(ctx context.Context, src Provider, id, name, a
 	//    outcome than a restore that did not happen.
 	undo := time.Now().Format(StampLayout)
 	emit(BackupEvent{Phase: PhaseRestore, Message: "Saving current state"})
-	if err := src.Snapshot(ctx, id, undo, SnapshotOpts{Pass: 2}, nil); err != nil {
+	// Honouring the app's exclusions here too. This path exists *because* the app
+	// barely fits on its own disk, which is the moment a derived tree is least worth
+	// a second copy — and an undo that restores the cache with everything else would
+	// be putting back what the next backup drops again.
+	if err := src.Snapshot(ctx, id, undo, SnapshotOpts{Pass: 2, Exclude: r.excludeSet(id)}, nil); err != nil {
 		return fmt.Errorf("could not save the current state, so the restore was refused: %w", err)
 	}
 	if _, err := src.Commit(ctx, id, undo, SnapshotOpts{}, nil); err != nil {
@@ -840,7 +935,10 @@ func (r *Registry) EstimateRestore(id, engine, name string) (Estimate, error) {
 		// A folder archive is listed unmeasured, and a repository that reports no size
 		// tells us nothing — fall back to the live app, which is the best available
 		// proxy for how big its backup is.
-		size = dirSize(filepath.Join(r.cfg.AppsDir(), id))
+		// Excluding what the app declares as derived, because that is what the backup
+		// itself left out — sizing the live folder whole would over-reserve by exactly
+		// the cache the author asked not to store.
+		size, _ = measureDir(filepath.Join(r.cfg.AppsDir(), id), r.excludeSet(id))
 	}
 	needed := int64(float64(size) * folderHeadroom)
 	free := freeSpace(r.cfg.DataRoot)
@@ -889,7 +987,12 @@ func pct(done, total int64) float64 {
 // Rather than shelling out to rsync (which the runtime image does not carry), this
 // is a plain two-walk implementation: it needs no external binary and reports
 // bytes through the same progressReader the zip path uses.
-func mirror(src, dst string, onProgress func(copied, total int64)) error {
+//
+// skip is what the app declared as derived (x-compose-app backup.exclude); a nil Set
+// mirrors everything. It is applied in BOTH walks — leaving it out of the measuring
+// one would make the bar promise bytes that are never moved — and again in prune, so
+// dst holds nothing the caller asked to leave behind.
+func mirror(src, dst string, skip *exclude.Set, onProgress func(copied, total int64)) error {
 	if onProgress == nil {
 		onProgress = func(int64, int64) {}
 	}
@@ -906,6 +1009,12 @@ func mirror(src, dst string, onProgress func(copied, total int64)) error {
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
+		}
+		if skip.Match(filepath.ToSlash(rel)) {
+			if d.IsDir() {
+				return fs.SkipDir // an excluded tree is never even walked
+			}
+			return nil
 		}
 		if d.IsDir() || !d.Type().IsRegular() {
 			return nil
@@ -937,6 +1046,12 @@ func mirror(src, dst string, onProgress func(copied, total int64)) error {
 		if err != nil {
 			return err
 		}
+		if skip.Match(filepath.ToSlash(rel)) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		target := filepath.Join(dst, rel)
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
@@ -966,8 +1081,8 @@ func mirror(src, dst string, onProgress func(copied, total int64)) error {
 	}
 	onProgress(total, total)
 
-	// Pass B — drop anything in dst that src no longer has.
-	return prune(src, dst)
+	// Pass B — drop anything in dst that src no longer has, or that is now excluded.
+	return prune(src, dst, skip, "")
 }
 
 // upToDate reports whether dst already holds this exact file. Size plus
@@ -1014,18 +1129,34 @@ func copyFile(src, dst string, fi fs.FileInfo, onRead func(n int64)) error {
 	return os.Rename(tmp, dst)
 }
 
-// prune removes everything under dst that no longer exists under src. Directories
-// are handled after their contents, so removing a whole deleted subtree takes one
-// RemoveAll at its root rather than a walk.
-func prune(src, dst string) error {
+// prune removes everything under dst that no longer exists under src, or that the
+// app now declares as derived. Directories are handled after their contents, so
+// removing a whole deleted subtree takes one RemoveAll at its root rather than a
+// walk. rel is the path of dst relative to the mirror root, which is what the
+// exclusion Set is written in terms of; the top-level call passes "".
+//
+// The exclusion half is defensive rather than load-bearing: a staging directory is
+// cleared before pass 1, so a tree that stopped being copied cannot normally still
+// be sitting there. But the copy pass simply never visits an excluded path, so
+// nothing else here would ever remove one — and "unreachable given today's call
+// sites" is a thin guarantee when the failure it guards is silently shipping the
+// data an author asked to leave out.
+func prune(src, dst string, skip *exclude.Set, rel string) error {
 	entries, err := os.ReadDir(dst)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
 		target := filepath.Join(dst, e.Name())
+		name := strings.TrimSuffix(e.Name(), ".partial")
+		if skip.Match(path.Join(rel, name)) {
+			if err := os.RemoveAll(target); err != nil {
+				return err
+			}
+			continue
+		}
 		// A .partial left by a failed copy belongs to no source file; drop it.
-		origin := filepath.Join(src, strings.TrimSuffix(e.Name(), ".partial"))
+		origin := filepath.Join(src, name)
 		if _, err := os.Stat(origin); err != nil {
 			if err := os.RemoveAll(target); err != nil {
 				return err
@@ -1033,7 +1164,7 @@ func prune(src, dst string) error {
 			continue
 		}
 		if e.IsDir() {
-			if err := prune(filepath.Join(src, e.Name()), target); err != nil {
+			if err := prune(filepath.Join(src, e.Name()), target, skip, path.Join(rel, e.Name())); err != nil {
 				return err
 			}
 		}

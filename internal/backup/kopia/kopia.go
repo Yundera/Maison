@@ -483,20 +483,34 @@ func (p *Provider) EnsurePolicy(ctx context.Context, s Source, keep Retention) e
 	if !s.isUserData() {
 		return nil
 	}
+	// The exclusions themselves, and why each one is there, are on UserDataExclusions.
+	return p.EnsureIgnore(ctx, s, UserDataExclusions)
+}
 
-	// Exclusions are reset and re-added in TWO invocations, and they must stay that
-	// way: kopia applies --clear-ignore *after* --add-ignore regardless of the order
-	// they appear on the command line, so combining them yields a source with no
-	// ignore rules at all. Verified against kopia 0.23.1 — and it fails silently, the
-	// backup simply succeeds while carrying everything the rules were meant to keep
-	// out. TestUserDataExclusionsAreAnchoredCorrectly is what catches a regression.
+// EnsureIgnore replaces a source's ignore rules with exactly `rules`.
+//
+// It is a replacement, not an addition, and it runs even when `rules` is empty —
+// that is what retires a rule whose app has stopped declaring it. Kopia policies live
+// in the repository, so they outlive a Maison reinstall and a stale one would go on
+// quietly dropping a directory from every backup with nothing on the box to explain
+// why.
+//
+// Exclusions are reset and re-added in TWO invocations, and they must stay that way:
+// kopia applies --clear-ignore *after* --add-ignore regardless of the order they
+// appear on the command line, so combining them yields a source with no ignore rules
+// at all. Verified against kopia 0.23.1 — and it fails silently, the backup simply
+// succeeds while carrying everything the rules were meant to keep out.
+// TestUserDataExclusionsAreAnchoredCorrectly is what catches a regression.
+func (p *Provider) EnsureIgnore(ctx context.Context, s Source, rules []string) error {
+	path := p.sourcePath(s)
 	if _, err := p.run(ctx, nil, 5*time.Minute, "policy", "set", path, "--clear-ignore"); err != nil {
 		return err
 	}
-
-	// The exclusions themselves, and why each one is there, are on UserDataExclusions.
+	if len(rules) == 0 {
+		return nil
+	}
 	args := []string{"policy", "set", path}
-	for _, ig := range UserDataExclusions {
+	for _, ig := range rules {
 		args = append(args, "--add-ignore", ig)
 	}
 	_, err := p.run(ctx, nil, 5*time.Minute, args...)
@@ -765,7 +779,25 @@ func selectEntries(have []entry, want []string) ([]entry, error) {
 // --- apps.Provider -----------------------------------------------------------
 
 func (p *Provider) Snapshot(ctx context.Context, app, stamp string, opts apps.SnapshotOpts, emit func(apps.Event)) error {
-	return p.SnapshotSource(ctx, AppSource(app), stamp, opts.Pass, emit)
+	src := AppSource(app)
+	// Kopia has no per-run ignore flag: exclusions exist only as policy on the source
+	// path, so what the app declared has to be pushed into the repository before the
+	// snapshot reads it.
+	//
+	// Only on the live pass — and on a consuming uninstall, which has no live pass —
+	// because both passes share this source and its policy, and pass 2 runs inside the
+	// app's downtime window. Two engine runs there would be two container starts added
+	// to an outage, for a policy that is already exactly right.
+	//
+	// Unconditional, including for an app that declares nothing: the call clears
+	// whatever the repository is still holding, which is how a rule an author has
+	// removed stops applying.
+	if opts.Pass <= 1 || opts.Consume {
+		if err := p.EnsureIgnore(ctx, src, opts.Exclude.Rules()); err != nil {
+			return fmt.Errorf("kopia: applying backup exclusions: %w", err)
+		}
+	}
+	return p.SnapshotSource(ctx, src, stamp, opts.Pass, emit)
 }
 
 // SnapshotSource captures one source. Both passes of a backup write the same

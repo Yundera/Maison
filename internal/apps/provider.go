@@ -3,6 +3,8 @@ package apps
 import (
 	"context"
 	"errors"
+
+	"github.com/yundera/maison/internal/exclude"
 )
 
 // A Provider is one backup engine: local archives, kopia, restic, whatever comes
@@ -210,6 +212,18 @@ type SnapshotOpts struct {
 	// incremental against, and that pass is the committed one — so it is Pass 2 (the
 	// *consistent* pass), not Pass 1.
 	Consume bool
+
+	// Exclude is what the app declared as derived and not worth storing
+	// (x-compose-app `backup.exclude`). Nil means the whole folder, which is what an
+	// app that declares nothing gets and what every engine did before this existed.
+	//
+	// It is resolved once, by the registry, and handed down — never re-derived by an
+	// engine. That is the point of passing a parsed Set rather than the patterns: an
+	// engine can ask whether a path matches, or for its own ignore-rule spelling, but
+	// it cannot invent a third interpretation. Two engines disagreeing about what an
+	// app declared would mean the same app backing up different contents depending on
+	// which one was selected, and the difference would surface at restore time.
+	Exclude *exclude.Set
 }
 
 // Event is a progress update from a provider.

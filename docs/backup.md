@@ -350,24 +350,69 @@ stops shrinking before stopping the app. Not needed for a first version.
 
 ### Per-app exclusions
 
-`AppData/<app>` is the source, but not all of it is worth storing. Apps keep large **regenerable**
-caches inside their own directory — thumbnails, transcodes, search indexes, model downloads — and
-without a way to skip them, every one ships nightly and is billed as if it mattered. On a media app
-the cache can rival the real data.
+`AppData/<app>` is the source, but not all of it is worth storing. Apps keep large
+**regenerable** caches inside their own directory — thumbnails, transcodes, search
+indexes, model downloads — and without a way to skip them, every one ships nightly and
+is billed as if it mattered. On a media app the cache can rival the real data.
 
-The declaration belongs in **`x-compose-app`**, next to `folders` and `hooks`: the app author knows
-which of their directories are derived, and it travels with the app instead of living in a list
-Maison has to maintain per store app. A user-level override is worth having for apps whose authors
-have not declared anything.
+The declaration lives in **`x-compose-app`**, next to `folders` and `hooks`: the app
+author knows which of their directories are derived, and it travels with the app
+instead of living in a list Maison has to maintain per store app.
 
-Two rules keep this from becoming a footgun:
+```yaml
+x-compose-app:
+  backup:
+    exclude: [cache/, "**/thumbs/"]
+```
 
-- **Exclusions are a store-app declaration, not a heuristic.** Never infer "this looks like a
-  cache" from a directory name — a wrong guess silently omits real data from a backup, which is the
-  worst failure this system can have.
-- **What was excluded must be visible at restore time.** A restored app missing its cache should
-  rebuild it; a restored app missing something the author wrongly marked derived is a bug report,
-  and the restore UI showing "these paths were excluded" is what makes that diagnosable.
+The grammar is a directory relative to the app folder, `**/<name>/` for that name at
+any depth, or the absolute spelling `folders:` uses — and nothing else. It is
+documented in full in [x-compose-app.md](x-compose-app.md#backup-exclusions); what
+matters here is *why* it is that small: **two engines have to mean the same thing by
+it.** `internal/exclude` parses the declaration once, and the registry hands the
+result down through `SnapshotOpts.Exclude`, so the local engine (which walks the
+folder) and kopia (which pushes ignore rules into the repository as policy) can each
+ask for the form they need but neither can invent a third reading. An app whose backup
+contents depended on the selected engine would only reveal it at restore time.
+
+Two rules keep this from becoming a footgun, and both are implemented rather than
+aspirational:
+
+- **Exclusions are a store-app declaration, not a heuristic.** Maison never infers
+  "this looks like a cache" from a directory name — a wrong guess silently omits real
+  data from a backup, which is the worst failure this system can have. A pattern it
+  cannot honour is dropped and reported, so the backup carries *more* than was asked;
+  the failure direction is always the safe one.
+- **What was excluded is visible.** `Estimate` carries the canonical patterns, their
+  size on disk, and any refusals, so the Backups tab names them before a backup runs
+  and again beside every restore. A restored app missing its cache is working as
+  declared; a restored app missing something the author wrongly marked derived is a bug
+  report — and only naming the paths tells a user which one they have.
+
+Three consequences worth stating plainly:
+
+- **A restore does not bring an excluded directory back.** The folder is replaced
+  wholesale (and kopia's in-place restore passes `--delete-extra`), so it returns
+  empty and the app refills it. Declaring the directory in `folders` too is what gives
+  it the right owner before the app starts.
+- **The estimate sizes the copy, not the folder.** The free-space guard reserves for
+  what will actually be written, so an app whose cache is most of its size stops being
+  refused a backup it comfortably fits.
+- **The local engine's uninstall archive keeps everything.** That path is a folder
+  rename, where an exclusion would cost work rather than save it; a repository engine's
+  uninstall snapshot honours the declaration like any other backup. The local superset
+  is free, so it is not worth an exception to remove.
+
+Kopia has no per-run ignore flag, so the rules are policy on the source path, written
+by `EnsureIgnore` before the **live** pass — never inside the app's downtime — and
+written *unconditionally*, including for an app that declares nothing. That last part
+is what retires a rule an author has removed: policy lives in the repository and
+outlives a Maison reinstall, so a stale one would go on dropping a directory from every
+backup with nothing on the box to explain why.
+
+A user-level override is still worth having for apps whose authors have declared
+nothing. The merge already works — an override's `x-compose-app` block wins key by key
+— so what is missing is only an editing surface.
 
 ### Identity is unchanged
 

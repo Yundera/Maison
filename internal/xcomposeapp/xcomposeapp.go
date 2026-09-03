@@ -103,6 +103,17 @@ type App struct {
 	Folders []Folder `yaml:"folders,omitempty"`
 	Hooks   Hooks    `yaml:"hooks,omitempty"`
 
+	// Backup is what this app asks Maison to leave out of its backups — the
+	// directories it can rebuild on its own. See docs/backup.md.
+	//
+	// Deliberately NOT raising SchemaVersion, and the argument is stronger here than
+	// it is for View or Routes: a build that predates this field ignores it and backs
+	// the app up whole, which is a superset and therefore never data loss. Raising
+	// the version instead makes that build drop the entire x-compose-app block (see
+	// stackup.Load) and with it the app's folders, hooks, title and URL — a much
+	// worse trade than storing a cache directory it did not have to.
+	Backup BackupSpec `yaml:"backup,omitempty"`
+
 	// Secrets are values generated ONCE and ensured in the app's .env — a key
 	// already carrying a value is reused, never regenerated, because a rotated
 	// signing key is indistinguishable from data loss to the app that signed with
@@ -368,6 +379,44 @@ func NormalizeView(v string) string {
 	default:
 		return ViewApps
 	}
+}
+
+// BackupSpec is the app's say in how it is backed up.
+//
+// Exclude names directories holding **derived** data — thumbnails, transcodes,
+// search indexes, model downloads — which the app can rebuild and which would
+// otherwise ship on every backup and be stored offsite forever. It is a declaration
+// by the app's author, never a heuristic: Maison does not guess that a directory
+// looks like a cache, because a wrong guess silently drops real data from a backup.
+//
+// Each entry is a directory, app-folder-relative (`cache/`, `data/transcodes/`) or
+// `**/<name>/` for that name at any depth; an absolute path inside the app's own
+// folder is accepted too, since that is the spelling `folders:` uses. Everything
+// else is refused, one entry at a time — see internal/exclude, which owns the
+// grammar and is what both backup engines read it through.
+//
+// What is excluded is not restored either: a restore replaces the app folder, so a
+// declared directory comes back empty and the app refills it. That is the point of
+// declaring it, and it is why `folders:` and this list belong side by side.
+type BackupSpec struct {
+	Exclude []string `yaml:"exclude,omitempty"`
+}
+
+// UnmarshalYAML decodes the entries through text, so a pattern YAML would otherwise
+// retype survives as written — the extension block round-trips through
+// map[string]any in internal/composefile before it ever reaches this package.
+func (b *BackupSpec) UnmarshalYAML(n *yaml.Node) error {
+	var raw struct {
+		Exclude []text `yaml:"exclude"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	b.Exclude = nil
+	for _, e := range raw.Exclude {
+		b.Exclude = append(b.Exclude, string(e))
+	}
+	return nil
 }
 
 // Folder is a directory Maison creates (and takes ownership of) before it

@@ -41,6 +41,20 @@ export interface Estimate {
   free: number // free space on the data filesystem; -1 when unreadable
   enough: boolean
   zip: boolean // which headroom `needed` was computed with
+
+  /** What the app declared as derived and asked to be left out (x-compose-app
+   *  `backup.exclude`), in its canonical spelling, and what that comes to on disk.
+   *  `size` above already has it subtracted. Shown because a backup that does not
+   *  contain something has to say so: an app restored without its cache is working
+   *  as declared, one restored without something wrongly marked derived is a bug,
+   *  and only naming the paths tells the two apart. */
+  excluded?: string[]
+  excludedSize?: number
+
+  /** Entries Maison refused, in the author's own spelling. A refused pattern
+   *  excludes nothing — the backup is a superset, never short — but the app is not
+   *  getting what it asked for, and this is the only place that shows. */
+  excludeErrors?: string[]
 }
 
 /** A restore of the user-data set, in flight or last attempted. */

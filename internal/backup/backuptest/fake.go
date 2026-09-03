@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,9 +55,10 @@ type Fake struct {
 	ListCalls    int
 	ListAllCalls int
 	// Calls records every operation in order, as "verb:app/stamp" (Snapshot carries
-	// its pass, e.g. "snapshot:jellyfin/2026-01-01_000000#2", and appends "+consume"
-	// when the caller offered it the app folder outright). Asserting on this is how a
-	// test pins a sequence without reaching into the engine's state.
+	// its pass, e.g. "snapshot:jellyfin/2026-01-01_000000#2", appends "+consume" when
+	// the caller offered it the app folder outright, and appends "+exclude(cache/)"
+	// for what the app declared as derived). Asserting on this is how a test pins a
+	// sequence without reaching into the engine's state.
 	Calls []string
 }
 
@@ -113,6 +115,12 @@ func (f *Fake) Snapshot(ctx context.Context, app, stamp string, opts apps.Snapsh
 	call := "snapshot:" + app + "/" + stamp + "#" + itoa(opts.Pass)
 	if opts.Consume {
 		call += "+consume"
+	}
+	// Recorded, not applied — this fake stores nothing to leave anything out of. It is
+	// what lets a test prove the registry read the app's declaration and handed it to
+	// the engine, which is the half of the chain no engine-level test can see.
+	if pats := opts.Exclude.Patterns(); len(pats) > 0 {
+		call += "+exclude(" + strings.Join(pats, ",") + ")"
 	}
 	f.record(call)
 	if emit != nil {

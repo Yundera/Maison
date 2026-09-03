@@ -204,7 +204,12 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 	// should, rather than copying it first. Pass 2 because a stopped app gets one pass
 	// and that pass is the *consistent* one — committing a pass-1 snapshot would
 	// discard it as the torn throwaway it normally is.
-	opts := SnapshotOpts{Pass: 2, Zip: zip, Consume: true}
+	// The app's own exclusions apply here as they do to any other backup — no special
+	// case. What that means differs by engine, and deliberately: kopia's ignore rules
+	// live on the source path, so its uninstall snapshot honours them; the local
+	// engine's uninstall is a *rename* of the folder, so its archive keeps everything.
+	// A superset that costs nothing to produce is not worth an exception to remove.
+	opts := SnapshotOpts{Pass: 2, Zip: zip, Consume: true, Exclude: r.excludeSet(id)}
 	stamp := time.Now().Format(StampLayout)
 
 	// Nothing staged is durable until Commit, so an interrupted uninstall discards it

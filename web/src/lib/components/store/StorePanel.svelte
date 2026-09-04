@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { storeApp } from '../../stores/ui'
-  import { backToCatalog, closeStore, openStoreApp } from '../../route'
+  import { backToCatalog, closeStore, openSettings, openStoreApp } from '../../route'
   import { bare, refOf, refPath } from '../../storeref'
   import { fetchStore, type StoreApp, type StoreData } from '../../stores/store'
   import { apps } from '../../stores/apps'
@@ -9,7 +9,6 @@
   import { t } from '../../i18n'
   import AppDetail from './AppDetail.svelte'
   import InstallButton from './InstallButton.svelte'
-  import StoreSources from './StoreSources.svelte'
 
   let data = $state<StoreData | null>(null)
   let loading = $state(true)
@@ -29,13 +28,6 @@
       .then((d) => (data = d))
       .catch((e) => (error = String(e)))
       .finally(() => (loading = false))
-  }
-  async function refresh() {
-    try {
-      data = await fetchStore()
-    } catch (e) {
-      error = String(e)
-    }
   }
 
   const installedIds = $derived(new Set($apps.map((a) => a.id)))
@@ -198,7 +190,12 @@
           {/if}
           <input class="search" placeholder={$t('search_apps')} bind:value={search} />
           <div class="spacer"></div>
-          <StoreSources count={data.apps.length} onchanged={refresh} />
+          <span class="count-all">{$t('store_apps_count', { count: String(data.apps.length) })}</span>
+          <!-- Managing sources is box configuration, not browsing: it lives in
+               settings, and this is the way there. openSettings navigates, which
+               unmounts this panel — so re-opening the store re-fetches the catalog
+               and a store added over there shows up without any invalidation here. -->
+          <button class="manage" onclick={() => openSettings('store')}>{$t('app_stores_manage')} →</button>
         </div>
 
         {#each groups as g (g.url)}
@@ -318,6 +315,23 @@
   }
   .spacer {
     flex: 1;
+  }
+  .count-all {
+    font-size: 0.8rem;
+    color: #8b98a5;
+    white-space: nowrap;
+  }
+  .manage {
+    border: none;
+    background: none;
+    padding: 0;
+    font-size: 0.8rem;
+    color: var(--primary);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .manage:hover {
+    text-decoration: underline;
   }
   select,
   .search {

@@ -235,5 +235,13 @@
   "resources_recording_on": "Ressourcenverlauf aufzeichnen",
   "resources_retention": "{days} Tage aufbewahrt",
   "resources_delete_history": "Verlauf löschen",
-  "monitor_open_resources": "Verlauf und Details →"
+  "monitor_open_resources": "Verlauf und Details →",
+  "app_stores": "App-Stores",
+  "app_stores_hint": "Woher {app} die installierbaren Apps bezieht. Ein Store ist eine Adresse mit einem App-Katalog; jeder hinzugefügte Store erscheint als eigene Gruppe im Store.",
+  "app_stores_manage": "Stores verwalten",
+  "store_url": "Store-Adresse",
+  "store_apps_count": "{count} Apps",
+  "reload_store": "Diesen Store jetzt abrufen",
+  "store_last_source": "Der letzte Store kann nicht entfernt werden — es gäbe nichts mehr zu installieren.",
+  "store_refresh_hint": "Jeder Store wird beim Start dieses Servers neu gelesen und danach jede Nacht um 03:00 Uhr. Mit ⟳ rufen Sie einen sofort ab."
 }

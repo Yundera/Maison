@@ -235,5 +235,13 @@
   "resources_recording_on": "Enregistrer l'historique des ressources",
   "resources_retention": "{days} jours conservés",
   "resources_delete_history": "Supprimer l'historique",
-  "monitor_open_resources": "Historique et détails →"
+  "monitor_open_resources": "Historique et détails →",
+  "app_stores": "Magasins d'applications",
+  "app_stores_hint": "L'origine des applications que vous pouvez installer. Un magasin est une adresse qui héberge un catalogue d'applications ; chaque magasin ajouté apparaît comme son propre groupe dans le magasin.",
+  "app_stores_manage": "Gérer les magasins",
+  "store_url": "Adresse du magasin",
+  "store_apps_count": "{count} applications",
+  "reload_store": "Récupérer ce magasin maintenant",
+  "store_last_source": "Le dernier magasin ne peut pas être retiré — il n'y aurait plus rien à installer.",
+  "store_refresh_hint": "Chaque magasin est relu au démarrage du serveur, puis chaque nuit à 03:00. Utilisez ⟳ pour en récupérer un immédiatement."
 }

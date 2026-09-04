@@ -100,7 +100,11 @@ func (s *Server) handleRemoveStoreSource(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	var kept []string
+	// Non-nil even when nothing is kept: usersettings.merge reads a nil slice as
+	// "not supplied" and leaves the stored list alone, so removing the last source
+	// emptied the manager in memory while the file kept the old list — and the
+	// store came back on the next boot. An empty slice means "cleared".
+	kept := []string{}
 	for _, u := range s.store.URLs() {
 		if u != url {
 			kept = append(kept, u)

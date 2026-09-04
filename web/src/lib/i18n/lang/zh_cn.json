@@ -235,5 +235,13 @@
   "resources_recording_on": "记录资源历史",
   "resources_retention": "保留 {days} 天",
   "resources_delete_history": "删除历史",
-  "monitor_open_resources": "历史与详情 →"
+  "monitor_open_resources": "历史与详情 →",
+  "app_stores": "应用商店源",
+  "app_stores_hint": "{app} 可安装应用的来源。每个商店是一个存放应用目录的地址；添加后会在应用商店中单独成组显示。",
+  "app_stores_manage": "管理商店",
+  "store_url": "商店地址",
+  "store_apps_count": "{count} 个应用",
+  "reload_store": "立即获取该商店",
+  "store_last_source": "无法移除最后一个商店 — 否则将没有可安装的应用。",
+  "store_refresh_hint": "每次服务器启动时都会重新读取所有商店，之后每晚 03:00 再次读取。点击 ⟳ 可立即获取某个商店。"
 }

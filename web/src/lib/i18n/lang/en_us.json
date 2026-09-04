@@ -235,5 +235,13 @@
   "resources_recording_on": "Record resource history",
   "resources_retention": "{days} days kept",
   "resources_delete_history": "Delete history",
-  "monitor_open_resources": "History and details →"
+  "monitor_open_resources": "History and details →",
+  "app_stores": "App stores",
+  "app_stores_hint": "Where {app} gets the apps you can install. A store is an address holding a catalogue of apps; every store you add shows up as its own group in the app store.",
+  "app_stores_manage": "Manage stores",
+  "store_url": "Store address",
+  "store_apps_count": "{count} apps",
+  "reload_store": "Fetch this store now",
+  "store_last_source": "The last store cannot be removed — there would be nothing to install from.",
+  "store_refresh_hint": "Every store is re-read when this server starts, and again each night at 03:00. Use ⟳ to fetch one right now."
 }

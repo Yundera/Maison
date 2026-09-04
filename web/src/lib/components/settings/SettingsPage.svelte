@@ -17,6 +17,7 @@
   import { t } from '../../i18n'
   import DomainSection from './DomainSection.svelte'
   import AppEnvSection from './AppEnvSection.svelte'
+  import StoreSection from './StoreSection.svelte'
   import BackupsSection from './BackupsSection.svelte'
   import ResourcesSection from './ResourcesSection.svelte'
 
@@ -34,6 +35,10 @@
     env: {
       label: 'app_env',
       icon: 'M7 9l3 3-3 3M13 15h4',
+    },
+    store: {
+      label: 'app_stores',
+      icon: 'M4 9h16M9 9v10M4 9l2-4h12l2 4',
     },
     backups: {
       label: 'backups',
@@ -82,6 +87,8 @@
         <DomainSection />
       {:else if current === 'env'}
         <AppEnvSection />
+      {:else if current === 'store'}
+        <StoreSection />
       {:else if current === 'backups'}
         <BackupsSection />
       {:else if current === 'resources'}

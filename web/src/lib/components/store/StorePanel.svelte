@@ -36,7 +36,13 @@
   // The merged catalog: one entry per app, the copy that won the id collision.
   // The payload carries every store's copy — see StoreApp.primary — so anything
   // that must show each app once reads this rather than data.apps.
-  const catalog = $derived(data ? data.apps.filter((a) => a.primary !== false) : [])
+  // `data?.apps ?? []`, not `data ? data.apps : []`: an older server (or one whose
+  // store never synced) sends apps as null rather than [], and a guard on `data`
+  // alone passes — data is the response object, it is the field that is missing.
+  // The throw that followed happened inside a derived, mid-render, so the panel
+  // never left its loading branch and the store hung on "Loading…" forever
+  // instead of showing an empty grid. Never reach through `data` unguarded here.
+  const catalog = $derived((data?.apps ?? []).filter((a) => a.primary !== false))
   // Developers across the whole payload, not just the merged catalog: the browse
   // is grouped by store and shows every store's own copy, so a developer that only
   // appears in a non-primary copy must still be selectable.
@@ -82,9 +88,8 @@
   // Everything matching the toolbar, across every store. The store is NOT filtered
   // here — it decides which *group* an app lands in, below.
   const filtered = $derived.by(() => {
-    if (!data) return [] as StoreApp[]
     const q = search.trim().toLowerCase()
-    return data.apps.filter((a) => {
+    return (data?.apps ?? []).filter((a) => {
       if (category !== 'All' && a.category !== category) return false
       if (developer !== 'All' && a.developer !== developer) return false
       if (q && !`${a.name} ${a.tagline} ${a.category}`.toLowerCase().includes(q)) return false
@@ -118,7 +123,7 @@
     // produce duplicate keys in the featured {#each} (Svelte each_key_duplicate).
     const seen = new Set<string>()
     const out: StoreApp[] = []
-    for (const id of data.recommend) {
+    for (const id of data?.recommend ?? []) {
       const a = byId.get(id.toLowerCase())
       if (a && !seen.has(a.id)) {
         seen.add(a.id)
@@ -174,7 +179,7 @@
         <div class="toolbar">
           <select bind:value={category} aria-label={$t('category')}>
             <option value="All">{$t('category')}: {$t('all')}</option>
-            {#each data.categories as c}<option value={c}>{c}</option>{/each}
+            {#each data?.categories ?? [] as c}<option value={c}>{c}</option>{/each}
           </select>
           <select bind:value={developer} aria-label={$t('developer')}>
             <option value="All">{$t('developer')}: {$t('all')}</option>
@@ -190,7 +195,7 @@
           {/if}
           <input class="search" placeholder={$t('search_apps')} bind:value={search} />
           <div class="spacer"></div>
-          <span class="count-all">{$t('store_apps_count', { count: String(data.apps.length) })}</span>
+          <span class="count-all">{$t('store_apps_count', { count: String((data?.apps ?? []).length) })}</span>
           <!-- Managing sources is box configuration, not browsing: it lives in
                settings, and this is the way there. openSettings navigates, which
                unmounts this panel — so re-opening the store re-fetches the catalog

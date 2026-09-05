@@ -36,11 +36,18 @@ func (s *Server) handleStore(w http.ResponseWriter, _ *http.Request) {
 	// than only the one that won the id collision. Primary still marks the copy a
 	// bare id resolves to, which is what the featured row and /store/<id> use —
 	// see appstore.CatalogApp.
+	//
+	// orEmpty on every list: a store that failed to sync leaves the catalog nil, Go
+	// marshals a nil slice as `null`, and a client that reasonably expects an array
+	// then throws on the first .filter — which shows as a hung "Loading…" rather
+	// than an empty grid, because the throw happens mid-render and the loading
+	// branch never gets replaced. Having no apps is a normal state (a fresh box, an
+	// unreachable origin), so it is expressed as an empty list, not another type.
 	writeJSON(w, http.StatusOK, storeResponse{
-		Apps:       s.store.CatalogAll(),
-		Categories: s.store.Categories(),
-		Recommend:  s.store.Recommend(),
-		Sources:    s.store.Sources(),
+		Apps:       orEmpty(s.store.CatalogAll()),
+		Categories: orEmpty(s.store.Categories()),
+		Recommend:  orEmpty(s.store.Recommend()),
+		Sources:    orEmpty(s.store.Sources()),
 	})
 }
 
@@ -77,7 +84,7 @@ func (s *Server) handleStoreSources(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.Sources()})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: orEmpty(s.store.Sources())})
 }
 
 func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +142,7 @@ func (s *Server) handleRefreshStoreSource(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.store.Sources()})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: orEmpty(s.store.Sources())})
 }
 
 // decodeURL reads the {"url": …} body the source-list endpoints take, and
@@ -175,7 +182,7 @@ func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []str
 	if err := s.store.Refresh(rc); err != nil {
 		resp.Warning = err.Error()
 	}
-	resp.Sources = s.store.Sources()
+	resp.Sources = orEmpty(s.store.Sources())
 	writeJSON(w, http.StatusOK, resp)
 }
 

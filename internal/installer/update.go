@@ -12,6 +12,7 @@ import (
 
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/stackup"
 )
 
@@ -126,6 +127,15 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 			// say plainly that there is no way back.
 			res.Warning = "no rollback point could be taken, so this update cannot be undone: " + err.Error()
 			log.Printf("update %s: %s", project, res.Warning)
+			// Worth telling the owner about even though the update goes ahead: the
+			// commonest cause is a disk with no room for a second copy, which is a
+			// condition that will also break their backups.
+			in.report(incident.Report{
+				ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
+				Title:  project + " was updated without a rollback point",
+				Detail: err.Error() + "\n\nThe update went ahead, but it cannot be undone. The usual cause is not enough free disk to hold a second copy of the app.",
+				Args:   map[string]string{"app": project},
+			})
 		default:
 			res.Backup = name
 		}
@@ -159,6 +169,8 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 		return in.rollBack(ctx, project, res, err)
 	}
 	res.Applied = true
+	// A working update clears whatever the last one left behind.
+	in.resolve("app.update:" + project)
 	return res, nil
 }
 
@@ -180,6 +192,14 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 	if err := in.RollBack(context.WithoutCancel(ctx), project, res.Backup); err != nil {
 		res.Warning = "the update failed AND rolling back failed: " + err.Error()
 		log.Printf("update %s: %s", project, res.Warning)
+		// The worst state Maison can leave an app in: neither the old version nor the
+		// new one. Nothing else in this codebase is more deserving of an alert.
+		in.report(incident.Report{
+			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
+			Title:  project + " is broken after a failed update",
+			Detail: "The update failed and putting the old version back failed too:\n" + err.Error() + "\n\nThe app is in neither state and needs attention. Its previous version is in the backup named " + res.Backup + ".",
+			Args:   map[string]string{"app": project},
+		})
 		return res, fmt.Errorf("update failed and the rollback failed too (%v): %w", err, cause)
 	}
 	res.RolledBack = true

@@ -19,6 +19,63 @@ export interface EngineInfo {
   detail?: string
   /** Whether its backups survive losing the machine. The local engine's do not. */
   offsite: boolean
+  /** Whether this engine's backups are encrypted at rest. A property of the engine:
+   *  false for the local one, whose archives are plain folders and zips on the data
+   *  disk — which the settings page has to say, because an encryption-key card sitting
+   *  above a list of them reads as a promise that covers them. */
+  encrypted: boolean
+  /** Whether a key for this engine actually exists on the box. Separate from
+   *  `encrypted`: a repository engine on a box that has never been provisioned still
+   *  encrypts, it just has nothing to encrypt with yet. */
+  has_key: boolean
+  /** What this engine has been told to keep, resolved for it alone. */
+  retention?: EngineRetention
+  /** Whether the rollback point an update takes lands here. Always and only the local
+   *  engine: rolling back has to be a rename, and restoring from a repository is a
+   *  download the app stays broken for. Not a setting — a property of the mechanism. */
+  receives_rollback: boolean
+  /** Whether the nightly run writes here. */
+  receives_schedule: boolean
+  /** Whether an uninstall archives here. */
+  receives_uninstall: boolean
+  /** When this engine last actually took a backup, and whether it is failing.
+   *
+   *  Per engine because the run's own verdict cannot describe a night where one
+   *  destination succeeded and another did not — which is exactly what the page's
+   *  per-engine rows exist to show. `at` is the last SUCCESSFUL write, so an engine
+   *  that has been failing for a week does not look recent for having been tried. */
+  last_run?: { at: string; failed: boolean }
+}
+
+/** How retention resolved for one engine.
+ *
+ *  Per engine rather than once for the box because retention genuinely differs by
+ *  engine: a repository expires snapshots incrementally under its own policy, while a
+ *  local archive is a full second copy of the app folder and is counted instead. The
+ *  server resolves the layers (engine override → box → provisioned → compiled) and
+ *  sends the answer, so the page never has to reproduce that walk. */
+export interface EngineRetention {
+  /** 'smart' | 'custom' | 'count' | 'age' | 'all'. */
+  mode: string
+  keep: Retention
+  count?: number
+  max_age_days?: number
+  /** Which layer decided it: 'default' | 'provisioned' | 'box' | 'engine'. Lets the
+   *  page say "your deployment chose this" rather than presenting a number the user
+   *  never typed as though they had. */
+  source: string
+  /** Fields the deployment pinned. Rendered disabled with a reason rather than
+   *  accepted and then silently reverted overnight. */
+  locked?: string[]
+  /** Whether the engine applies this itself. The difference between "the repository
+   *  enforces it" and "Maison deletes them". */
+  self_expiring: boolean
+  /** Whether grandfather-father-son is sound for this engine's storage. False where a
+   *  backup is a full second copy rather than incremental history — 7 daily + 4 weekly
+   *  + 12 monthly would be twenty-three complete copies of an app on one disk — and
+   *  the server collapses tiers to a count there. The page reads it so it never offers
+   *  a choice the server is going to rewrite. */
+  tiered: boolean
 }
 
 export interface Retention {
@@ -38,7 +95,42 @@ export interface BackupConfig {
   minute: number
   user_data: boolean
   keep: Retention
-  keep_local: number
+
+  /* The retention block. PUT /api/backup/config replaces the WHOLE document with no
+     merge, so every field the server knows about has to be declared here — a config
+     rebuilt from a narrower type silently clears whatever it left out. That is why
+     these four are listed even though the page edits them only through the per-engine
+     tabs below. */
+
+  /** Box-wide retention intent: '' (follow the deployment) | 'smart' | 'custom' |
+   *  'count' | 'age' | 'all'. */
+  mode?: string
+  /** Read under mode 'count'. */
+  count?: number
+  /** Read under mode 'age'. */
+  max_age_days?: number
+  /** Per-engine overrides, keyed by the engine's permanent ID. Entries for engines
+   *  this build has never heard of are carried through untouched. */
+  engines?: Record<string, EngineSettings>
+}
+
+/** One engine's own settings. Every field is optional; an unset one defers to the
+ *  box-wide layer, then to the deployment, then to the compiled default. */
+export interface EngineSettings {
+  mode?: string
+  keep?: Retention
+  count?: number
+  max_age_days?: number
+  upload_limit_mb?: number
+  unmanaged?: boolean
+  /** Which triggers this engine receives.
+   *
+   *  Deliberately optional rather than defaulted: absent means "nobody has said", and a
+   *  box that has never opened this page must keep writing where it was provisioned to
+   *  rather than reading as "no destination for anything". Writing either of them for
+   *  any engine switches the whole box off that fallback. */
+  schedule?: boolean
+  uninstall?: boolean
 }
 
 /** One target's place in a run.
@@ -74,6 +166,22 @@ export interface TargetState {
   eta?: number
   started?: string
   finished?: string
+
+  /** What each destination made of this target.
+   *
+   *  One row per app rather than per (app, engine), because a row is one stop window:
+   *  the app is stopped once and every engine writes inside it. The status above is
+   *  derived from these — failed if any engine failed — so a target that half-succeeded
+   *  reads as failed while still saying which copy landed. */
+  engines?: EngineOutcome[]
+}
+
+/** One destination's outcome for one target. */
+export interface EngineOutcome {
+  engine: string
+  status: 'done' | 'failed'
+  name?: string
+  error?: string
 }
 
 export interface RunState {
@@ -118,6 +226,17 @@ export interface BackupStatus {
    *  show or mail, and the page offers neither. */
   has_key: boolean
   key_sent?: KeySentRecord
+
+  /** When the schedule last ran, and whether it was failing. Absent on a box that
+   *  has never run one.
+   *
+   *  Not derivable from `run`: that lives in the server's memory, is reset wholesale
+   *  at the start of the next run, and is empty after a restart. This is the answer
+   *  the protection line needs, and it comes off disk. */
+  last_run?: { at: string; failed: boolean }
+  /** When the schedule will fire next, including this box's jitter offset. Absent
+   *  when the schedule is off — a real state, and one worth saying out loud. */
+  next_run?: string
 }
 
 export function fetchBackupStatus(): Promise<BackupStatus> {

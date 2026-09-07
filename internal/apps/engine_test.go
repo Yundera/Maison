@@ -45,12 +45,38 @@ func newRegistry(t *testing.T) (*apps.Registry, config.Config) {
 
 // The whole point of the seam: a configured engine receives the backup, in the
 // two-pass-then-commit order the registry owns.
+// oneName is the single backup name a test with one engine expects. BackupTo returns a
+// row per destination; a test that registered one engine is entitled to say so rather
+// than indexing a slice at every call site.
+func oneName(t *testing.T, res []apps.Result, err error) (string, error) {
+	t.Helper()
+	if err != nil {
+		return "", err
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected one engine result, got %d", len(res))
+	}
+	return res[0].Name, res[0].Err
+}
+
+// setWriters points every trigger at one engine — what SetWriter used to mean, which is
+// still what a test wanting "backups go here" is asking for.
+func setWriters(set *backup.Set, ids ...string) error {
+	for _, t := range apps.Triggers {
+		if err := set.SetWriters(t, ids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestBackupUsesTheConfiguredEngine(t *testing.T) {
 	r, _ := newRegistry(t)
 	fake := backuptest.NewRemote("kopia")
 	r.Engines = backup.New(fake)
 
-	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	res, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	name, err := oneName(t, res, err)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -107,7 +133,8 @@ func TestBackupKeepsWhatItCommitted(t *testing.T) {
 	fake := backuptest.NewRemote("kopia")
 	r.Engines = backup.New(fake)
 
-	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	res, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	name, err := oneName(t, res, err)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -130,7 +157,8 @@ func TestBackupKeepsWhatItCommitted(t *testing.T) {
 func TestBackupWithoutAnEngineUsesTheLocalOne(t *testing.T) {
 	r, cfg := newRegistry(t)
 
-	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	res, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	name, err := oneName(t, res, err)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -219,7 +247,7 @@ func TestEstimateFollowsTheTargetEngineNotTheDefault(t *testing.T) {
 	// Default is remote; the local engine is registered and selectable as a target.
 	remote := backuptest.NewRemote("kopia")
 	set := backup.New(remote, apps.NewLocalProvider(config.Config{DataRoot: t.TempDir()}))
-	if err := set.SetWriter("kopia"); err != nil {
+	if err := setWriters(set, "kopia"); err != nil {
 		t.Fatal(err)
 	}
 	r.Engines = set
@@ -338,7 +366,7 @@ func TestUninstallDoesNotFallBackToLocalWhenTheEngineFails(t *testing.T) {
 	fake := backuptest.NewRemote("kopia")
 	fake.SnapshotErr = errors.New("repository unreachable")
 	set := backup.New(fake, apps.NewLocalProvider(cfg))
-	if err := set.SetWriter("kopia"); err != nil {
+	if err := setWriters(set, "kopia"); err != nil {
 		t.Fatal(err)
 	}
 	r.Engines = set
@@ -469,5 +497,235 @@ func TestBackupWithoutADeclarationCarriesNoExclusions(t *testing.T) {
 	}
 	if got := strings.Join(fake.Calls, " "); strings.Contains(got, "+exclude") {
 		t.Errorf("engine calls = %v, want no exclusions", fake.Calls)
+	}
+}
+
+// ── Fan-out ───────────────────────────────────────────────────────────────────────
+//
+// A backup can be written to several engines at once. These pin the parts of that
+// which are not obvious from reading the loop.
+
+// The whole reason fan-out lives inside one BackupWith rather than being a loop over
+// it: the app is stopped ONCE for every destination.
+//
+// Looping outside would stop it per engine, and worse — the first operation's deferred
+// restart would bring the app up while the second was still taking its "consistent"
+// stopped pass, producing a torn snapshot that looks fine until someone restores it.
+func TestFanOutStopsTheAppOnceForEveryEngine(t *testing.T) {
+	r, cfg := newRegistry(t)
+	local := backuptest.NewLocalLike(apps.EngineLocal)
+	remote := backuptest.NewRemote("kopia")
+	set := backup.New(local, remote)
+	if err := setWriters(set, apps.EngineLocal, "kopia"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+	_ = cfg
+
+	res, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("got %d engine results, want one per engine: %+v", len(res), res)
+	}
+	for _, got := range res {
+		if got.Err != nil {
+			t.Errorf("%s: %v", got.Engine, got.Err)
+		}
+		if got.Name == "" {
+			t.Errorf("%s produced no backup name", got.Engine)
+		}
+	}
+	// Both engines saw both passes against the SAME stamp: one backup, two destinations.
+	for _, f := range []*backuptest.Fake{local, remote} {
+		var passes int
+		var stamps = map[string]bool{}
+		for _, c := range f.Calls {
+			if strings.HasPrefix(c, "snapshot:") {
+				passes++
+				stamps[strings.Split(strings.TrimPrefix(c, "snapshot:"), "#")[0]] = true
+			}
+		}
+		if passes != 2 {
+			t.Errorf("%s saw %d snapshot passes, want 2: %v", f.ID(), passes, f.Calls)
+		}
+		if len(stamps) != 1 {
+			t.Errorf("%s was given %d stamps, want one shared across engines: %v", f.ID(), len(stamps), f.Calls)
+		}
+	}
+	if res[0].Name != res[1].Name {
+		t.Errorf("engines disagreed on the backup name: %q vs %q", res[0].Name, res[1].Name)
+	}
+}
+
+// One destination failing does not throw away the copies that landed. Losing the
+// offsite copy of an app is not a reason to also lose the local one.
+func TestFanOutKeepsTheCopiesThatSucceeded(t *testing.T) {
+	r, _ := newRegistry(t)
+	local := backuptest.NewLocalLike(apps.EngineLocal)
+	remote := backuptest.NewRemote("kopia")
+	remote.SnapshotErr = errors.New("repository unreachable")
+	set := backup.New(local, remote)
+	if err := setWriters(set, apps.EngineLocal, "kopia"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	res, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	// Not a whole-operation failure: something was written.
+	if err != nil {
+		t.Fatalf("Backup refused although the local copy succeeded: %v", err)
+	}
+	byEngine := map[string]apps.Result{}
+	for _, got := range res {
+		byEngine[got.Engine] = got
+	}
+	if got := byEngine[apps.EngineLocal]; got.Err != nil || got.Name == "" {
+		t.Errorf("local copy = %+v, want it written", got)
+	}
+	if got := byEngine["kopia"]; got.Err == nil {
+		t.Error("the unreachable repository was reported as having succeeded")
+	}
+	// And the engine that failed holds nothing: its staging was aborted.
+	if got, _ := remote.List(context.Background(), "jellyfin"); len(got) != 0 {
+		t.Error("the failed engine kept a backup it never committed")
+	}
+}
+
+// Every destination failing IS a whole-operation failure. A backup that wrote nowhere
+// and reported success would have the scheduler record a healthy run and the incident
+// register stay quiet, on a box where nothing was saved.
+func TestFanOutFailsWhenEveryEngineFails(t *testing.T) {
+	r, _ := newRegistry(t)
+	a := backuptest.NewRemote("kopia")
+	b := backuptest.NewRemote("rclone")
+	a.SnapshotErr = errors.New("repository unreachable")
+	b.SnapshotErr = errors.New("bucket denied")
+	set := backup.New(a, b)
+	if err := setWriters(set, "kopia", "rclone"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	if _, err := r.Backup(context.Background(), "jellyfin", "", false, nil); err == nil {
+		t.Fatal("a backup that wrote nowhere reported success")
+	}
+}
+
+// Nowhere to write is a refusal, not an empty success.
+func TestBackupRefusesWithNoDestination(t *testing.T) {
+	r, _ := newRegistry(t)
+	set := backup.New(backuptest.NewLocalLike(apps.EngineLocal))
+	if err := set.SetWriters(apps.TriggerSchedule, nil); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	if _, err := r.Backup(context.Background(), "jellyfin", "", false, nil); err == nil {
+		t.Fatal("a backup with no configured destination reported success")
+	}
+}
+
+// ── Fan-out uninstall ─────────────────────────────────────────────────────────────
+
+// An uninstall archived to several engines is all-or-nothing: if any destination
+// fails, the app stays installed and running and nothing is left half-done.
+//
+// The real local provider is used rather than a fake, because the thing under test is
+// its rename — the local engine TAKES the app folder, which is what makes ordering and
+// rollback load-bearing rather than academic.
+func TestUninstallRefusesWhenADestinationFails(t *testing.T) {
+	r, cfg := newRegistry(t)
+	local := apps.NewLocalProvider(cfg)
+	remote := backuptest.NewRemote("kopia")
+	remote.CommitErr = errors.New("repository unreachable")
+	set := backup.New(local, remote)
+	if err := setWriters(set, apps.EngineLocal, "kopia"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	_, err := r.Uninstall(context.Background(), "jellyfin", false, nil)
+	if err == nil {
+		t.Fatal("the uninstall went ahead although a destination failed")
+	}
+	if !strings.Contains(err.Error(), "kopia") {
+		t.Errorf("error %q does not name the destination that failed", err)
+	}
+	// The way out has to be in the message: all-or-nothing means an engine nobody can
+	// reach otherwise blocks every uninstall on the box with no hint why.
+	if !strings.Contains(err.Error(), "Settings") {
+		t.Errorf("error %q does not say how to get unstuck", err)
+	}
+	// The app is still there, with its data.
+	if _, statErr := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin", "db", "data.sqlite")); statErr != nil {
+		t.Fatalf("the app folder did not survive a refused uninstall: %v", statErr)
+	}
+	// And nothing was left in the archive for a retry to trip over.
+	if got := apps.ListBackups(cfg.BackupsDir(), "jellyfin"); len(got) != 0 {
+		t.Errorf("a refused uninstall left %d archive(s) behind: %+v", len(got), got)
+	}
+}
+
+// The consuming engine goes LAST, and once it has committed the archive IS the user's
+// data — the folder was renamed into it. Nothing after that may delete it.
+//
+// This is the case that would destroy data if the rollback were written as "undo every
+// archive this attempt wrote": the local archive is not a spare copy.
+func TestUninstallNeverRollsBackTheArchiveThatTookTheFolder(t *testing.T) {
+	r, cfg := newRegistry(t)
+	local := apps.NewLocalProvider(cfg)
+	remote := backuptest.NewRemote("kopia")
+	set := backup.New(local, remote)
+	if err := setWriters(set, apps.EngineLocal, "kopia"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	name, err := r.Uninstall(context.Background(), "jellyfin", false, nil)
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if name == "" {
+		t.Fatal("the uninstall produced no archive name")
+	}
+	// The reading engine ran first, while the folder still existed…
+	var order []string
+	for _, c := range remote.Calls {
+		if strings.HasPrefix(c, "snapshot:") {
+			order = append(order, c)
+		}
+	}
+	if len(order) == 0 {
+		t.Fatal("the repository never saw the app folder — it was consumed before it read it")
+	}
+	// …and the local archive, which took the folder, is still there.
+	got := apps.ListBackups(cfg.BackupsDir(), "jellyfin")
+	if len(got) != 1 {
+		t.Fatalf("local archives after the uninstall = %d, want the one holding the app: %+v", len(got), got)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin")); !os.IsNotExist(statErr) {
+		t.Errorf("the app folder is still in place after a committed uninstall: %v", statErr)
+	}
+}
+
+// Two engines that both take the folder cannot both have it. Refused up front rather
+// than discovered halfway through, when the second would rename a folder that the
+// first has already moved — after the point of no return.
+func TestUninstallRefusesTwoConsumingEngines(t *testing.T) {
+	r, cfg := newRegistry(t)
+	set := backup.New(apps.NewLocalProvider(cfg), backuptest.NewFake("mirror", apps.Caps{ConsumesSource: true}))
+	if err := setWriters(set, apps.EngineLocal, "mirror"); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	_, err := r.Uninstall(context.Background(), "jellyfin", false, nil)
+	if err == nil || !strings.Contains(err.Error(), "only one") {
+		t.Fatalf("Uninstall error = %v, want a refusal naming the conflict", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin")); statErr != nil {
+		t.Errorf("the app folder was touched by a refused uninstall: %v", statErr)
 	}
 }

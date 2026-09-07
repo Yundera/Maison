@@ -47,12 +47,14 @@
    *  swallowed: BackupRows falls back to naming the engine itself, and a status call
    *  that did not answer must not turn a working list of backups into an error. */
   let engineNames = $state<Record<string, string>>({})
-  /** The engines this backup could be written to, and which one is the default. */
+  /** The engines this backup could be written to, and which of them the settings send
+   *  a scheduled backup to. */
   let engineList = $state<EngineInfo[]>([])
-  let defaultEngine = $state('')
-  /** Where "Back up now" will write. Empty means the default — kept as the empty
-   *  string rather than resolved to an ID so that a box whose default changes while
-   *  this panel is open still follows it. */
+  let scheduled = $state<EngineInfo[]>([])
+  /** Where "Back up now" will write. Empty means "wherever the settings say", which is
+   *  now a SET and may be several engines at once — kept as the empty string rather
+   *  than resolved to IDs so that a box whose settings change while this panel is open
+   *  still follows them. Picking an engine narrows this one run to it. */
   let target = $state('')
 
   /** Which engine's backups are being LOOKED at. Deliberately separate from `target`
@@ -66,8 +68,12 @@
         (s.engines ?? []).filter((e) => e.name).map((e) => [e.id, e.name!]),
       )
       engineList = s.engines ?? []
-      defaultEngine = s.active
-      if (!engineList.some((e) => e.id === tab)) tab = s.active || engineList[0]?.id || ''
+      scheduled = engineList.filter((e) => e.receives_schedule)
+      // Open on an engine the schedule writes to — the one the user is most likely to
+      // be asking about — falling back to the first registered.
+      if (!engineList.some((e) => e.id === tab)) {
+        tab = scheduled[0]?.id || engineList[0]?.id || ''
+      }
     })
     .catch(() => {})
 
@@ -133,18 +139,26 @@
        box with a single engine the control would be a select with one option, which
        tells the user nothing and implies a decision that does not exist.
 
-       This is a target for this run, NOT a preference the app keeps. The nightly run,
-       an uninstall and the update rollback point all keep writing to the default
-       engine — so "back up a copy locally before I try something" cannot quietly
-       become "this app stopped going offsite". -->
+       The default is everywhere the nightly run writes, so backing an app up by hand
+       means the same thing as the run that happens at night — which is what someone
+       pressing this button is asking for.
+
+       Narrowing it is a target for THIS RUN, NOT a preference the app keeps. The
+       nightly run, an uninstall and the update rollback point all keep going wherever
+       the settings send them — so "back up a copy locally before I try something"
+       cannot quietly become "this app stopped going offsite". -->
   {#if engineList.length > 1}
     <label class="opt">
       <span>{$t('backup_target')}</span>
       <select bind:value={target} disabled={busy || running}>
         <option value="">
-          {$t('backup_target_default', {
-            engine: engineLabel(defaultEngine, engineNames[defaultEngine], (k) => $t(k)),
-          })}
+          {#if scheduled.length === 1}
+            {$t('backup_target_default', {
+              engine: engineLabel(scheduled[0].id, scheduled[0].name, (k) => $t(k)),
+            })}
+          {:else}
+            {$t('backup_target_everywhere', { count: String(scheduled.length) })}
+          {/if}
         </option>
         {#each engineList as e (e.id)}
           <option value={e.id}>{engineLabel(e.id, e.name, (k) => $t(k))}</option>
@@ -223,7 +237,10 @@
         onclick={() => (tab = e.id)}
       >
         {engineLabel(e.id, e.name, (k) => $t(k))}
-        {#if e.id === defaultEngine}
+        <!-- Marks every engine the nightly run writes to, not "the" one: there can be
+             several, and which of them a tab is looking at is the thing the strip cannot
+             otherwise say. -->
+        {#if e.receives_schedule}
           <span class="badge">{$t('backup_engine_active')}</span>
         {/if}
       </button>
@@ -273,7 +290,7 @@
   }
   .tab.on {
     color: var(--text);
-    border-bottom-color: var(--accent, var(--text));
+    border-bottom-color: var(--primary);
   }
   .badge {
     font-size: 0.68rem;

@@ -112,11 +112,22 @@ type Provider interface {
 // assembles them without a cycle.
 //
 // The distinction the interface encodes is the one everything else depends on:
-// Writer is a *choice*, and only new backups follow it. List and Locate answer
+// Writers is a *choice*, and only new backups follow it. List and Locate answer
 // "where is this backup", which must not depend on that choice — otherwise
 // switching engine strands everything the previous one wrote.
 type Engines interface {
-	Writer() Provider
+	// Writers is every engine a trigger writes to, in a stable order.
+	//
+	// Plural because engines are independent destinations, not alternatives: a backup
+	// can land in the local archive and a repository at once, and each engine says for
+	// itself which triggers it receives. It replaced a single Writer(), which was the
+	// last thing making engines mutually exclusive for writing while they had always
+	// been independent for reading.
+	//
+	// An empty result is a real answer — nothing is configured to receive this trigger
+	// — and callers must treat it as a refusal rather than backing up nowhere and
+	// reporting success.
+	Writers(t Trigger) []Provider
 	// Get resolves one engine by ID, for a caller that names its target — a manual
 	// backup aimed at an engine other than the default.
 	Get(id string) (Provider, bool)
@@ -174,7 +185,55 @@ type Caps struct {
 	// Retention is true when the engine applies its own retention policy, so Maison
 	// configures the tiers instead of deleting backups itself.
 	Retention bool
+
+	// ConsumesSource is true when this engine can TAKE the app folder rather than read
+	// it — the local engine's uninstall path, which is an atomic rename (see
+	// SnapshotOpts.Consume).
+	//
+	// It is a declared capability rather than something inferred after the fact,
+	// because a fan-out uninstall has to know BEFORE it starts which engine will take
+	// the folder: that engine must go last, it is the point of no return, and at most
+	// one engine in a set may have it. Inferring it afterwards from whether the folder
+	// still exists cannot say *which* engine took it, which is the difference between
+	// restarting an app and restarting it on an empty directory.
+	ConsumesSource bool
+
+	// Encrypted is true when this engine's backups are encrypted at rest.
+	//
+	// A property of the engine, not of the box: an engine that encrypts still encrypts
+	// on a box whose repository has not been provisioned yet — it simply has no key
+	// there. Conflating the two says "not encrypted" about a repository engine that is
+	// merely unconfigured, and says nothing at all about the local engine, whose
+	// archives are plain folders and always will be. The settings page states both, so
+	// it needs both answers separately.
+	Encrypted bool
 }
+
+// Trigger is what caused a backup, and therefore which engines receive it.
+//
+// It is deliberately not "the default engine plus some exceptions": each engine states
+// which triggers it takes, so a box can archive uninstalls locally where they are
+// instant while sending the nightly run offsite, and neither choice implies the other.
+//
+// The update rollback point is NOT a trigger. It is always the local engine because
+// rolling back has to be a rename — restoring from a repository is a download, and the
+// app stays broken for its duration — so it is a property of the mechanism rather than
+// a preference anyone gets to express. See server.BackupBeforeUpdate.
+type Trigger string
+
+const (
+	// TriggerSchedule is the nightly run, and the default for a manual "Back up now"
+	// — a backup by hand should mean the same thing as the one that runs at night.
+	TriggerSchedule Trigger = "schedule"
+
+	// TriggerUninstall is the archive an uninstall leaves behind. Separate from the
+	// schedule because the trade is different: it is the only copy of an app nobody
+	// is going to notice is missing until they want it back.
+	TriggerUninstall Trigger = "uninstall"
+)
+
+// Triggers is every trigger there is, for callers that have to cover all of them.
+var Triggers = []Trigger{TriggerSchedule, TriggerUninstall}
 
 // SnapshotOpts carries the per-call knobs the registry passes down.
 type SnapshotOpts struct {

@@ -37,8 +37,8 @@ func TestReadingIgnoresTheSelectedEngine(t *testing.T) {
 	remote.Seed("jellyfin", newer)
 
 	s := New(local, remote)
-	if err := s.SetWriter("kopia"); err != nil {
-		t.Fatalf("SetWriter: %v", err)
+	if err := s.SetWriters(apps.TriggerSchedule, []string{"kopia"}); err != nil {
+		t.Fatalf("SetWriters: %v", err)
 	}
 
 	// Selected engine is kopia, but the local archive must still be listed...
@@ -181,13 +181,13 @@ func TestDeleteUnknownBackupIsAnError(t *testing.T) {
 // Writing somewhere other than where the user asked is how someone ends up
 // believing their data is offsite when it is not, so an unknown engine must be a
 // refusal rather than a fallback.
-func TestSetWriterRefusesUnknownEngine(t *testing.T) {
+func TestSetWritersRefusesUnknownEngine(t *testing.T) {
 	s := New(backuptest.NewLocalLike(apps.EngineLocal))
-	if err := s.SetWriter("kopia"); err == nil {
-		t.Fatal("SetWriter accepted an unregistered engine")
+	if err := s.SetWriters(apps.TriggerSchedule, []string{"kopia"}); err == nil {
+		t.Fatal("SetWriters accepted an unregistered engine")
 	}
-	if got := s.Writer().ID(); got != apps.EngineLocal {
-		t.Fatalf("Writer = %q after a refused SetWriter, want it unchanged (%q)", got, apps.EngineLocal)
+	if got := writerID(s); got != apps.EngineLocal {
+		t.Fatalf("writer = %q after a refused SetWriters, want it unchanged (%q)", got, apps.EngineLocal)
 	}
 }
 
@@ -195,7 +195,7 @@ func TestSetWriterRefusesUnknownEngine(t *testing.T) {
 // local engine the default without anyone having to configure it.
 func TestFirstRegisteredEngineIsTheDefaultWriter(t *testing.T) {
 	s := New(backuptest.NewLocalLike(apps.EngineLocal), backuptest.NewRemote("kopia"))
-	if got := s.Writer().ID(); got != apps.EngineLocal {
+	if got := writerID(s); got != apps.EngineLocal {
 		t.Fatalf("default Writer = %q, want %q", got, apps.EngineLocal)
 	}
 }
@@ -532,4 +532,13 @@ func expireListings(s *Set) {
 		l.at = time.Time{}
 		l.mu.Unlock()
 	}
+}
+
+// writerID is the first engine the schedule writes to, for a test that set up one.
+func writerID(s *Set) string {
+	w := s.Writers(apps.TriggerSchedule)
+	if len(w) == 0 {
+		return ""
+	}
+	return w[0].ID()
 }

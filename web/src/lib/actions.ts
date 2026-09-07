@@ -10,3 +10,13 @@ export function clickOutside(node: HTMLElement, handler: () => void) {
     },
   }
 }
+
+/** Svelte action: focus the node when it mounts, and select what is in it.
+ *
+ * For a field that replaces a label in place: the click that opened it is the
+ * user asking to type, so the caret has to be there already, and the text it was
+ * prefilled with is what they are most likely replacing wholesale. */
+export function autofocus(node: HTMLInputElement) {
+  node.focus()
+  node.select()
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/notify"
 )
 
@@ -82,6 +83,17 @@ type Config struct {
 	// the kill switch if it ever misbehaves in the field.
 	BackupEngineContainer string
 
+	// Report raises an entry in the box's incident register (internal/incident).
+	//
+	// A closure on Config, like Domains and AppEnv above, and for a related reason:
+	// internal/stackup is package-level functions with no receiver to hang a hook on,
+	// but every one of them already takes a Config. The alternative was a package-level
+	// variable, which is the same coupling with none of the wiring visible.
+	//
+	// nil means the feature is unwired (a Config built outside the server), and
+	// nothing is ever reported.
+	Report func(r incident.Report)
+
 	// SMTP is the mail transport the deployment provides, read from SMTP_* at boot.
 	// It is the layer *below* whatever the box itself has configured — see
 	// usersettings.Settings.EffectiveSMTP — and reaches Maison already resolved
@@ -90,6 +102,13 @@ type Config struct {
 	// Read once, unlike Domains and AppEnv, because these are process environment
 	// rather than a file the deployment rewrites while Maison runs.
 	SMTP notify.SMTP
+}
+
+// ReportIncident is Report, tolerating a Config that never wired it.
+func (c Config) ReportIncident(r incident.Report) {
+	if c.Report != nil {
+		c.Report(r)
+	}
 }
 
 // appEnv is AppEnv, tolerating a Config that never wired it.

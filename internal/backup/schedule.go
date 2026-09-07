@@ -16,9 +16,10 @@ import (
 	"time"
 
 	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/backup/retention"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
-	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/incident"
 )
 
 // Kind distinguishes the two things a run backs up. They are genuinely different —
@@ -104,6 +105,15 @@ type TargetState struct {
 	Status string `json:"status"` // pending | running | done | failed
 	Err    string `json:"error,omitempty"`
 
+	// Engines is what each destination made of this target.
+	//
+	// One ROW per app, not per (app, engine), because a row is one stop window: the app
+	// is stopped once and every engine writes inside it, so splitting the row would
+	// claim an outage per destination that does not happen. The verdict above is derived
+	// from these — failed if any engine failed — so "3 of 9" still counts apps, which is
+	// what the user is waiting for.
+	Engines []EngineResult `json:"engines,omitempty"`
+
 	// Live progress, meaningful while Status is running. Phase is the engine-agnostic
 	// step (apps.PhaseCopy, PhaseSync, …) and is what makes "the app is stopped right
 	// now" visible; the rest is what apps.Tracker derived from whatever the engine
@@ -119,6 +129,20 @@ type TargetState struct {
 
 	Started  time.Time `json:"started,omitempty"`
 	Finished time.Time `json:"finished,omitempty"`
+}
+
+// EngineResult is one destination's outcome for one target.
+//
+// It exists because a backup can now land in several engines at once and they do not
+// agree: a repository can be unreachable while the local archive is written perfectly,
+// and a single Status/Err per target could only ever report one of those. The engine is
+// also what the name belongs to — the local engine's zip mode produces "<stamp>.zip"
+// where every other case is "<stamp>".
+type EngineResult struct {
+	Engine string `json:"engine"`
+	Status string `json:"status"` // done | failed
+	Name   string `json:"name,omitempty"`
+	Err    string `json:"error,omitempty"`
 }
 
 // RunState is a snapshot of the current or last run, for the settings page.
@@ -183,21 +207,27 @@ type Scheduler struct {
 	// Nil means "never", which is only right in a test.
 	RestoreInProgress func() bool
 
-	// Now, Backup and Notify exist so the sequencing — which target, in what order,
-	// what happens when one fails, and who gets told — can be tested without a clock,
-	// an engine, or an SMTP server. Nil means the real thing.
+	// Now and Backup exist so the sequencing — which target, in what order, and what
+	// happens when one fails — can be tested without a clock or an engine. Nil means
+	// the real thing.
 	Now    func() time.Time
-	Backup func(ctx context.Context, t Target) (string, error)
-	Notify func(subject, body string) error
+	Backup func(ctx context.Context, t Target) ([]apps.Result, error)
 
-	// Mail resolves the transport that notification goes out on. A hook rather than a
-	// settings store, because the scheduler needs one answer and not a dependency on
-	// where the answer is kept — which changed once already, when the mail
-	// configuration moved out of backup.json and into settings.json.
+	// Report and Resolve hand the run's outcome to the box's incident register
+	// (internal/incident), which owns everything about telling anyone: whether this is
+	// news, how it is worded, how it is grouped with whatever else is wrong, and how
+	// that survives a restart.
 	//
-	// Nil means the deployment's relay with no box-level override, which is what a
-	// test and a standalone install both want.
-	Mail func() notify.SMTP
+	// The schedule used to own all of that itself, and asserting the outcome
+	// unconditionally instead is the point of the move: deciding "have I already said
+	// this?" in every subsystem is how a box ends up with several notifiers that each
+	// get it slightly wrong. Nil means nobody is listening, which is what a test and a
+	// standalone install both want.
+	//
+	// Function fields rather than a *incident.Store for the same reason Mail used to
+	// be one: the schedule needs two operations, not a collaborator.
+	Report  func(r incident.Report)
+	Resolve func(id string)
 
 	mu    sync.Mutex
 	state RunState
@@ -238,6 +268,25 @@ func (s *Scheduler) State() RunState {
 	st.Ran = !st.Finished.IsZero()
 	st.Targets = append([]TargetState(nil), s.state.Targets...)
 	return st
+}
+
+// NextRun is when the schedule will fire next, or the zero time when it is off.
+//
+// It includes this box's jitter, because a bare hh:mm would be a promise Maison does
+// not keep: the offset is up to half an hour and is what stops a fleet stampeding one
+// bucket. It also reports the catch-up instant on a box that missed its window,
+// rather than tomorrow's — which is the case where the honest answer differs most
+// from the configured one.
+func (s *Scheduler) NextRun() time.Time {
+	conf := s.store.Get()
+	if !conf.Enabled {
+		return time.Time{}
+	}
+	now := s.now()
+	if s.missedARun(conf) {
+		return now.Add(time.Minute)
+	}
+	return now.Add(untilNext(now, conf.Hour, conf.Minute) + s.jitter())
 }
 
 // Reload tells a running schedule that the configured time has changed, so an edit
@@ -291,17 +340,26 @@ func (s *Scheduler) Targets() []Target {
 	return out
 }
 
-func (s *Scheduler) canBackUpUserData() bool {
+// canBackUpUserData reports whether any engine the schedule writes to can hold the
+// user-data set.
+//
+// The set does not fan out: unlike an app folder it is measured in terabytes, and
+// writing it twice is a different proposition from writing an app twice. It goes to the
+// first scheduled engine that can take it — the local one deliberately cannot, since its
+// archives live inside the very tree it would be copying.
+func (s *Scheduler) userDataEngine() UserDataEngine {
 	if s.set == nil {
-		return false
+		return nil
 	}
-	w := s.set.Writer()
-	if w == nil {
-		return false
+	for _, p := range s.set.Writers(apps.TriggerSchedule) {
+		if e, ok := p.(UserDataEngine); ok {
+			return e
+		}
 	}
-	_, ok := w.(UserDataEngine)
-	return ok
+	return nil
 }
+
+func (s *Scheduler) canBackUpUserData() bool { return s.userDataEngine() != nil }
 
 // skip reports whether an app directory must be left out of a scheduled run.
 //
@@ -365,11 +423,9 @@ func (s *Scheduler) RunAll(ctx context.Context) error {
 			break
 		}
 		s.beginTarget(i, t)
-		name, err := s.backupOne(ctx, t, s.targetProgress(i))
-		s.endTarget(i, name, err)
+		res, err := s.backupOne(ctx, t, s.targetProgress(i))
+		s.endTarget(i, res, err)
 	}
-
-	prev, hadPrev := s.readLastRun()
 
 	s.mu.Lock()
 	s.state.Running = false
@@ -381,7 +437,7 @@ func (s *Scheduler) RunAll(ctx context.Context) error {
 
 	failed := failures > 0
 	s.writeLastRun(failed)
-	s.notifyOutcome(prev, hadPrev, failed)
+	s.reportOutcome(failed)
 
 	if failed {
 		return fmt.Errorf("%d of %d backup targets failed", failures, len(targets))
@@ -389,7 +445,7 @@ func (s *Scheduler) RunAll(ctx context.Context) error {
 	return nil
 }
 
-func (s *Scheduler) backupOne(ctx context.Context, t Target, emit func(TargetState)) (string, error) {
+func (s *Scheduler) backupOne(ctx context.Context, t Target, emit func(TargetState)) ([]apps.Result, error) {
 	if s.Backup != nil {
 		return s.Backup(ctx, t)
 	}
@@ -399,13 +455,13 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target, emit func(TargetSta
 		// counts against retention, so it can push out the good one the user is in the
 		// middle of restoring from. Skipping one night is the cheap side of this trade.
 		if s.RestoreInProgress != nil && s.RestoreInProgress() {
-			return "", skip("skipped: a restore of the user-data set is in progress")
+			return nil, skip("skipped: a restore of the user-data set is in progress")
 		}
 		// User data has no containers and no compose project, so it does not go
 		// through the app registry at all.
-		src, ok := s.set.Writer().(UserDataEngine)
-		if !ok {
-			return "", fmt.Errorf("engine %s cannot back up user data", s.set.Writer().ID())
+		src := s.userDataEngine()
+		if src == nil {
+			return nil, fmt.Errorf("no backup engine set to run on a schedule can hold your files")
 		}
 		// User data has no tile, so this run panel is the only place its progress can
 		// appear — which is why the emit matters more here than anywhere else: it is
@@ -417,35 +473,48 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target, emit func(TargetSta
 		// tracker for the tile, and a second one would derive a second, slightly
 		// different ETA for the same bytes.
 		tr := &apps.Tracker{}
-		return src.BackupUserData(ctx, s.now().Format(apps.StampLayout), func(ev apps.Event) {
+		name, err := src.BackupUserData(ctx, s.now().Format(apps.StampLayout), func(ev apps.Event) {
 			p := tr.Observe(apps.PhaseCopy, ev.Pct, ev.Done, ev.Total)
 			emit(TargetState{
 				Phase: apps.PhaseCopy, Message: ev.Message, Pct: p.Pct,
 				Done: ev.Done, Total: ev.Total, Rate: p.Rate, ETA: int(p.ETA.Seconds()),
 			})
 		})
+		if err != nil {
+			return nil, err
+		}
+		return []apps.Result{{Engine: src.(apps.Provider).ID(), Name: name}}, nil
 	}
 	if s.apps == nil {
-		return "", fmt.Errorf("docker unavailable")
+		return nil, fmt.Errorf("docker unavailable")
 	}
 	conf := s.store.Get()
 	// Reapplied before every backup rather than once at setup: the policy lives in
 	// the engine's repository, so it outlives a Maison reinstall — and a Maison bug
 	// can leave a stale one behind. It is idempotent and costs one call.
-	if re, ok := s.set.Writer().(RetentionEngine); ok {
-		if err := re.EnsureRetention(ctx, t.App, conf.Keep); err != nil {
-			log.Printf("backup: setting retention for %s: %v", t.App, err)
+	//
+	// Per destination, and with that destination's own resolved policy: engines differ
+	// in what expiry their storage can survive, so one set of tiers pushed into all of
+	// them would be wrong for at least one. See backupconfig.Config.Effective.
+	for _, p := range s.set.Writers(apps.TriggerSchedule) {
+		re, ok := p.(RetentionEngine)
+		if !ok {
+			continue
+		}
+		res := conf.Effective(p.ID(), backupconfig.Provisioned{})
+		if err := re.EnsureRetention(ctx, t.App, res.Keep); err != nil {
+			log.Printf("backup: setting retention for %s in %s: %v", t.App, p.ID(), err)
 		}
 	}
-	// The empty engine is the default one, deliberately: the nightly run is exactly
-	// the case with nobody there to pick a target, and it is what the "default engine"
-	// setting means. A manual backup can name another engine; this cannot.
+	// The empty engine means "wherever the settings say", deliberately: the nightly run
+	// is exactly the case with nobody there to pick, and it may now be several engines
+	// at once. A manual backup can narrow it to one; this cannot.
 	//
 	// Tracked, so the app's own tile carries the same bar it would if the user had
 	// backed this app up from its Backups tab. It went through the untracked Backup
 	// for a long time, which meant that pressing "Back up now" left every tile on the
 	// box inert while the work was happening on them.
-	name, err := s.apps.BackupTracked(ctx, t.App, "", false, func(ev apps.BackupEvent) {
+	res, err := s.apps.BackupTracked(ctx, t.App, "", false, func(ev apps.BackupEvent) {
 		emit(TargetState{
 			Phase: ev.Phase, Message: ev.Message, Pct: ev.TrackPct(),
 			Done: ev.Done, Total: ev.Total, Rate: ev.Rate, ETA: ev.ETA,
@@ -457,12 +526,15 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target, emit func(TargetSta
 		// failure would mail the operator about a box where the app has, in fact,
 		// just been backed up.
 		if errors.Is(err, apps.ErrBackupInFlight) {
-			return "", skip("skipped: %v", err)
+			return nil, skip("skipped: %v", err)
 		}
-		return "", err
+		// Every destination failed, or the operation never started. A partial failure
+		// comes back with err nil and the detail in res, so it is endTarget that decides
+		// what to call it — this branch is only the whole-operation refusal.
+		return res, err
 	}
-	s.pruneLocal(ctx, t.App, conf.KeepLocal)
-	return name, nil
+	s.pruneLocal(t.App, conf)
+	return res, nil
 }
 
 // UserDataEngine is implemented by engines that can back up the user-data set.
@@ -482,48 +554,37 @@ type RetentionEngine interface {
 	EnsureRetention(ctx context.Context, app string, keep backupconfig.Keep) error
 }
 
-// pruneLocal trims an app's on-disk archives to the configured count.
+// pruneLocal expires an app's on-disk archives under the local engine's own retention.
 //
-// Local archives are Maison's to manage — they cost real disk rather than a remote
-// quota, and no engine policy governs them.
+// Local archives are Maison's to expire whatever the writer engine is: the local
+// provider declares Caps.Retention false — there is no policy engine to delegate to —
+// and this runs after every app target because the local directory also accumulates
+// the rollback points an update takes (installer.BackupBeforeUpdate, which is always
+// local because a rollback has to be a rename). Nothing else ever deletes them.
 //
-// The floor is what makes this safe. Keeping zero local copies is only meaningful
-// when something else holds the backup, so at N=0 an archive is deleted only once
-// another engine has been asked and has actually listed it. "The upload command
-// exited 0" is not the same as "the backup is there", and this is the one place in
-// Maison where being wrong about that destroys the only copy.
-func (s *Scheduler) pruneLocal(ctx context.Context, app string, keep int) {
+// The policy comes from Config.Effective for the local engine specifically, not from
+// the box-wide tiers. Both floors that used to be spelled out here now belong to the
+// planner and to that resolution:
+//
+//   - retention.Plan never drops the newest backup, whatever the policy says. That
+//     replaces the old "keep N local, and at N=0 only delete what another engine has
+//     actually listed" dance: keeping zero locally is no longer expressible, and it
+//     was never right for the rollback point anyway.
+//   - Effective degrades tiers to a count for this engine, because a local archive is
+//     a full second copy rather than incremental history. See the comment there.
+func (s *Scheduler) pruneLocal(app string, conf backupconfig.Config) {
 	local := apps.ListBackups(s.cfg.BackupsDir(), app)
-	if len(local) <= keep {
-		return
-	}
-	for _, b := range local[keep:] {
-		if keep == 0 && !s.heldElsewhere(ctx, app, b.Name) {
-			continue
-		}
+	// RetentionSnapshot: a local archive is a self-contained folder or zip, so any
+	// generation may be dropped without breaking the ones around it.
+	_, drop := retention.Plan(
+		s.now(), local, apps.RetentionSnapshot,
+		conf.Effective(apps.EngineLocal, backupconfig.Provisioned{}),
+	)
+	for _, b := range drop {
 		if err := apps.DeleteBackup(s.cfg.BackupsDir(), app, b.Name); err != nil {
 			log.Printf("backup: pruning local archive %s/%s: %v", app, b.Name, err)
 		}
 	}
-}
-
-// heldElsewhere asks every non-local engine whether it actually has this backup.
-func (s *Scheduler) heldElsewhere(ctx context.Context, app, name string) bool {
-	for _, p := range s.set.providers() {
-		if p.ID() == apps.EngineLocal {
-			continue
-		}
-		got, err := p.List(ctx, app)
-		if err != nil {
-			continue
-		}
-		for _, b := range got {
-			if b.Name == name {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (s *Scheduler) beginTarget(i int, t Target) {
@@ -553,12 +614,22 @@ func (s *Scheduler) targetProgress(i int) func(TargetState) {
 	}
 }
 
-func (s *Scheduler) endTarget(i int, name string, err error) {
+func (s *Scheduler) endTarget(i int, res []apps.Result, err error) {
 	s.mu.Lock()
 	if i < len(s.state.Targets) {
 		t := &s.state.Targets[i]
 		t.Finished = s.now()
-		t.Name = name
+		t.Engines = engineResults(res)
+		// The row's name is whichever destination produced one. They agree except in
+		// spelling — the local engine's zip mode adds ".zip" — and the row needs a name
+		// to show, not a set of them; the per-engine names are on Engines above.
+		t.Name = ""
+		for _, e := range t.Engines {
+			if e.Name != "" {
+				t.Name = e.Name
+				break
+			}
+		}
 		t.Err = errText(err)
 		t.Status = StatusDone
 		switch {
@@ -566,6 +637,14 @@ func (s *Scheduler) endTarget(i int, name string, err error) {
 			t.Status = StatusSkipped
 		case err != nil:
 			t.Status = StatusFailed
+		default:
+			// A partial failure is a failure. Something was written, and the row says so
+			// in its engines, but the destination the user is missing is the fact worth
+			// alerting on — reporting the target as done because *a* copy landed is how
+			// a repository stops receiving anything and nobody hears about it.
+			if e := firstEngineErr(t.Engines); e != "" {
+				t.Status, t.Err = StatusFailed, e
+			}
 		}
 		// A finished target keeps no live progress: leaving a rate and an ETA on a row
 		// that is done reads as though it were still moving.
@@ -582,6 +661,34 @@ func (s *Scheduler) endTarget(i int, name string, err error) {
 	}
 	s.mu.Unlock()
 	s.changed()
+}
+
+// engineResults turns the registry's per-engine rows into the run's own, which carry a
+// status rather than an error value because they are serialised to the page.
+func engineResults(res []apps.Result) []EngineResult {
+	if len(res) == 0 {
+		return nil
+	}
+	out := make([]EngineResult, 0, len(res))
+	for _, r := range res {
+		e := EngineResult{Engine: r.Engine, Status: StatusDone, Name: r.Name}
+		if r.Err != nil {
+			e.Status, e.Err = StatusFailed, r.Err.Error()
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// firstEngineErr is the failure to put on the row, in engine order so the message names
+// a destination rather than whichever one happened to be last.
+func firstEngineErr(es []EngineResult) string {
+	for _, e := range es {
+		if e.Err != "" {
+			return e.Engine + ": " + e.Err
+		}
+	}
+	return ""
 }
 
 func (s *Scheduler) changed() {
@@ -670,6 +777,29 @@ func untilNext(now time.Time, hour, minute int) time.Duration {
 type lastRun struct {
 	At     time.Time `json:"at"`
 	Failed bool      `json:"failed"`
+
+	// Engines is the same two facts per destination, and it is what a box with more
+	// than one of them has to be judged on.
+	//
+	// The flat pair above describes the RUN — it fires once, whatever it writes to —
+	// and that was the whole answer while there was one destination. It is not any
+	// more: At is written whatever the verdict, so an engine could stop receiving
+	// anything for a month while the run kept finishing and the staleness check kept
+	// reporting a healthy box. Per engine, At is the last time that engine actually
+	// took a backup, which is the question "are my backups running" really asks.
+	//
+	// Absent in a file written before this existed, which decodes fine: the flat pair
+	// still parses, and the first run after an upgrade fills this in.
+	Engines map[string]engineRun `json:"engines,omitempty"`
+}
+
+// engineRun is one destination's last outcome.
+type engineRun struct {
+	// At is the last SUCCESSFUL write, not the last attempt. An engine that has been
+	// failing for a week must not look recent because it kept being tried.
+	At     time.Time `json:"at"`
+	Failed bool      `json:"failed"`
+	Err    string    `json:"error,omitempty"`
 }
 
 func (s *Scheduler) readLastRun() (lastRun, bool) {
@@ -684,6 +814,22 @@ func (s *Scheduler) readLastRun() (lastRun, bool) {
 	return lr, true
 }
 
+// LastRun reports when the schedule last finished and whether it failed.
+//
+// Exported for the incident detectors, which need two things this file already knows:
+// how long it has been since a run at all (a schedule that never fires is a hole no
+// per-run alert can see), and whether the box was already failing when it upgraded to
+// the register.
+//
+// The settings page reads it for the same reason the detectors do, and it is why the
+// answer comes off disk rather than out of State(): RunState lives in memory and is
+// reset wholesale at the start of the next run, so "when was my last backup" would be
+// year zero on a box that has rebooted and blank while a run is in flight.
+func (s *Scheduler) LastRun() (at time.Time, failed, ok bool) {
+	lr, found := s.readLastRun()
+	return lr.At, lr.Failed, found
+}
+
 func (s *Scheduler) missedARun(conf backupconfig.Config) bool {
 	lr, ok := s.readLastRun()
 	if !ok {
@@ -694,7 +840,8 @@ func (s *Scheduler) missedARun(conf backupconfig.Config) bool {
 
 func (s *Scheduler) writeLastRun(failed bool) {
 	_ = os.MkdirAll(s.cfg.StateDir(), 0o755)
-	b, err := json.Marshal(lastRun{At: s.now(), Failed: failed})
+	lr := lastRun{At: s.now(), Failed: failed, Engines: s.engineOutcomes()}
+	b, err := json.Marshal(lr)
 	if err != nil {
 		return
 	}
@@ -703,65 +850,102 @@ func (s *Scheduler) writeLastRun(failed bool) {
 	}
 }
 
-// notifyOutcome mails the operator when the run's health *changes*.
+// engineOutcomes summarises the run that just finished, per destination.
 //
-// One mail on the transition into failure and one on recovery — not one per failed
-// run. A nightly message becomes noise, then a filter rule, and then the failure it
-// was reporting is invisible again, which is the exact outcome this exists to
-// prevent.
+// A destination is failing if it failed for ANY target: one app that could not be
+// written is a repository that is not holding a complete copy of the box, which is the
+// thing worth saying. Its timestamp only moves when it actually took something, so an
+// engine that has been failing all week does not look recent for having been tried.
 //
-// A mail that cannot be sent is logged and swallowed: a broken SMTP configuration
-// must never turn a successful backup into a failed one.
-func (s *Scheduler) notifyOutcome(prev lastRun, hadPrev bool, failed bool) {
-	if hadPrev && prev.Failed == failed {
-		return
-	}
-	if !hadPrev && !failed {
-		return // first ever run, and it worked: nothing to announce
-	}
-	st := s.State()
-	subject, body := failureMail(s.cfg.AppDomain(), failed, st)
-	if err := s.notify(subject, body); err != nil {
-		log.Printf("backup: sending the %s notification: %v", map[bool]string{true: "failure", false: "recovery"}[failed], err)
-	}
-}
-
-func (s *Scheduler) notify(subject, body string) error {
-	if s.Notify != nil {
-		return s.Notify(subject, body)
-	}
-	return notify.Send(s.mail(), subject, body)
-}
-
-func (s *Scheduler) mail() notify.SMTP {
-	if s.Mail != nil {
-		return s.Mail()
-	}
-	return s.cfg.ProvisionedSMTP()
-}
-
-// failureMail writes what the operator actually needs: which targets failed, why,
-// and how many succeeded — so the mail itself answers "is anything backed up".
-func failureMail(domain string, failed bool, st RunState) (subject, body string) {
-	where := domain
-	if where == "" {
-		where = "your server"
-	}
-	if !failed {
-		return "Backups are working again on " + where,
-			fmt.Sprintf("The backup run that finished at %s completed with no failures.\n\n%d targets were backed up.\n",
-				st.Finished.Format(time.RFC1123), st.Done())
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "The backup run that finished at %s did not complete.\n\n", st.Finished.Format(time.RFC1123))
-	fmt.Fprintf(&b, "%d of %d targets failed:\n\n", st.Failures, st.Done())
-	for _, t := range st.Targets {
-		if t.Err != "" {
-			fmt.Fprintf(&b, "  %s\n    %s\n", t.ID, t.Err)
+// Previous outcomes are carried forward for engines this run did not touch — a target
+// list with no apps in it must not read as every engine having gone quiet.
+func (s *Scheduler) engineOutcomes() map[string]engineRun {
+	out := map[string]engineRun{}
+	if prev, ok := s.readLastRun(); ok {
+		for id, e := range prev.Engines {
+			out[id] = e
 		}
 	}
-	ok := st.Done() - st.Failures
-	fmt.Fprintf(&b, "\n%d target(s) were backed up successfully.\n", ok)
-	b.WriteString("\nThis message is sent once when backups start failing, and once when they recover.\n")
-	return "Backups are failing on " + where, b.String()
+	now := s.now()
+	for _, t := range s.State().Targets {
+		for _, e := range t.Engines {
+			cur := out[e.Engine]
+			if e.Status == StatusFailed {
+				cur.Failed, cur.Err = true, e.Err
+			} else {
+				cur.At = now
+				// Cleared only by a success, so the reason survives long enough to be read.
+				cur.Failed, cur.Err = false, ""
+			}
+			out[e.Engine] = cur
+		}
+	}
+	return out
+}
+
+// LastRunIn is when a destination last took a backup, and whether it is failing.
+//
+// The per-engine answer the staleness check needs: the run's own timestamp says only
+// that the schedule fired, which it does whether or not anything reached a given
+// repository.
+func (s *Scheduler) LastRunIn(engine string) (at time.Time, failed, ok bool) {
+	lr, found := s.readLastRun()
+	if !found {
+		return time.Time{}, false, false
+	}
+	e, has := lr.Engines[engine]
+	if !has {
+		return time.Time{}, false, false
+	}
+	return e.At, e.Failed, true
+}
+
+// reportOutcome hands the run's verdict to the incident register, every time.
+//
+// There is deliberately NO "has this changed?" check here any more. The register
+// dedups by ID and persists that across restarts, so asserting the same failure every
+// night costs nothing and tells nobody twice — and the rule that used to live here,
+// one mail on the way into failure and one on the way out, is now a property every
+// reporter on the box gets rather than one this file has to remember.
+//
+// Resolve on a healthy run is a no-op unless a failure was actually recorded, which is
+// what keeps a box whose first ever backup succeeds from announcing a recovery from
+// nothing.
+func (s *Scheduler) reportOutcome(failed bool) {
+	if !failed {
+		if s.Resolve != nil {
+			s.Resolve(incident.IDBackupRun)
+		}
+		return
+	}
+	if s.Report == nil {
+		return
+	}
+	s.Report(incident.Report{
+		ID:       incident.IDBackupRun,
+		Kind:     incident.KindBackupFailed,
+		Severity: incident.Critical,
+		Title:    "Backups are failing",
+		Detail:   failureDetail(s.State()),
+	})
+}
+
+// failureDetail writes what the owner actually needs: which targets failed, why, and
+// how many succeeded — so the alert answers "is anything backed up at all", which is
+// the only question they have.
+//
+// Pure and directly tested, like the mail composer it replaces. The subject line and
+// the box's name are the register's job now; this is only the part that needs to know
+// what a backup run is.
+func failureDetail(st RunState) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "The backup run that finished at %s did not complete.\n", st.Finished.Format(time.RFC1123))
+	fmt.Fprintf(&b, "%d of %d targets failed:\n", st.Failures, st.Done())
+	for _, t := range st.Targets {
+		if t.Err != "" {
+			fmt.Fprintf(&b, "  %s: %s\n", t.ID, t.Err)
+		}
+	}
+	fmt.Fprintf(&b, "%d target(s) were backed up successfully.\n", st.Done()-st.Failures)
+	return b.String()
 }

@@ -16,9 +16,11 @@
     addStoreSource,
     removeStoreSource,
     refreshStoreSource,
+    renameStoreSource,
     type StoreSource,
   } from '../../stores/store'
   import { t } from '../../i18n'
+  import { autofocus } from '../../actions'
 
   let sources = $state<StoreSource[]>([])
   // Apps per store URL, from the catalog — every store's own copy, including the
@@ -32,6 +34,14 @@
   // reload that never reached the origin says so instead of just stopping the
   // spinner. Cleared at the start of each action.
   let error = $state('')
+  // The URL of the row being renamed, and the text in its input. One at a time:
+  // the row turns into a field in place, so there is nowhere for a second one to
+  // go. '' means nobody is editing.
+  let editing = $state('')
+  let draft = $state('')
+  // Guards the blur handler against saving twice — committing on Enter moves focus
+  // off the input, which fires blur right behind it.
+  let committing = false
 
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -111,6 +121,50 @@
       reloading = ''
     }
   }
+
+  /** What the row shows as the store's name: the operator's, the store's own, or
+   *  the address when the store has never said what it is called. */
+  const label = (s: StoreSource) => (s.name === s.url ? bare(s.url) : s.name)
+
+  function startEdit(s: StoreSource) {
+    editing = s.url
+    // Prefilled with what is on screen rather than left empty, so a small
+    // correction to the store's own name is a small edit and not retyping it.
+    // Clearing the field is how you go back to the store's own name — see rename.
+    draft = label(s)
+  }
+
+  /** Save the name being edited. An empty field clears the custom name, which is
+   *  the only way back to the store's own; the server treats it that way too. */
+  async function rename(s: StoreSource) {
+    if (committing) return
+    const name = draft.trim()
+    // Nothing to do when the text is unchanged, and — for a store that was never
+    // renamed — when it still reads as the label we prefilled. Saving that would
+    // pin the store's current self-declared name as a custom one.
+    if (name === label(s)) {
+      editing = ''
+      return
+    }
+    committing = true
+    busy = true
+    error = ''
+    try {
+      const res = await renameStoreSource(s.url, name)
+      sources = res.sources
+      editing = ''
+    } catch (e) {
+      error = message(e)
+    } finally {
+      busy = false
+      committing = false
+    }
+  }
+
+  function cancelEdit() {
+    editing = ''
+    draft = ''
+  }
 </script>
 
 <section class="card">
@@ -126,9 +180,39 @@
       {#each sources as s (s.url)}
         <li class="row">
           <div class="meta">
-            <!-- The name the store gives itself in store.json; a store that has
-                 never been read successfully is listed by its address instead. -->
-            <span class="name">{s.name === s.url ? bare(s.url) : s.name}</span>
+            <!-- The operator's name for the store if they set one, else the name the
+                 store gives itself in store.json; a store that has never been read
+                 successfully is listed by its address instead. Click to rename —
+                 the address below is what actually identifies it, and it does not
+                 change. -->
+            {#if editing === s.url}
+              <input
+                class="rename"
+                aria-label={$t('store_name')}
+                placeholder={$t('store_name_default')}
+                bind:value={draft}
+                disabled={busy}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') rename(s)
+                  else if (e.key === 'Escape') cancelEdit()
+                }}
+                onblur={() => {
+                  // Only when this row is still the one being edited: Escape closes
+                  // the field first, and the blur that follows must not then save
+                  // the draft it just discarded — which, since cancelling empties
+                  // it, would have cleared the store's name.
+                  if (editing === s.url) rename(s)
+                }}
+                use:autofocus
+              />
+            {:else}
+              <button
+                class="name"
+                title={$t('rename_store')}
+                disabled={busy || reloading !== ''}
+                onclick={() => startEdit(s)}>{label(s)}</button
+              >
+            {/if}
             <code class="url">{bare(s.url)}</code>
           </div>
           <span class="count">
@@ -230,6 +314,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* A button so it is reachable by keyboard, styled as the text it replaced. */
+    border: none;
+    background: none;
+    padding: 0;
+    text-align: left;
+    cursor: text;
+    font-family: inherit;
+  }
+  .name:hover:not(:disabled) {
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+  }
+  .name:disabled {
+    cursor: default;
+  }
+  .rename {
+    width: 100%;
+    min-width: 0;
+    height: 1.5rem;
+    border: 1px solid var(--primary);
+    border-radius: 4px;
+    padding: 0 0.35rem;
+    font-size: 0.875rem;
+    font-family: inherit;
+    background: #fff;
+    color: var(--grey-800);
   }
   .url {
     font-size: 0.72rem;

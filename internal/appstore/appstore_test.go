@@ -422,3 +422,54 @@ func TestStoreNameComesFromTheStoreOrFallsBackToItsURL(t *testing.T) {
 		t.Errorf("StoreName = %q, want the URL %q", app.StoreName, anon.URL)
 	}
 }
+
+// A store's own name is often not the name its operator wants to read: two
+// branches of one repository ship the same store.json and are otherwise
+// indistinguishable in the source list. A custom name overrides it everywhere the
+// store is named, survives a refresh, and clearing it goes back to the store's own
+// without a re-download.
+func TestCustomStoreNameOverridesTheStoresOwn(t *testing.T) {
+	srv := newStoreServer(t, `"v1"`, storeZipNamed(t, DefaultAppsPath, "demo", "Example App Store"))
+	ctx := context.Background()
+
+	m := New([]string{srv.URL}, t.TempDir())
+	if err := m.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	m.SetNames(map[string]string{srv.URL: "  My store  "})
+	if got := m.Sources(); len(got) != 1 || got[0].Name != "My store" || !got[0].Custom {
+		t.Fatalf("Sources() = %+v, want the trimmed custom name flagged as custom", got)
+	}
+	// The catalog already in memory is relabelled: a rename is a display change and
+	// must not wait for the next nightly refresh to show up.
+	if app := m.Catalog(); len(app) != 1 || app[0].StoreName != "My store" {
+		t.Fatalf("catalog store name = %+v, want the custom name without a refresh", app)
+	}
+	if app, _, err := m.GetFrom(ctx, NewRef(srv.URL, "", "demo")); err != nil {
+		t.Fatalf("GetFrom: %v", err)
+	} else if app.StoreName != "My store" {
+		t.Errorf("GetFrom StoreName = %q, want the custom name", app.StoreName)
+	}
+
+	// A refresh reparses every app from the store, which is where a rename applied
+	// only to the live objects would be lost.
+	if err := m.RefreshStore(ctx, srv.URL); err != nil {
+		t.Fatalf("RefreshStore: %v", err)
+	}
+	if got := m.Sources(); len(got) != 1 || got[0].Name != "My store" {
+		t.Fatalf("Sources() after refresh = %+v, want the custom name kept", got)
+	}
+	if app := m.Catalog(); len(app) != 1 || app[0].StoreName != "My store" {
+		t.Fatalf("catalog store name after refresh = %+v, want the custom name kept", app)
+	}
+
+	// Cleared: back to the store's own name, still with no download.
+	m.SetNames(map[string]string{})
+	if got := m.Sources(); len(got) != 1 || got[0].Name != "Example App Store" || got[0].Custom {
+		t.Fatalf("Sources() after clearing = %+v, want the store's own name, not custom", got)
+	}
+	if app := m.Catalog(); len(app) != 1 || app[0].StoreName != "Example App Store" {
+		t.Fatalf("catalog store name after clearing = %+v, want the store's own name", app)
+	}
+}

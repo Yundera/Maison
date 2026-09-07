@@ -112,6 +112,57 @@ func (c *Client) ListProjectContainers(ctx context.Context) ([]Container, error)
 	return out, nil
 }
 
+// RunState is the part of a container's full inspect that says whether it is failing
+// rather than merely stopped.
+//
+// None of it is on the ContainerList summary, which is why it needs an inspect and why
+// only a few containers per pass are worth spending one on — see ProjectRunStates.
+type RunState struct {
+	// Restarts is Docker's own restart counter. A number that climbs between two
+	// observations is the definition of a crash loop, and it is the only signal here
+	// that separates "crashed once" from "crashing continuously".
+	Restarts int
+	// ExitCode and OOMKilled explain the last stop. OOM in particular is worth naming:
+	// it looks like an application bug from the logs and is not one.
+	ExitCode  int
+	OOMKilled bool
+}
+
+// ProjectRunStates inspects the containers of one project that are not running, and
+// returns what stopped them, keyed by service name.
+//
+// Deliberately a SUBSET. An inspect is a round-trip per container, and on a box with
+// thirty containers inspecting all of them every five minutes to learn that they are
+// all fine would be the most expensive thing the dashboard does. A container that is
+// up has nothing to say here, so only "restarting" and "exited" are asked.
+func (c *Client) ProjectRunStates(ctx context.Context, project string) (map[string]RunState, error) {
+	f := filters.NewArgs(filters.Arg("label", labelProject+"="+project))
+	list, err := c.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]RunState{}
+	for _, ct := range list {
+		if ct.State != "restarting" && ct.State != "exited" {
+			continue
+		}
+		info, err := c.cli.ContainerInspect(ctx, ct.ID)
+		if err != nil || info.State == nil {
+			continue
+		}
+		name := ct.Labels[labelService]
+		if name == "" {
+			name = ct.ID[:12]
+		}
+		out[name] = RunState{
+			Restarts:  info.RestartCount,
+			ExitCode:  info.State.ExitCode,
+			OOMKilled: info.State.OOMKilled,
+		}
+	}
+	return out, nil
+}
+
 func (c *Client) projectContainerIDs(ctx context.Context, project string) ([]string, error) {
 	f := filters.NewArgs(filters.Arg("label", labelProject+"="+project))
 	list, err := c.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: f})

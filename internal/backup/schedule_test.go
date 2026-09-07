@@ -14,6 +14,7 @@ import (
 	"github.com/yundera/maison/internal/backup/backuptest"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/incident"
 )
 
 func newScheduler(t *testing.T, appNames ...string) (*Scheduler, *backupconfig.Store) {
@@ -49,6 +50,12 @@ func seedSystemApp(t *testing.T, cfg config.Config, name string) {
 // The run enumerates apps with the same guard the on-disk paths use, so the
 // backups directory and a crashed staging folder are excluded for free rather than
 // by a second filter that can drift from it.
+// wrote is what a stubbed backup returns when it succeeded against a single engine —
+// the shape BackupTo produces, spelled once rather than at every stub.
+func wrote(name string) []apps.Result {
+	return []apps.Result{{Engine: apps.EngineLocal, Name: name}}
+}
+
 func TestTargetsSkipNonProjects(t *testing.T) {
 	s, store := newScheduler(t, "jellyfin", "immich")
 	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
@@ -107,14 +114,14 @@ func TestRunAllContinuesPastAFailure(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var ran []string
-	s.Backup = func(_ context.Context, tg Target) (string, error) {
+	s.Backup = func(_ context.Context, tg Target) ([]apps.Result, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		ran = append(ran, tg.ID())
 		if tg.App == "beta" {
-			return "", errors.New("repository unreachable")
+			return nil, errors.New("repository unreachable")
 		}
-		return "2026-01-01_000000", nil
+		return wrote("2026-01-01_000000"), nil
 	}
 
 	err := s.RunAll(context.Background())
@@ -149,10 +156,10 @@ func TestConcurrentRunIsSkippedNotQueued(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
 	var once sync.Once
-	s.Backup = func(_ context.Context, _ Target) (string, error) {
+	s.Backup = func(_ context.Context, _ Target) ([]apps.Result, error) {
 		once.Do(func() { close(started) })
 		<-release
-		return "2026-01-01_000000", nil
+		return wrote("2026-01-01_000000"), nil
 	}
 
 	done := make(chan struct{})
@@ -176,12 +183,12 @@ func TestRunStateNamesTheCurrentTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := make(chan string, 1)
-	s.Backup = func(_ context.Context, _ Target) (string, error) {
+	s.Backup = func(_ context.Context, _ Target) ([]apps.Result, error) {
 		select {
 		case seen <- s.State().Current:
 		default:
 		}
-		return "2026-01-01_000000", nil
+		return wrote("2026-01-01_000000"), nil
 	}
 	if err := s.RunAll(context.Background()); err != nil {
 		t.Fatalf("RunAll: %v", err)
@@ -263,65 +270,95 @@ func TestConfigClampsAnImpossibleSchedule(t *testing.T) {
 	}
 }
 
-// Alerting fires on a *change* of health, not once a night. A nightly message
-// becomes noise, then a filter rule, and then the failure it reports is invisible
-// again — which is the outcome the alert exists to prevent.
-func TestNotifiesOnlyWhenHealthChanges(t *testing.T) {
+// The schedule now asserts its outcome on EVERY run and lets the incident register
+// decide whether that is news. The "one mail on the way into failure, one on the way
+// out" rule this test used to pin still holds — it is pinned in internal/incident by
+// TestOnlyTheTransitionIsMailed, where it now protects every reporter on the box
+// rather than this one.
+func TestEveryRunAssertsItsOutcome(t *testing.T) {
 	s, store := newScheduler(t, "alpha")
 	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	var fail bool
-	s.Backup = func(_ context.Context, _ Target) (string, error) {
+	s.Backup = func(_ context.Context, _ Target) ([]apps.Result, error) {
 		if fail {
-			return "", errors.New("repository unreachable")
+			return nil, errors.New("repository unreachable")
 		}
-		return "2026-01-01_000000", nil
+		return wrote("2026-01-01_000000"), nil
 	}
-	var subjects []string
-	s.Notify = func(subject, _ string) error {
-		subjects = append(subjects, subject)
-		return nil
+	var calls []string
+	s.Report = func(r incident.Report) {
+		if r.ID != incident.IDBackupRun {
+			t.Errorf("report id = %q, want the one the detectors and the adoption also use", r.ID)
+		}
+		calls = append(calls, "report")
 	}
+	s.Resolve = func(id string) { calls = append(calls, "resolve:"+id) }
 
 	run := func() { _ = s.RunAll(context.Background()) }
 
-	run() // first run, healthy: nothing to announce
+	run() // healthy
 	fail = true
-	run() // broke: one alert
-	run() // still broken: silence
-	run() // still broken: silence
+	run() // broken
+	run() // still broken
 	fail = false
-	run() // recovered: one alert
+	run() // recovered
 
-	if len(subjects) != 2 {
-		t.Fatalf("sent %d mails (%v), want exactly one failure and one recovery", len(subjects), subjects)
+	want := []string{"resolve:" + incident.IDBackupRun, "report", "report", "resolve:" + incident.IDBackupRun}
+	if len(calls) != len(want) {
+		t.Fatalf("outcomes = %v, want one per run: %v", calls, want)
 	}
-	if !strings.Contains(subjects[0], "failing") {
-		t.Errorf("first mail = %q, want it to report the failure", subjects[0])
-	}
-	if !strings.Contains(subjects[1], "working again") {
-		t.Errorf("second mail = %q, want it to report the recovery", subjects[1])
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Errorf("run %d asserted %q, want %q", i, calls[i], want[i])
+		}
 	}
 }
 
 // A broken mail configuration must never turn a successful backup into a failed one.
-func TestABrokenMailerDoesNotFailTheRun(t *testing.T) {
+//
+// It used to be possible to get this wrong here, because the mailer returned an error
+// this file had to remember to discard. It no longer can: Report returns nothing, so
+// there is nothing a delivery problem could ride back on. Most of this test is now the
+// compiler — if Report ever grows an error return, it stops building.
+func TestADeliveryProblemCannotReachTheRun(t *testing.T) {
 	s, store := newScheduler(t, "alpha")
 	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	s.Backup = func(_ context.Context, _ Target) (string, error) { return "", errors.New("boom") }
-	s.Notify = func(string, string) error { return errors.New("smtp refused") }
+	s.Backup = func(_ context.Context, _ Target) ([]apps.Result, error) { return nil, errors.New("boom") }
+	s.Report = func(incident.Report) {}
 
-	// The run still reports its own failure, but the mailer's must not compound it.
-	if err := s.RunAll(context.Background()); err == nil || strings.Contains(err.Error(), "smtp") {
-		t.Fatalf("RunAll error = %v, want the backup failure, not the mail failure", err)
+	if err := s.RunAll(context.Background()); err == nil || !strings.Contains(err.Error(), "backup targets failed") {
+		t.Fatalf("RunAll error = %v, want the backup failure", err)
+	}
+}
+
+// A schedule that has not run at all is a hole no per-run alert can see, so the
+// detectors need the timestamp — and the upgrade adoption needs the flag.
+func TestLastRunReportsWhatTheDetectorsNeed(t *testing.T) {
+	s, store := newScheduler(t, "alpha")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.LastRun(); ok {
+		t.Error("a box that has never run should report no last run at all")
+	}
+	s.Backup = func(_ context.Context, _ Target) ([]apps.Result, error) { return nil, errors.New("boom") }
+	_ = s.RunAll(context.Background())
+
+	at, failed, ok := s.LastRun()
+	if !ok || at.IsZero() {
+		t.Fatalf("LastRun after a run = %v, %v, %v", at, failed, ok)
+	}
+	if !failed {
+		t.Error("a failed run should be recorded as failed, or the upgrade adoption misses it")
 	}
 }
 
 // The alert has to answer "is anything backed up", not just "something broke".
-func TestFailureMailNamesWhatFailedAndWhatDidNot(t *testing.T) {
+func TestFailureDetailNamesWhatFailedAndWhatDidNot(t *testing.T) {
 	st := RunState{
 		Finished: time.Date(2026, 3, 1, 3, 30, 0, 0, time.UTC),
 		Failures: 1,
@@ -330,17 +367,14 @@ func TestFailureMailNamesWhatFailedAndWhatDidNot(t *testing.T) {
 			{ID: "app:beta", Kind: KindApp, App: "beta", Status: StatusFailed, Err: "repository unreachable"},
 		},
 	}
-	subject, body := failureMail("john.nsl.sh", true, st)
-	if !strings.Contains(subject, "john.nsl.sh") {
-		t.Errorf("subject %q does not say which box", subject)
-	}
+	body := failureDetail(st)
 	for _, want := range []string{"app:beta", "repository unreachable", "1 target(s) were backed up successfully"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("body is missing %q:\n%s", want, body)
+			t.Errorf("detail is missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "app:alpha\n") {
-		t.Error("the body lists a target that did not fail")
+	if strings.Contains(body, "app:alpha") {
+		t.Error("the detail lists a target that did not fail")
 	}
 }
 
@@ -353,7 +387,7 @@ func TestStateDoesNotClaimARunThatNeverHappened(t *testing.T) {
 	if s.State().Ran {
 		t.Fatal("a scheduler that has never run reported that it had")
 	}
-	s.Backup = func(context.Context, Target) (string, error) { return "2026-01-01_000000", nil }
+	s.Backup = func(context.Context, Target) ([]apps.Result, error) { return wrote("2026-01-01_000000"), nil }
 	if err := s.RunAll(context.Background()); err != nil {
 		t.Fatalf("RunAll: %v", err)
 	}
@@ -427,12 +461,12 @@ func TestThePlanIsPublishedBeforeTheFirstTargetRuns(t *testing.T) {
 	// seen while the first app was still being copied.
 	var seen RunState
 	first := true
-	s.Backup = func(context.Context, Target) (string, error) {
+	s.Backup = func(context.Context, Target) ([]apps.Result, error) {
 		if first {
 			first = false
 			seen = s.State()
 		}
-		return "2026-01-01_000000", nil
+		return wrote("2026-01-01_000000"), nil
 	}
 	if err := s.RunAll(context.Background()); err != nil {
 		t.Fatalf("RunAll: %v", err)
@@ -465,7 +499,7 @@ func TestProgressUpdatesTheRunningTargetOnly(t *testing.T) {
 	}
 
 	var mid RunState
-	s.Backup = func(context.Context, Target) (string, error) { return "2026-01-01_000000", nil }
+	s.Backup = func(context.Context, Target) ([]apps.Result, error) { return wrote("2026-01-01_000000"), nil }
 	// Drive one progress report by hand: s.Backup replaces backupOne wholesale, so
 	// this exercises the bookkeeping rather than an engine.
 	s.state = RunState{Running: true, Targets: []TargetState{
@@ -494,7 +528,7 @@ func TestAFinishedTargetKeepsNoLiveProgress(t *testing.T) {
 		{ID: "app:alpha", Kind: KindApp, App: "alpha", Status: StatusRunning,
 			Phase: apps.PhaseCopy, Pct: 40, Rate: 100, ETA: 6, Message: "Copying alpha"},
 	}}
-	s.endTarget(0, "2026-01-01_000000", nil)
+	s.endTarget(0, wrote("2026-01-01_000000"), nil)
 
 	got := s.State().Targets[0]
 	if got.Status != StatusDone || got.Name != "2026-01-01_000000" || got.Pct != 100 {
@@ -517,11 +551,11 @@ func TestASkippedTargetIsNotAFailure(t *testing.T) {
 	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	s.Backup = func(_ context.Context, tg Target) (string, error) {
+	s.Backup = func(_ context.Context, tg Target) ([]apps.Result, error) {
 		if tg.App == "alpha" {
-			return "", skip("skipped: %v", apps.ErrBackupInFlight)
+			return nil, skip("skipped: %v", apps.ErrBackupInFlight)
 		}
-		return "2026-01-01_000000", nil
+		return wrote("2026-01-01_000000"), nil
 	}
 
 	if err := s.RunAll(context.Background()); err != nil {
@@ -540,5 +574,118 @@ func TestASkippedTargetIsNotAFailure(t *testing.T) {
 	}
 	if st.Done() != 2 {
 		t.Errorf("Done() = %d, want both targets accounted for", st.Done())
+	}
+}
+
+// seedArchives creates folder archives for `app` at each of the given times, as the
+// local engine's Commit would have left them.
+func seedArchives(t *testing.T, cfg config.Config, app string, at ...time.Time) {
+	t.Helper()
+	for _, when := range at {
+		dir := filepath.Join(apps.AppBackupDir(cfg.BackupsDir(), app), when.Format(apps.StampLayout))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Local archives are expired by Maison — the local provider has no policy engine to
+// delegate to — and this is the only thing that ever deletes them, including the
+// rollback points an update leaves behind.
+//
+// They are full copies of the app folder, so the local engine counts them rather than
+// keeping tiers. See backupconfig.Config.Effective.
+func TestPruneLocalKeepsTheCountAndNeverTheNewest(t *testing.T) {
+	s, store := newScheduler(t, "immich")
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+
+	// Ten archives a day apart: the last ten times this app was backed up or updated.
+	var stamps []time.Time
+	for i := range 10 {
+		stamps = append(stamps, now.AddDate(0, 0, -i))
+	}
+	seedArchives(t, s.cfg, "immich", stamps...)
+
+	// The smart preset — 7 daily / 4 weekly / 12 monthly for a repository. On disk it
+	// must mean two copies, not twenty-three.
+	if err := store.Set(backupconfig.Config{Mode: backupconfig.ModeSmart}); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneLocal("immich", store.Get())
+
+	left := apps.ListBackups(s.cfg.BackupsDir(), "immich")
+	if len(left) != 2 {
+		t.Fatalf("kept %d local archives, want 2: %+v", len(left), left)
+	}
+	// Newest first, and the newest is the one a rollback needs.
+	if left[0].Stamp != now.Format(apps.StampLayout) {
+		t.Errorf("the newest archive was pruned; kept %s", left[0].Stamp)
+	}
+}
+
+// The planner keeps the newest whatever the policy says, so there is no configuration
+// that empties the local directory. That guarantee replaced the old "keep zero
+// locally, but only once another engine has listed it" path — and it matters most for
+// the update rollback point, which is always local and has nowhere else to be.
+func TestPruneLocalNeverEmptiesTheDirectory(t *testing.T) {
+	s, store := newScheduler(t, "immich")
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	seedArchives(t, s.cfg, "immich", now.AddDate(0, 0, -400), now.AddDate(0, 0, -300))
+
+	// An age policy that every archive on disk is older than.
+	if err := store.Set(backupconfig.Config{Mode: backupconfig.ModeAge, MaxAgeDays: 1}); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneLocal("immich", store.Get())
+
+	if left := apps.ListBackups(s.cfg.BackupsDir(), "immich"); len(left) != 1 {
+		t.Fatalf("kept %d local archives, want the newest one: %+v", len(left), left)
+	}
+}
+
+// An engine that stops receiving backups must be visible even while the run keeps
+// finishing successfully to another one.
+//
+// This is the blind spot per-engine records exist to close: the run's own timestamp is
+// written whatever the verdict, so a repository could go a month without taking
+// anything while every staleness check reported a healthy box.
+func TestLastRunIsRecordedPerDestination(t *testing.T) {
+	s, store := newScheduler(t, "alpha")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 7, 4, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return at }
+	s.Report = func(incident.Report) {}
+	s.Resolve = func(string) {}
+
+	// The local copy lands; the repository does not.
+	s.Backup = func(context.Context, Target) ([]apps.Result, error) {
+		return []apps.Result{
+			{Engine: apps.EngineLocal, Name: "2026-09-07_040000"},
+			{Engine: "kopia", Err: errors.New("repository unreachable")},
+		}, nil
+	}
+	_ = s.RunAll(context.Background())
+
+	local, failed, ok := s.LastRunIn(apps.EngineLocal)
+	if !ok || failed || !local.Equal(at) {
+		t.Errorf("local last run = %v, failed=%v, ok=%v — want the successful write recorded", local, failed, ok)
+	}
+	kopiaAt, kopiaFailed, ok := s.LastRunIn("kopia")
+	if !ok || !kopiaFailed {
+		t.Errorf("kopia last run = %v, failed=%v, ok=%v — want it recorded as failing", kopiaAt, kopiaFailed, ok)
+	}
+	// And its timestamp did NOT move: it was tried, not written to.
+	if !kopiaAt.IsZero() {
+		t.Errorf("kopia's last-write time moved to %v although it wrote nothing", kopiaAt)
+	}
+
+	// A partial failure is still a failure for the run: the destination the user is
+	// missing is the fact worth alerting on.
+	if _, runFailed, _ := s.LastRun(); !runFailed {
+		t.Error("a run where one destination failed was recorded as healthy")
 	}
 }

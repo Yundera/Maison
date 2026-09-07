@@ -24,11 +24,26 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
+// backupOnce runs a backup and returns the single name it produced, for a test with
+// one engine. Fan-out gives BackupTo a row per engine; a test that set up one engine
+// is entitled to say so rather than indexing a slice at every call site.
+func backupOnce(t *testing.T, r *Registry, id string, zip bool) (string, error) {
+	t.Helper()
+	res, err := r.Backup(context.Background(), id, "", zip, nil)
+	if err != nil {
+		return "", err
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected one engine result, got %d", len(res))
+	}
+	return res[0].Name, res[0].Err
+}
+
 func TestBackupFolderSnapshotsTheApp(t *testing.T) {
 	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
-	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	name, err := backupOnce(t, r, "jellyfin", false)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -57,7 +72,7 @@ func TestBackupZipLeavesNoStagingFolder(t *testing.T) {
 	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
-	name, err := r.Backup(context.Background(), "jellyfin", "", true, nil)
+	name, err := backupOnce(t, r, "jellyfin", true)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -167,7 +182,7 @@ func TestRestoreArchivesTheStateItReplaces(t *testing.T) {
 	app := filepath.Join(appsDir, "jellyfin")
 	seedApp(t, app)
 
-	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	name, err := backupOnce(t, r, "jellyfin", false)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
@@ -483,7 +498,7 @@ func TestBackupHonoursTheAppsDeclaration(t *testing.T) {
 	r, appsDir, backupsDir := newTestRegistry(t)
 	seedExcluded(t, appsDir, "jellyfin", "cache/", "**/thumbs/")
 
-	name, err := r.Backup(context.Background(), "jellyfin", "", false, nil)
+	name, err := backupOnce(t, r, "jellyfin", false)
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}

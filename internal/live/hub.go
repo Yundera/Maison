@@ -47,6 +47,17 @@ const (
 	// process table alone is a /proc read per process on the box — and only one
 	// page ever wants it. Nothing here is sampled while that page is closed.
 	ChannelResources = "resources"
+	// ChannelIncidents carries the register of what is currently wrong with the box
+	// (see internal/incident): the badge in the top bar and the list on the
+	// notifications settings page.
+	//
+	// Its own channel because it is the only one here that is EVENT-DRIVEN. There is
+	// no sampling loop for it and there must not be: an incident changes when a
+	// detector or a reporter says so — a handful of times a week on a healthy box —
+	// and a channel that pushed the same "nothing is wrong" every two seconds would
+	// cost more than everything it reports about. The top bar also holds it for the
+	// whole session, which none of the sampled channels could survive.
+	ChannelIncidents = "incidents"
 )
 
 const sampleInterval = 2 * time.Second
@@ -84,6 +95,10 @@ type Hub struct {
 	// ResourcesSnapshot, if set, returns the host breakdown for the "resources"
 	// channel.
 	ResourcesSnapshot func() any
+
+	// IncidentsSnapshot, if set, returns the open incidents for the "incidents"
+	// channel.
+	IncidentsSnapshot func() any
 }
 
 // NewHub creates a hub sampling utilization via the given collector.
@@ -293,6 +308,15 @@ func (c *client) snapshot(h *Hub, channel string) {
 		if h.BackupSnapshot != nil {
 			if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
 				Data: mustJSON(h.BackupSnapshot())}); err == nil {
+				c.trySend(raw)
+			}
+		}
+	case ChannelIncidents:
+		// Inline, like the backup case: the payload is a copy of a small in-memory
+		// list, so there is nothing here worth taking off the read pump for.
+		if h.IncidentsSnapshot != nil {
+			if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
+				Data: mustJSON(h.IncidentsSnapshot())}); err == nil {
 				c.trySend(raw)
 			}
 		}

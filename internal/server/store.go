@@ -145,6 +145,81 @@ func (s *Server) handleRefreshStoreSource(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, sourcesResponse{Sources: orEmpty(s.store.Sources())})
 }
 
+// handleRenameStoreSource sets (or clears) the operator's own name for one store.
+//
+// A rename is display-only and local: it does not re-read the store, does not
+// touch the URL each app was installed from, and survives a refresh — see
+// appstore.Manager.SetNames. An empty name drops the override, and the store goes
+// back to whatever it calls itself in its store.json.
+//
+// PUT rather than POST because it is idempotent and addresses a value that always
+// exists — every source has a name, this replaces it. It answers with the whole
+// source list, like every other mutation here, so the panel re-renders from one
+// authoritative copy rather than patching its own row.
+func (s *Server) handleRenameStoreSource(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
+		return
+	}
+	var body struct {
+		URL  string `json:"url"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.URL) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url required"})
+		return
+	}
+	// Canonicalised on the way in for the same reason decodeURL does it: the name
+	// is keyed by URL, and a store renamed under a second spelling of its address
+	// would be a name that never applies to anything.
+	url := appstore.CanonicalURL(body.URL)
+	known := false
+	for _, u := range s.store.URLs() {
+		if u == url {
+			known = true
+			break
+		}
+	}
+	if !known {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such store source"})
+		return
+	}
+
+	name := strings.TrimSpace(body.Name)
+	if len(name) > storeNameMax {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name too long"})
+		return
+	}
+
+	names := s.store.Names()
+	if name == "" {
+		delete(names, url)
+	} else {
+		names[url] = name
+	}
+	s.store.SetNames(names)
+
+	cur := s.settings.Get()
+	// Non-nil even when empty, for the reason handleRemoveStoreSource keeps a
+	// non-nil kept list: usersettings.merge reads a nil map as "not supplied", so
+	// clearing the last custom name would leave the old one in the file and it
+	// would come back on the next boot.
+	cur.StoreNames = names
+	if cur.StoreNames == nil {
+		cur.StoreNames = map[string]string{}
+	}
+	if err := s.settings.Set(cur); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: orEmpty(s.store.Sources())})
+}
+
+// storeNameMax bounds a custom store name. Long enough for any label worth
+// reading in a list, short enough that the settings file cannot be used as
+// storage.
+const storeNameMax = 100
+
 // decodeURL reads the {"url": …} body the source-list endpoints take, and
 // canonicalises it — the single boundary where a hand-typed source enters.
 // Without that, adding a store already on the list under a different spelling

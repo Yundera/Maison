@@ -125,6 +125,9 @@ export function installApp(
 export interface StoreSource {
   url: string
   name: string
+  /** True when `name` is the operator's own, set in settings, rather than the
+   *  store's self-declared one. Absent means it is the store's. */
+  custom?: boolean
 }
 
 export interface StoreSources {
@@ -143,4 +146,10 @@ export function removeStoreSource(url: string): Promise<StoreSources> {
 }
 export function refreshStoreSource(url: string): Promise<StoreSources> {
   return api.post<StoreSources>('/api/store/sources/refresh', { url })
+}
+/** Rename one store, for display only. An empty name drops the custom name and
+ *  the store goes back to calling itself whatever its store.json says. Nothing is
+ *  re-downloaded: the rename applies to the catalog already in memory. */
+export function renameStoreSource(url: string, name: string): Promise<StoreSources> {
+  return api.put<StoreSources>('/api/store/sources/name', { url, name })
 }

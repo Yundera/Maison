@@ -22,6 +22,15 @@ type Settings struct {
 	Widgets      map[string]bool `json:"widgets"`
 	StoreSources []string        `json:"store_sources,omitempty"`
 
+	// StoreNames is the operator's own name for a store, by canonical store URL.
+	// Only renamed stores appear; a store absent from the map is displayed under
+	// the name it gives itself in its store.json, which is the default.
+	//
+	// A map beside the URL list rather than a richer StoreSources entry, so the
+	// on-disk shape of store_sources — a plain array of URLs — stays what every
+	// box already has and what an operator editing settings.json by hand expects.
+	StoreNames map[string]string `json:"store_names,omitempty"`
+
 	// Domains are the additional domains every app is published on. Empty (the
 	// default) means apps are reachable only at the deployment's primary domain,
 	// exactly as their store compose routes them.
@@ -196,6 +205,9 @@ func merge(base, in Settings) Settings {
 	}
 	if in.StoreSources != nil {
 		base.StoreSources = in.StoreSources
+	}
+	if in.StoreNames != nil {
+		base.StoreNames = in.StoreNames
 	}
 	if in.Domains != nil {
 		base.Domains = in.Domains

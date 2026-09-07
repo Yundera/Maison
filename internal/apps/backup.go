@@ -61,6 +61,17 @@ type BackupEvent struct {
 	// never set them. Zero means not yet knowable — see apps.Progress.
 	Rate float64 `json:"rate,omitempty"`
 	ETA  int     `json:"eta,omitempty"`
+
+	// Engine is which destination this event is about, and EngineIndex/Engines are its
+	// place in the set ("2 of 3"). A backup can be written to several engines in one
+	// operation, and without these the tile would show one bar restarting per engine
+	// with no way to say why.
+	//
+	// Providers never set them, the same way they never set Rate and ETA: BackupTo
+	// stamps them on the way past, because only it knows the set.
+	Engine      string `json:"engine,omitempty"`
+	EngineIndex int    `json:"engineIndex,omitempty"`
+	Engines     int    `json:"engines,omitempty"`
 }
 
 // BackupState is a snapshot of one in-flight (or failed) backup or restore. The
@@ -182,17 +193,25 @@ func (r *Registry) EstimateBackup(id, engine string, zip bool) (Estimate, error)
 	// guard is skipped entirely rather than computed and passed. This is what lets an
 	// app occupying most of its own disk be backed up at all — the local engine
 	// refuses it, because a full second copy genuinely does not fit.
-	// Against the TARGET engine, not the default. A remote engine streams and needs no
-	// local room; the local one needs a full second copy. Estimating against the
-	// default while writing somewhere else gets this exactly backwards — targeting the
-	// local engine on a kopia-default box would skip the free-space guard entirely, and
-	// filling the data disk does not merely fail the backup, it fails every app still
-	// writing to that disk.
-	target, err := r.engineFor(engine)
+	//
+	// Over the WHOLE SET this backup will be written to, not one engine of it. A
+	// backup that goes to a repository *and* the local disk still needs the room the
+	// local copy takes, and asking only the first engine gets this exactly backwards:
+	// on a repository-default box with local also ticked, the estimate would report
+	// "streamed", skip the guard, and let the local mirror fill the data disk — which
+	// does not merely fail the backup, it fails every app still writing to that disk.
+	targets, err := r.enginesFor(engine, TriggerSchedule)
 	if err != nil {
 		return Estimate{}, err
 	}
-	if !target.Caps().NeedsLocalSpace {
+	needsRoom := false
+	for _, t := range targets {
+		if t.Caps().NeedsLocalSpace {
+			needsRoom = true
+			break
+		}
+	}
+	if !needsRoom {
 		est.Free, est.Enough, est.Streamed = freeSpace(r.cfg.DataRoot), true, true
 		return est, nil
 	}
@@ -256,7 +275,10 @@ func (r *Registry) StartBackup(id, engine string, zip bool) error {
 	go func() {
 		// Deliberately not a request context: the backup must outlive the request
 		// that asked for it.
-		_, err := r.Backup(context.Background(), id, engine, zip, r.trackBackup(id, nil))
+		res, err := r.Backup(context.Background(), id, engine, zip, r.trackBackup(id, nil))
+		if err == nil {
+			err = firstErr(res)
+		}
 		r.finishBackup(id, err, "backup")
 	}()
 	return nil
@@ -313,11 +335,13 @@ func (r *Registry) StartRestore(ctx context.Context, id, engine, name string) er
 func (r *Registry) trackBackup(id string, extra func(BackupEvent)) func(BackupEvent) {
 	tr := &Tracker{}
 	return func(ev BackupEvent) {
-		// Keyed on the phase, so an estimate never spans the boundary between the live
-		// pass and the stopped one. They are different work at different speeds — and
-		// the stopped pass's ETA is how much longer the app is *down*, which is the one
-		// number here worth being careful about.
-		p := tr.Observe(ev.Phase, ev.TrackPct(), ev.Done, ev.Total)
+		// Keyed on the phase AND the engine, so an estimate never spans the boundary
+		// between the live pass and the stopped one, nor between two destinations.
+		// They are different work at different speeds — and the stopped pass's ETA is
+		// how much longer the app is *down*, which is the one number here worth being
+		// careful about. An anchor carried from one engine into the next would derive
+		// a rate from two unrelated byte streams.
+		p := tr.Observe(ev.Phase+"/"+ev.Engine, ev.TrackPct(), ev.Done, ev.Total)
 		ev.Rate, ev.ETA = p.Rate, int(p.ETA.Seconds())
 
 		r.mu.Lock()
@@ -364,14 +388,20 @@ func (ev BackupEvent) TrackPct() float64 {
 // single-app backup does. Before this existed the nightly run called Backup directly
 // with a nil emit, so a run started from Settings left every tile on the box inert —
 // the one moment the user is most likely to be watching them.
-func (r *Registry) BackupTracked(ctx context.Context, id, engine string, zip bool, extra func(BackupEvent)) (string, error) {
+func (r *Registry) BackupTracked(ctx context.Context, id, engine string, zip bool, extra func(BackupEvent)) ([]Result, error) {
 	if err := r.beginBackup(id); err != nil {
-		return "", err
+		return nil, err
 	}
 	r.changed()
-	name, err := r.Backup(ctx, id, engine, zip, r.trackBackup(id, extra))
+	res, err := r.Backup(ctx, id, engine, zip, r.trackBackup(id, extra))
+	// A partially failed backup is a failure on the tile even though something was
+	// written: the destination the user is missing is the one worth saying out loud,
+	// and finishBackup's message is the only place the tile can say it.
+	if err == nil {
+		err = firstErr(res)
+	}
 	r.finishBackup(id, err, "backup")
-	return name, err
+	return res, err
 }
 
 // ErrBackupInFlight reports that this app is already being backed up, so a second
@@ -451,30 +481,88 @@ func (r *Registry) ClearBackup(id string) {
 //
 // The restart is deferred, so a failure anywhere after the stop still brings the
 // app back up. Leaving an app down is a worse outcome than a missing backup.
-func (r *Registry) Backup(ctx context.Context, id, engine string, zip bool, emit func(BackupEvent)) (string, error) {
-	p, err := r.engineFor(engine)
+func (r *Registry) Backup(ctx context.Context, id, engine string, zip bool, emit func(BackupEvent)) ([]Result, error) {
+	ps, err := r.enginesFor(engine, TriggerSchedule)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return r.BackupWith(ctx, p, id, zip, emit)
+	return r.BackupTo(ctx, ps, id, zip, emit)
 }
 
-// BackupWith runs a backup through a named engine rather than the configured one.
+// Result is what one engine made of one backup.
+//
+// A backup can land in several engines at once and they do not agree on everything:
+// the name is engine-relative (the local engine's zip mode produces "<stamp>.zip"
+// where every other case is "<stamp>"), and one engine failing does not stop the
+// others. So the answer is a row per engine rather than a name and an error.
+type Result struct {
+	Engine string
+	Name   string
+	Err    error
+}
+
+// BackupWith runs a backup through one named engine and returns the single name it
+// produced.
 //
 // It exists for the update path, which needs a rollback point it can restore by
 // *rename*: an update is undone in the seconds after it broke something, and a
-// download is not that. Everything else should call Backup and let the user's choice
-// of engine stand.
+// download is not that. It keeps the narrow signature deliberately — that caller hands
+// the name it gets straight to RollBack, and there is exactly one engine involved, so
+// widening it would make every caller unpack a slice to find the one row it wanted.
 func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bool, emit func(BackupEvent)) (string, error) {
+	res, err := r.BackupTo(ctx, []Provider{p}, id, zip, emit)
+	if err != nil {
+		return "", err
+	}
+	if len(res) != 1 {
+		return "", fmt.Errorf("backup %s: expected one result, got %d", id, len(res))
+	}
+	return res[0].Name, res[0].Err
+}
+
+// BackupTo backs one app up to every engine given, inside a SINGLE stop window.
+//
+// That is the whole reason this is one function rather than a loop over the old
+// single-engine one. Stopping the app per engine would multiply the outage by the
+// number of destinations, and — worse — the first engine's deferred restart would
+// bring the app back up while the second was still taking its "consistent" stopped
+// pass, quietly producing a torn snapshot that looks fine until someone restores it.
+//
+// So the passes are interleaved instead of the operations:
+//
+//	pass 1    app up      each engine mirrors, in turn      (no downtime)
+//	stop      ──────────────────────────────────────────    downtime starts
+//	pass 2    app down    each engine syncs and commits
+//	start     ──────────────────────────────────────────    downtime ends
+//
+// Engines run one after another, not concurrently: they read the same tree, so the
+// local mirror and a repository upload contend for exactly the same disk during the
+// pass whose whole point is being cheap while the app is serving. The Tracker, the
+// emit callback and BackupState are also single-operation state — see trackBackup.
+//
+// An engine that fails is dropped from the later phases and reported in its Result;
+// the rest carry on. A failure is not contagious because the destinations are not:
+// losing the offsite copy of an app is not a reason to also lose the local one.
+func (r *Registry) BackupTo(ctx context.Context, ps []Provider, id string, zip bool, emit func(BackupEvent)) ([]Result, error) {
 	if emit == nil {
 		emit = func(BackupEvent) {}
 	}
 	if !projectRe.MatchString(id) {
-		return "", fmt.Errorf("invalid app name: %s", id)
+		return nil, fmt.Errorf("invalid app name: %s", id)
 	}
 	appDir := filepath.Join(r.cfg.AppsDir(), id)
 	if _, err := os.Stat(appDir); err != nil {
-		return "", fmt.Errorf("%s has no folder to back up", id)
+		return nil, fmt.Errorf("%s has no folder to back up", id)
+	}
+	// Validated before anything is touched, and certainly before the app is stopped: a
+	// nil engine discovered mid-loop would panic with the app already down.
+	if len(ps) == 0 {
+		return nil, fmt.Errorf("no backup engine to write %s to", id)
+	}
+	for _, p := range ps {
+		if p == nil {
+			return nil, fmt.Errorf("backup %s: nil engine", id)
+		}
 	}
 
 	r.enter(id)
@@ -484,31 +572,56 @@ func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bo
 	// would let a store update landing mid-backup make pass 2 disagree with pass 1
 	// about what the snapshot is supposed to contain.
 	opts := SnapshotOpts{Zip: zip, Exclude: r.excludeSet(id)}
+	// ONE stamp for every engine. The same backup in two places should have the same
+	// name — that is what lets the page put them on one row per app and what makes
+	// "the copy from Tuesday" mean one thing.
 	stamp := time.Now().Format(StampLayout)
+
+	res := make([]Result, len(ps))
+	for i, p := range ps {
+		res[i] = Result{Engine: p.ID()}
+	}
+	committed := make([]bool, len(ps))
 
 	// Nothing the engine stages is durable until Commit, so an interrupted backup
 	// discards it rather than leaving something a later List might offer for restore.
-	// Registered before the stop below, so it runs *after* the restart: bringing the
-	// app back up always takes precedence over cleaning up.
-	committed := false
+	//
+	// ONE defer covering every engine, registered before the stop below so that it runs
+	// *after* the restart: bringing the app back up always takes precedence over
+	// cleaning up. Registering one per engine inside the loop would invert that for
+	// every engine reached after the stop — defers are LIFO — and a repository's Abort
+	// is a listing plus a delete per match, so a failed three-engine run would hold the
+	// app down for tens of minutes of cleanup.
+	//
+	// WithoutCancel, never downCtx: a window that expired is exactly when cleanup has
+	// to run, and handing it a cancelled context orphans the staging it came to remove.
 	defer func() {
-		if !committed {
+		for i, p := range ps {
+			if committed[i] {
+				continue
+			}
 			if err := p.Abort(context.WithoutCancel(ctx), id, stamp); err != nil {
-				log.Printf("backup %s: discard incomplete backup: %v", id, err)
+				log.Printf("backup %s (%s): discard incomplete backup: %v", id, p.ID(), err)
 			}
 		}
 	}()
 
 	// Pass 1 — the app is still serving. This is the long one.
-	emit(BackupEvent{Phase: PhaseCopy, Message: "Copying " + id})
 	opts.Pass = 1
-	if err := p.Snapshot(ctx, id, stamp, opts, func(ev Event) {
-		emit(BackupEvent{Phase: PhaseCopy, Message: ev.Message, Copy: ev.Pct,
-			Done: ev.Done, Total: ev.Total})
-	}); err != nil {
-		return "", fmt.Errorf("copy app folder: %w", err)
+	for i, p := range ps {
+		if err := ctx.Err(); err != nil {
+			res[i].Err = err
+			continue
+		}
+		emit(r.engineEvent(ps, i, BackupEvent{Phase: PhaseCopy, Message: "Copying " + id}))
+		if err := p.Snapshot(ctx, id, stamp, opts, func(ev Event) {
+			emit(r.engineEvent(ps, i, BackupEvent{Phase: PhaseCopy, Message: ev.Message, Copy: ev.Pct,
+				Done: ev.Done, Total: ev.Total}))
+		}); err != nil {
+			res[i].Err = fmt.Errorf("copy app folder: %w", err)
+		}
 	}
-	emit(BackupEvent{Phase: PhaseCopy, Message: "Copied", Copy: 100})
+	emit(r.engineEvent(ps, len(ps)-1, BackupEvent{Phase: PhaseCopy, Message: "Copied", Copy: 100}))
 
 	// Stop only if it is actually up, so a backup of an already-stopped app does
 	// not start it afterwards.
@@ -516,7 +629,7 @@ func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bo
 	if wasRunning {
 		emit(BackupEvent{Phase: PhaseSync, Message: "Stopping " + id, Copy: 100})
 		if err := r.dx.StopProject(ctx, id); err != nil {
-			return "", fmt.Errorf("stop app: %w", err)
+			return nil, fmt.Errorf("stop app: %w", err)
 		}
 		defer func() {
 			emit(BackupEvent{Phase: PhaseStart, Message: "Starting " + id, Copy: 100, Sync: 100})
@@ -544,40 +657,111 @@ func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bo
 		defer cancel()
 	}
 
-	// Pass 2 — the app is down, so whatever this copies is the last word.
-	emit(BackupEvent{Phase: PhaseSync, Message: "Syncing changes", Copy: 100})
-	opts.Pass = 2
-	if err := p.Snapshot(downCtx, id, stamp, opts, func(ev Event) {
-		emit(BackupEvent{Phase: PhaseSync, Message: ev.Message, Copy: 100, Sync: ev.Pct,
-			Done: ev.Done, Total: ev.Total})
-	}); err != nil {
-		return "", fmt.Errorf("sync app folder: %w", err)
-	}
-	emit(BackupEvent{Phase: PhaseSync, Message: "Synced", Copy: 100, Sync: 100})
-
+	// Pass 2 and the commit — the app is down, so whatever this copies is the last word.
+	//
 	// The commit runs after the deferred restart is queued but before it runs, so the
 	// app is still down for it. That is deliberate for the engine whose commit does
 	// real work — zipping the snapshot: the alternative, start then zip, races the app
 	// writing into a folder we are not reading anyway, and buys nothing, because the
 	// zip reads the staged copy rather than the app folder.
-	b, err := p.Commit(downCtx, id, stamp, opts, func(ev Event) {
-		emit(BackupEvent{
-			Phase: PhaseCompress, Message: ev.Message,
-			Copy: 100, Sync: 100, Compress: ev.Pct,
-			Done: ev.Done, Total: ev.Total,
+	opts.Pass = 2
+	for i, p := range ps {
+		if res[i].Err != nil {
+			continue // pass 1 already failed for this engine; do not hold the app down for it
+		}
+		// The downtime budget belongs to the APP, not to an engine, so it is one budget
+		// shared by every destination rather than one each — a per-engine timeout would
+		// silently multiply the maximum outage. An engine that finds it already spent is
+		// told so plainly, rather than being started and killed three seconds later with
+		// a bare deadline error.
+		if err := downCtx.Err(); err != nil {
+			res[i].Err = fmt.Errorf("the app's downtime budget was used up before %s could sync: %w", p.ID(), err)
+			continue
+		}
+		emit(r.engineEvent(ps, i, BackupEvent{Phase: PhaseSync, Message: "Syncing changes", Copy: 100}))
+		if err := p.Snapshot(downCtx, id, stamp, opts, func(ev Event) {
+			emit(r.engineEvent(ps, i, BackupEvent{Phase: PhaseSync, Message: ev.Message, Copy: 100, Sync: ev.Pct,
+				Done: ev.Done, Total: ev.Total}))
+		}); err != nil {
+			res[i].Err = fmt.Errorf("sync app folder: %w", err)
+			continue
+		}
+
+		b, err := p.Commit(downCtx, id, stamp, opts, func(ev Event) {
+			emit(r.engineEvent(ps, i, BackupEvent{
+				Phase: PhaseCompress, Message: ev.Message,
+				Copy: 100, Sync: 100, Compress: ev.Pct,
+				Done: ev.Done, Total: ev.Total,
+			}))
 		})
-	})
-	if err != nil {
-		return "", fmt.Errorf("finalise backup: %w", err)
+		if err != nil {
+			res[i].Err = fmt.Errorf("finalise backup: %w", err)
+			continue
+		}
+		committed[i] = true
+		res[i].Name = b.Name
 	}
-	committed = true
+
 	emit(BackupEvent{Phase: PhaseDone, Message: "Backed up", Copy: 100, Sync: 100, Compress: 100})
-	return b.Name, nil
+
+	// The operation failed only if EVERY destination did. One engine losing its copy is
+	// reported on its row and does not throw away the copies that did land — losing the
+	// offsite copy of an app is not a reason to also lose the local one.
+	if err := firstErr(res); err != nil && !anyCommitted(committed) {
+		return res, err
+	}
+	return res, nil
+}
+
+// engineEvent stamps an event with the engine it came from and scales its progress
+// tracks into that engine's share of the operation.
+//
+// Both halves matter. The engine is what lets the Tracker keep a separate rate and ETA
+// per destination — two engines are two different pieces of work at two different
+// speeds, and one anchor across both derives a number that is fiction. The scaling is
+// what stops the bar restarting: each track is 0-100, so three engines would drive it
+// to 100 three times, which reads as a backup that keeps starting over. Same trick, and
+// the same reason, as removeContainers' `earlier`.
+func (r *Registry) engineEvent(ps []Provider, i int, ev BackupEvent) BackupEvent {
+	n := len(ps)
+	if n == 0 || i < 0 || i >= n {
+		return ev
+	}
+	ev.Engine = ps[i].ID()
+	ev.EngineIndex, ev.Engines = i+1, n
+	share := func(v float64) float64 { return (float64(i) + v/100) / float64(n) * 100 }
+	ev.Copy, ev.Sync, ev.Compress = share(ev.Copy), share(ev.Sync), share(ev.Compress)
+	return ev
+}
+
+func anyCommitted(committed []bool) bool {
+	for _, c := range committed {
+		if c {
+			return true
+		}
+	}
+	return false
+}
+
+// firstErr is the error to report for the operation as a whole, in engine order, so
+// the message names a destination rather than being whichever goroutine lost a race.
+func firstErr(res []Result) error {
+	for _, r := range res {
+		if r.Err != nil {
+			return fmt.Errorf("%s: %w", r.Engine, r.Err)
+		}
+	}
+	return nil
 }
 
 // defaultStoppedPassTimeout bounds how long an app may be held down for a backup.
+//
+// It is one budget for the whole stopped window however many engines are writing:
+// what it promises is how long the APP is down, and the app cannot be down per engine.
 // Generous enough that a large delta over a slow uplink finishes, short enough that
-// a hung repository is an inconvenience rather than an outage.
+// a hung repository is an inconvenience rather than an outage — and with several
+// destinations sharing it, an engine that finds it spent fails while the app comes
+// back up, which is the right way round.
 const defaultStoppedPassTimeout = 15 * time.Minute
 
 func (r *Registry) stoppedPassTimeout() time.Duration {
@@ -599,40 +783,18 @@ func freeSpace(dir string) int64 {
 	return int64(u.Free)
 }
 
-// engine is the backup engine new backups are written to.
+// engineFor resolves ONE named engine, for a caller that picked a target.
 //
-// No Engines means the built-in local one, which keeps every caller that predates
-// the engine seam — and every test constructing a Registry directly — working
-// unchanged. It is built per call rather than cached because it holds nothing but
-// the config it was handed.
-func (r *Registry) engine() Provider {
-	p, _ := r.engineFor("")
-	return p
-}
-
-// engineFor resolves the engine a backup should be written to.
-//
-// An empty ID means the default — the engine the schedule, an uninstall and the
-// update rollback point all write to, and the only answer those paths can have since
-// nobody is there to pick one. A named ID is a **manual** backup aimed somewhere else:
-// "keep a local copy of this app too", or "push this one offsite now".
-//
-// It is deliberately a target and not a stored per-app preference. A preference would
-// be per-app *participation* — a thing the nightly run would also have to honour — and
-// if the two ever disagreed, an app the user believed was going offsite would quietly
-// stop. That is the one outcome this feature must not produce.
+// An empty ID is not valid here — "wherever the settings say" is a *set*, and
+// enginesFor below is the function that answers it. Keeping the two apart is what
+// stopped the empty string quietly meaning "the first engine" once there could be
+// several.
 func (r *Registry) engineFor(id string) (Provider, error) {
 	if r.Engines == nil {
 		// No engine set: the built-in local provider, which is what every caller that
-		// predates the seam gets. Naming an engine here cannot be honoured.
+		// predates the seam gets. Naming another engine here cannot be honoured.
 		if id != "" && id != EngineLocal {
 			return nil, fmt.Errorf("unknown backup engine: %s", id)
-		}
-		return NewLocalProvider(r.cfg), nil
-	}
-	if id == "" {
-		if p := r.Engines.Writer(); p != nil {
-			return p, nil
 		}
 		return NewLocalProvider(r.cfg), nil
 	}
@@ -641,6 +803,52 @@ func (r *Registry) engineFor(id string) (Provider, error) {
 		return nil, fmt.Errorf("unknown backup engine: %s", id)
 	}
 	return p, nil
+}
+
+// enginesFor resolves where a backup should be written.
+//
+// An empty ID means "wherever this trigger is configured to go", which is a set and
+// may be several engines — the nightly run and an uninstall both take this path,
+// because nobody is there to pick. A named ID narrows THIS ONE operation to that
+// engine: "keep a local copy of this app too", or "push this one offsite now".
+//
+// The narrowing is deliberately a target and not a stored per-app preference. A
+// preference would be per-app *participation* — a thing the nightly run would also
+// have to honour — and if the two ever disagreed, an app the user believed was going
+// offsite would quietly stop. That is the one outcome this feature must not produce.
+//
+// **An empty result is an error, not an empty backup.** A run that writes nowhere and
+// returns success is the worst failure this package can produce: the scheduler would
+// record a healthy run, the incident register would stay quiet, and the box would look
+// backed up while nothing had been written.
+func (r *Registry) enginesFor(id string, t Trigger) ([]Provider, error) {
+	if id != "" {
+		p, err := r.engineFor(id)
+		if err != nil {
+			return nil, err
+		}
+		return []Provider{p}, nil
+	}
+	if r.Engines == nil {
+		return []Provider{NewLocalProvider(r.cfg)}, nil
+	}
+	ps := r.Engines.Writers(t)
+	// Deduped by ID rather than trusted: the set is assembled from configuration, and
+	// one engine listed twice would take two passes over the same folder and race its
+	// own staging directory.
+	out := make([]Provider, 0, len(ps))
+	seen := map[string]bool{}
+	for _, p := range ps {
+		if p == nil || seen[p.ID()] {
+			continue
+		}
+		seen[p.ID()] = true
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no backup engine is set to receive %s backups — choose one in Settings, Backups", t)
+	}
+	return out, nil
 }
 
 // locate finds the engine that holds a backup and the backup itself.
@@ -685,7 +893,6 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 	if !projectRe.MatchString(id) {
 		return fmt.Errorf("invalid app name: %s", id)
 	}
-	backupsDir := r.cfg.BackupsDir()
 	src, _, err := r.locate(ctx, id, engine, name)
 	if err != nil {
 		return err
@@ -719,9 +926,17 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 		defer cancel()
 	}
 
-	// On disk already? Then the restore is two renames and costs nothing, which is
-	// what makes the local tier worth keeping for apps that fit it.
-	if _, _, err := resolveBackup(backupsDir, id, name); err == nil {
+	// Held by an engine that restores by rename? Then it costs nothing, which is what
+	// makes the local tier worth keeping for apps that fit it.
+	//
+	// The question is asked of the ENGINE THE USER PICKED, not of whether a file with
+	// this name happens to be on the data disk. Those were nearly the same thing while
+	// two engines rarely held one stamp; a backup written to several engines at once
+	// makes them the same name by design, and probing the disk would answer "local" for
+	// a row the user clicked in the repository's tab — then restoreBySwap would consume
+	// the local archive, so the row they did not click would vanish and the one they did
+	// would sit there untouched. See the identity rule in backup.Set.
+	if src.Caps().InstantRestore {
 		return r.restoreBySwap(downCtx, id, name, live, emit)
 	}
 
@@ -786,10 +1001,14 @@ func (r *Registry) RestoreForInstall(ctx context.Context, id, engine, name strin
 		return err
 	}
 
-	// A local archive is already where RestoreBackup looks, so there is nothing to
-	// fetch and no space to check: what follows it is a rename. Only a backup that
-	// lives in a repository has to come down first.
-	if _, _, err := resolveBackup(r.cfg.BackupsDir(), id, name); err != nil {
+	// An archive held by an engine that restores by rename is already where
+	// RestoreBackup looks, so there is nothing to fetch and no space to check. Only a
+	// backup that lives in a repository has to come down first.
+	//
+	// Asked of the located engine rather than of the data disk, for the reason spelled
+	// out in Restore: with fan-out the same stamp exists in several engines, and a disk
+	// probe would quietly redirect an install from the repository row the user chose.
+	if !src.Caps().InstantRestore {
 		est, err := r.EstimateRestore(id, engine, name)
 		if err != nil {
 			return err

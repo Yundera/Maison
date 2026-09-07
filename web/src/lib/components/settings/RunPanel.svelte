@@ -25,6 +25,7 @@
   import { targetsDone, type RunState, type TargetState } from '../../stores/backupengine'
   import { renderSize, renderRate, renderDuration, renderElapsed } from '../../format'
   import { t } from '../../i18n'
+  import { engineLabel } from '../../stores/backups'
 
   let { run }: { run: RunState } = $props()
 
@@ -159,7 +160,24 @@
             <p class="down">{$t('backup_app_stopped', { app: label(tg) })}</p>
           {/if}
         {:else if tg.status === 'failed'}
-          <p class="err">{tg.error}</p>
+          <!-- Per destination when there is more than one, because "failed" on its own
+               is misleading the moment a backup goes to several places: the copy that
+               DID land is the difference between "nothing was saved" and "the offsite
+               copy is missing", and the user cannot act on the second without being
+               told which it is. -->
+          {#if (tg.engines?.length ?? 0) > 1}
+            <ul class="dests">
+              {#each tg.engines ?? [] as d (d.engine)}
+                <li class:bad={d.status === 'failed'}>
+                  <span class="mark" aria-hidden="true">{d.status === 'failed' ? '!' : '✓'}</span>
+                  <span class="dname">{engineLabel(d.engine, undefined, (k) => $t(k))}</span>
+                  <span class="dwhy">{d.status === 'failed' ? d.error : $t('backup_dest_written')}</span>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="err">{tg.error}</p>
+          {/if}
         {:else if tg.status === 'skipped' && tg.error}
           <!-- The reason, in the muted colour: nothing went wrong here. -->
           <p class="detail">{tg.error}</p>
@@ -269,6 +287,30 @@
   }
   .detail,
   .down,
+  /* The per-destination breakdown under a failed target. Indented under the row it
+     belongs to, and quiet: it is detail about one failure, not a second list. */
+  .dests {
+    list-style: none;
+    margin: 0.25rem 0 0 1.6rem;
+    padding: 0;
+    font-size: 0.78rem;
+    line-height: 1.5;
+  }
+  .dests li {
+    display: flex;
+    gap: 0.4rem;
+    color: var(--text-muted);
+  }
+  .dests li.bad {
+    color: var(--red);
+  }
+  .dname {
+    font-weight: 600;
+  }
+  .dwhy {
+    min-width: 0;
+  }
+
   .err {
     margin: 0.3rem 0 0;
     font-size: 0.78rem;

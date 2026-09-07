@@ -14,6 +14,12 @@ import "time"
 // is the same: the deployment re-renders its side of the configuration every night,
 // so any field the two sides share is a field the script silently reverts.
 
+// EngineLocal is apps.EngineLocal, restated rather than imported: this package is the
+// small persistence layer at the bottom of the backup stack, and pulling the whole app
+// registry in for one string would invert that. Engine IDs are permanent once shipped,
+// so the two cannot drift.
+const EngineLocal = "local"
+
 // Mode is what the user asked retention to do. It is the *only* field that selects,
 // which is deliberate: every other field (tiers, counts, ages) has a meaningful zero
 // and so cannot distinguish "the user chose none" from "nobody has said". Mode has
@@ -96,12 +102,26 @@ type EngineSettings struct {
 	// MaxAgeDays is read only under ModeAge.
 	MaxAgeDays int `json:"max_age_days,omitempty"`
 
-	// KeepLocal is how many on-disk archives to retain, resolved independently of
-	// Mode because local archives cost real disk rather than a remote quota and are
-	// Maison's to manage whatever the engine does with its own history. It is a
-	// pointer because 0 — keep none locally — is a real choice and has to be
-	// distinguishable from "not set here".
-	KeepLocal *int `json:"keep_local,omitempty"`
+	// Schedule and Uninstall are the triggers this engine receives: does the nightly
+	// run write here, and does an uninstall archive here.
+	//
+	// They are what replaced the single "default engine". Engines are independent
+	// repositories — Set.List has always said so — and the last thing tying them
+	// together was that exactly one of them could be written to. A backup can now land
+	// in several at once, and each engine says for itself what it is for.
+	//
+	// POINTERS, because the three states are all real and all different: on, off, and
+	// "nobody has said". A box that has never opened the settings page must keep
+	// writing wherever it was provisioned to, and that is the third state — see
+	// engineTriggers in the server, which is where the fallback lives. A plain bool
+	// would make every unconfigured box read as "off", which is a box that silently
+	// stops backing up.
+	//
+	// The update rollback point is deliberately not here. It is always the local
+	// engine because rolling back has to be a rename, which is a property of the
+	// mechanism rather than a preference — see server.BackupBeforeUpdate.
+	Schedule  *bool `json:"schedule,omitempty"`
+	Uninstall *bool `json:"uninstall,omitempty"`
 
 	// UploadLimitMB caps upload bandwidth. Meaningful only to an Offsite engine.
 	UploadLimitMB int `json:"upload_limit_mb,omitempty"`
@@ -124,7 +144,7 @@ type EngineSettings struct {
 type Provisioned struct {
 	Settings EngineSettings
 
-	// Locked names the fields the deployment pins ("mode", "keep", "keep_local", …).
+	// Locked names the fields the deployment pins ("mode", "keep", "upload_limit_mb", …).
 	// A locked field is rendered disabled with a reason rather than accepted and then
 	// silently reverted the next morning.
 	//
@@ -152,13 +172,24 @@ type Resolved struct {
 	Count  int
 	MaxAge time.Duration
 
-	KeepLocal     int
 	UploadLimitMB int
 	Unmanaged     bool
 
-	// Source is where Mode came from. KeepLocal is resolved separately and may come
-	// from a different layer; the UI labels the retention block, which is the part a
-	// user can be surprised by.
+	// Schedule and Uninstall are the triggers this engine receives, and Stated is
+	// whether anyone actually decided them.
+	//
+	// Stated is the whole point of resolving them here rather than reading the
+	// pointers directly: false means no layer has an opinion about this engine, and
+	// the caller must fall back to the engine the box was provisioned with instead of
+	// treating the zero value as "receives nothing". That fallback needs to know which
+	// engine that is, which this package deliberately does not.
+	Schedule  bool
+	Uninstall bool
+	Stated    bool
+
+	// Source is where Mode came from. UploadLimitMB, Unmanaged and the triggers are
+	// resolved separately and may come from a different layer; the UI labels the
+	// retention block, which is the part a user can be surprised by.
 	Source Source
 
 	// Locked is carried through from Provisioned unchanged.
@@ -180,8 +211,8 @@ func (r Resolved) Locks(field string) bool {
 //	engine override  →  box-wide setting  →  provisioned default  →  compiled default
 //
 // Only the retention block travels together (Mode plus the one parameter that mode
-// reads); KeepLocal, UploadLimitMB and Unmanaged are resolved field by field, because
-// they answer questions that have nothing to do with each other.
+// reads); UploadLimitMB and Unmanaged are resolved field by field, because they
+// answer questions that have nothing to do with each other.
 func (c Config) Effective(engineID string, prov Provisioned) Resolved {
 	layers := []struct {
 		src Source
@@ -223,13 +254,40 @@ func (c Config) Effective(engineID string, prov Provisioned) Resolved {
 		break
 	}
 
-	out.KeepLocal = c.KeepLocal
+	// Tier retention is unsound on the local engine, and for a physical reason rather
+	// than a matter of taste: a local archive is a FULL SECOND COPY of the app folder
+	// (apps.Caps.NeedsLocalSpace), so 7 daily + 4 weekly + 12 monthly is twenty-three
+	// complete copies of every app, on the same disk as the app. A repository stores
+	// history incrementally and can afford exactly that; this cannot — it is not a
+	// retention policy, it is how a PCS fills its disk.
+	//
+	// So a tier mode resolved for the local engine becomes the count its own Latest
+	// tier already names, which is 2 under the smart preset: the copy being replaced
+	// and the one before it. An explicit count, age, or keep-everything is left alone
+	// — each is bounded by something the user chose on purpose.
+	if engineID == EngineLocal && (out.Mode == ModeSmart || out.Mode == ModeCustom) {
+		out.Mode = ModeCount
+		out.Count = max(out.Keep.Latest, 1)
+		out.Keep = Keep{Latest: out.Count}
+	}
+
+	// Each trigger resolves on its own, most specific layer that states it. They do not
+	// travel together the way the retention block does: "back this engine up nightly"
+	// and "archive uninstalls here" are unrelated answers, and a deployment that pins
+	// one must not thereby decide the other.
 	for _, l := range layers {
-		if l.s.KeepLocal != nil {
-			out.KeepLocal = max(*l.s.KeepLocal, 0)
+		if l.s.Schedule != nil {
+			out.Schedule, out.Stated = *l.s.Schedule, true
 			break
 		}
 	}
+	for _, l := range layers {
+		if l.s.Uninstall != nil {
+			out.Uninstall, out.Stated = *l.s.Uninstall, true
+			break
+		}
+	}
+
 	for _, l := range layers {
 		if l.s.UploadLimitMB > 0 {
 			out.UploadLimitMB = l.s.UploadLimitMB
@@ -246,13 +304,8 @@ func (c Config) Effective(engineID string, prov Provisioned) Resolved {
 }
 
 // boxSettings is the box-wide layer, built from the flat fields that predate the
-// per-engine map.
-//
-// KeepLocal is taken from the flat int, which is always present, so it is resolved
-// out of Effective's layer walk rather than through it: a box always has a local
-// count, and a provisioned one could therefore never win. If the deployment ever
-// needs to set it, that field becomes a pointer too — one edit, and the walk already
-// handles it.
+// per-engine map. They are what the settings page writes when the user edits
+// retention without singling out an engine.
 func (c Config) boxSettings() EngineSettings {
 	return EngineSettings{Mode: c.Mode, Keep: c.Keep, Count: c.Count, MaxAgeDays: c.MaxAgeDays}
 }

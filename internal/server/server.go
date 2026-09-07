@@ -20,10 +20,11 @@ import (
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backupconfig"
+	"github.com/yundera/maison/internal/bench"
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
-	"github.com/yundera/maison/internal/bench"
+	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
 	"github.com/yundera/maison/internal/metrics"
@@ -48,6 +49,11 @@ type Server struct {
 	installer *installer.Installer
 	settings  *usersettings.Store
 
+	// incidents is the box's register of what is currently wrong. Unlike the backup
+	// group below it is never nil: a box with no Docker can still fill its disk, and
+	// reporting that must not depend on a daemon being reachable.
+	incidents *incident.Store
+
 	// Backup engines, their persisted configuration, and the nightly schedule.
 	// All three are nil-tolerant: a box with no Docker still serves the settings
 	// page, it just cannot run an app backup from it.
@@ -62,11 +68,17 @@ type Server struct {
 func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	collector := system.NewCollector(cfg.DataRoot)
 	settings := usersettings.New(filepath.Join(cfg.StateDir(), "settings.json"))
+	// Before everything else that could want to report into it.
+	incidents := incident.New(filepath.Join(cfg.StateDir(), "incidents.json"))
 
 	// Apps are published on the operator's additional domains, and they edit that
 	// list at runtime — so the Config every layer below copies reads it live rather
 	// than snapshotting it at boot. See internal/routes.
 	cfg.Domains = settings.Domains
+	// Reporting reaches internal/stackup — package-level functions with no receiver —
+	// the same way the two accessors above reach it: through the Config every one of
+	// them already takes.
+	cfg.Report = incidents.Report
 
 	s := &Server{
 		cfg:       cfg,
@@ -76,8 +88,16 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		bench:     bench.New(cfg.StateDir()),
 		hub:       live.NewHub(collector),
 		settings:  settings,
+		incidents: incidents,
 	}
 	s.hub.ResourcesSnapshot = s.resourcesSnapshot
+	// The same transport the backup alerts use, resolved on every send rather than
+	// captured, so a relay changed in the settings takes effect without a restart.
+	s.incidents.Mail = func() notify.SMTP { return s.settings.EffectiveSMTP(cfg.ProvisionedSMTP()) }
+	s.incidents.Where = cfg.AppDomain
+	s.incidents.OnChange = throttle(300*time.Millisecond, s.broadcastIncidents)
+	s.hub.IncidentsSnapshot = s.incidentsSnapshot
+	go s.deliverIncidents(context.Background())
 
 	// The resource-history recorder: the one thing here that samples the host with
 	// nobody watching, which is why it is the one thing with an off switch. It
@@ -133,14 +153,25 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		s.apps.Engines = s.engines
 	}
 	// The user-data set's read and restore half. It holds the same *Set the registry and
-	// the scheduler do — see applyChosenEngine on why that set is mutated rather than
+	// the scheduler do — see applyEngineSettings on why that set is mutated rather than
 	// replaced when the engine changes.
 	s.userData = backup.NewUserData(cfg, s.engines, s.backupConf)
 	s.backupSched = backup.NewScheduler(cfg, s.apps, s.engines, s.backupConf)
-	// Where the failure mail goes. Resolved on every send rather than captured here,
-	// so a relay changed in the settings takes effect without a restart — and read
-	// from the settings store, which is where the mail configuration lives now.
-	s.backupSched.Mail = func() notify.SMTP { return s.settings.EffectiveSMTP(cfg.ProvisionedSMTP()) }
+	// The run asserts its outcome; the register decides whether that is news, how it
+	// is worded and who hears about it. See incident.Store.
+	s.backupSched.Report = s.incidents.Report
+	s.backupSched.Resolve = s.incidents.Resolve
+	// A box that was already failing before it had a register would otherwise be
+	// announced again by whichever run happens next, weeks after the owner was first
+	// told. Adopt it instead: the badge is right immediately, and the recovery notice
+	// still arrives when the backups come back.
+	if _, failed, ok := s.backupSched.LastRun(); ok && failed {
+		s.incidents.Adopt(incident.Report{
+			ID: incident.IDBackupRun, Kind: incident.KindBackupFailed, Severity: incident.Critical,
+			Title:  "Backups are failing",
+			Detail: "The last backup run before this dashboard was upgraded did not complete. The next run will say which targets failed.",
+		})
+	}
 	// A box upgraded across that move still has its relay under backup.json's `smtp`
 	// key; carry it over once, then clear it. See adoptLegacySMTP.
 	if conf := s.backupConf.Get(); adoptLegacySMTP(s.settings, &conf) {
@@ -179,11 +210,35 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		initialURLs = ss
 	}
 	s.store = appstore.New(initialURLs, filepath.Join(cfg.StateDir(), "appstore"))
+	// Whatever the operator renamed a store to, before the first refresh labels the
+	// catalog — otherwise the panel shows the store's own name until a store is
+	// renamed again.
+	s.store.SetNames(s.settings.Get().StoreNames)
 	// Once at boot, then every night at 03:00 container time. Stores change on the
 	// order of days, and the ⟳ in the source list is there when a user wants the
 	// catalog now.
-	s.store.StartDailyRefresh(context.Background(), 3, 0)
+	// A refresh that fails at boot is usually the network not being up yet, so it takes
+	// two in a row — which, at one a day, means the catalog has genuinely stopped
+	// updating rather than that the box was slow to come online.
+	storeFailures := 0
+	s.store.StartDailyRefresh(context.Background(), 3, 0, func(err error) {
+		if err == nil {
+			storeFailures = 0
+			s.incidents.Resolve("store.source")
+			return
+		}
+		if storeFailures++; storeFailures < 2 {
+			return
+		}
+		s.incidents.Report(incident.Report{
+			ID: "store.source", Kind: incident.KindStoreSource, Severity: incident.Warning,
+			Title:  "The app store is no longer updating",
+			Detail: err.Error() + "\n\nThe catalog you browse is the last copy that downloaded successfully, so new apps and new versions will not appear. Check the store sources in Settings → Store.",
+		})
+	})
 	s.installer = installer.New(cfg, s.store, s.dx)
+	s.installer.Report = s.incidents.Report
+	s.installer.Resolve = s.incidents.Resolve
 	if s.apps != nil {
 		// An update rewrites the app's compose and brings the stack back up — the one
 		// destructive change Maison makes on the user's behalf — so it takes a rollback
@@ -192,7 +247,9 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// Deliberately the local engine, whatever the user's chosen one is: rolling back
 		// has to be a rename. Restoring from a repository is a download, and by the time
 		// it finished the app would have been broken for minutes. These archives are
-		// ordinary local ones, so the nightly run's keep-N prunes them like any other.
+		// ordinary local ones, so the nightly run expires them under the local engine's
+		// own retention like any other — and retention.Plan never drops the newest, so a
+		// rollback point cannot be expired out from under the update that took it.
 		local := apps.NewLocalProvider(cfg)
 		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string) (string, error) {
 			return s.apps.BackupWith(ctx, local, project, false, nil)
@@ -213,6 +270,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// Rebroadcast the app list as install progress advances so the tile's
 	// Download/Start bars move live. Pull events are frequent, so throttle.
 	s.installer.OnUpdate = throttle(300*time.Millisecond, s.broadcastApps)
+
+	// Last, because a pass reads the app registry, the engine set and the schedule.
+	// See detect.go for what it looks at and why the list is as short as it is.
+	go s.runDetectors(context.Background())
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -286,10 +347,19 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Post("/store/sources", s.handleAddStoreSource)
 		r.Delete("/store/sources", s.handleRemoveStoreSource)
 		r.Post("/store/sources/refresh", s.handleRefreshStoreSource)
+		r.Put("/store/sources/name", s.handleRenameStoreSource)
 		r.Get("/store/app/{id}", s.handleStoreApp)
 		r.Get("/store/{id}/asset/*", s.handleStoreAsset)
 		r.Get("/store/{id}/backups", s.handleStoreBackups)
 		r.Post("/store/{id}/install", s.handleInstall)
+
+		// Top-level, well clear of the /apps/{id}/{action} catch-all above.
+		r.Get("/incidents", s.handleGetIncidents)
+		r.Post("/incidents", s.handleReportIncident)
+		r.Put("/incidents/mute", s.handleMuteKind)
+		r.Post("/incidents/{id}/ack", s.handleAckIncident)
+		r.Delete("/incidents/{id}", s.handleResolveIncident)
+		r.Post("/notifications/test", s.handleTestNotification)
 
 		r.Get("/settings", s.handleGetSettings)
 		r.Put("/settings", s.handlePutSettings)

@@ -23,6 +23,7 @@ import (
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/xcasaos"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
@@ -117,6 +118,7 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 	// After SyncRoutes: the vars Maison owns win over its seeds.
 	if err := appenv.Sync(cfg, project, dir); err != nil {
 		log.Printf("%s: sync .env: %v", project, err)
+		cfg.ReportIncident(hookIncident(project, ".env could not be written", err))
 	}
 	spec := Load(files)
 
@@ -138,10 +140,12 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 	// after-the-fact tweak is the worse outcome.
 	if err := RunInit(ctx, cfg, project, dir, xcomposeapp.PhasePostUp, spec.Init, captures); err != nil {
 		log.Printf("%s: %v", project, err)
+		cfg.ReportIncident(hookIncident(project, "one of its setup steps did not complete", err))
 	}
 	if h := spec.Hooks.PostUp; h != "" {
 		if err := RunHook(ctx, cfg, project, dir, h); err != nil {
 			log.Printf("%s: post_up hook: %v", project, err)
+			cfg.ReportIncident(hookIncident(project, "its post-up step did not complete", err))
 		}
 	}
 	return nil
@@ -279,4 +283,26 @@ func hookEnv(cfg config.Config, project, dir string) []string {
 		"AppID="+project,
 		"APP_DIR="+envinject.HostPath(dir, cfg), // a real path, so map it — don't text-rewrite it
 	)
+}
+
+// hookIncident describes a setup step that failed after the stack was already up.
+//
+// Every caller of this deliberately swallows the error — the app is running, and
+// taking a healthy stack back down over an after-the-fact tweak is the worse outcome.
+// Swallowing it is not the same as hiding it, though: the result is an app that looks
+// installed and behaves oddly, and until now the only evidence was one line in a
+// container log nobody reads.
+//
+// One ID per app, not per step: an app whose setup is failing usually fails the same
+// way every time it starts, and three records saying so is not three problems.
+func hookIncident(project, what string, err error) incident.Report {
+	return incident.Report{
+		ID:       "app.hook:" + project,
+		Kind:     incident.KindAppStackup,
+		Severity: incident.Warning,
+		Title:    "A setup step failed for " + project,
+		Detail: project + " is running, but " + what + ":\n" + err.Error() +
+			"\n\nThe app may be only partly configured. Restarting it runs the step again.",
+		Args: map[string]string{"app": project},
+	}
 }

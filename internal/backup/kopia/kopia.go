@@ -122,6 +122,12 @@ func (p *Provider) Caps() apps.Caps {
 		// Retention is kopia's own policy engine; Maison configures the tiers rather
 		// than deleting snapshots itself.
 		Retention: true,
+		// Snapshots are read from the folder and streamed; the folder is left where it
+		// is for the registry to remove.
+		ConsumesSource: false,
+		// The repository is encrypted with the password at repository.password, which
+		// is generated on the box and never leaves it except by the user mailing it.
+		Encrypted: true,
 	}
 }
 

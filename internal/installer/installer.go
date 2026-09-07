@@ -22,6 +22,7 @@ import (
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/stackup"
 )
 
@@ -69,6 +70,14 @@ type Installer struct {
 	cfg   config.Config
 	store *appstore.Manager
 	dx    *dockerx.Client // optional; used for image-pull progress
+
+	// Report and Resolve raise and clear entries in the box's incident register
+	// (internal/incident). An install or an update that fails is visible on the tile
+	// while someone is watching it and nowhere at all afterwards, which is how a box
+	// ends up running last month's version of an app with a security fix in it and
+	// nobody knowing. Nil means nobody is listening.
+	Report  func(r incident.Report)
+	Resolve func(id string)
 
 	// OnUpdate, if set, is called whenever a tracked install's progress changes
 	// so the server can rebroadcast the app list (making the tile's progress bars
@@ -196,9 +205,19 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from Ba
 			if st := in.installs[project]; st != nil {
 				st.Phase, st.Error, st.Message = "error", err.Error(), err.Error()
 			}
+			// And in the register, which outlives the tile: the overlay is gone the
+			// moment the user dismisses it or reloads onto a box where the app simply
+			// is not there, with nothing left to say why.
+			in.report(incident.Report{
+				ID: "app.install:" + project, Kind: incident.KindAppInstall, Severity: incident.Warning,
+				Title:  name + " could not be installed",
+				Detail: err.Error() + "\n\nTry installing it again from the store. If it keeps failing, the app's page in the store has its requirements.",
+				Args:   map[string]string{"app": name},
+			})
 		} else {
 			// Success: drop the overlay so the real, Docker-backed tile takes over.
 			delete(in.installs, project)
+			in.resolve("app.install:" + project)
 		}
 		in.mu.Unlock()
 		in.notify()
@@ -225,6 +244,20 @@ func (in *Installer) ClearInstall(project string) {
 	in.mu.Unlock()
 	if existed {
 		in.notify()
+	}
+}
+
+// report and resolve are the nil-tolerant dispatchers for the two hooks above, so no
+// call site has to remember the check.
+func (in *Installer) report(r incident.Report) {
+	if in.Report != nil {
+		in.Report(r)
+	}
+}
+
+func (in *Installer) resolve(id string) {
+	if in.Resolve != nil {
+		in.Resolve(id)
 	}
 }
 
@@ -351,6 +384,19 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	if h := spec.Hooks.PostInstall; h != "" {
 		if err := stackup.RunHook(ctx, in.cfg, project, appDir, h); err != nil {
 			log.Printf("%s: post_install hook: %v", project, err)
+			// Swallowed on purpose — the app is up, and taking a running stack down
+			// over an after-the-fact step is the worse outcome — but not silent: a
+			// half-configured app looks installed and behaves oddly, and the only
+			// evidence used to be one line in a container log.
+			//
+			// Its own ID, not the install's: the install succeeded, and the success
+			// path below clears that one.
+			in.report(incident.Report{
+				ID: "app.hook:" + project, Kind: incident.KindAppStackup, Severity: incident.Warning,
+				Title:  "A setup step failed for " + project,
+				Detail: "The app is running, but its post-install step did not complete:\n" + err.Error() + "\n\nThe app may be only partly configured. Reinstalling it runs the step again.",
+				Args:   map[string]string{"app": project},
+			})
 		}
 	}
 	// `compose up -d` returns once containers are created/started; follow their

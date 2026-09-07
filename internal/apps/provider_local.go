@@ -50,6 +50,14 @@ func (p *LocalProvider) Caps() Caps {
 		InPlaceRestore: false,
 		// Maison prunes local archives itself; there is no policy engine to delegate to.
 		Retention: false,
+		// The uninstall path renames the app folder into the archive, which is what
+		// keeps an uninstall free at any size — and what makes this engine the point of
+		// no return in a fan-out uninstall. See Caps.ConsumesSource.
+		ConsumesSource: true,
+		// A local archive is the app folder, copied. There is nothing between it and
+		// anyone who can read the disk, and the settings page has to say so — an
+		// encryption-key card above a list of these read as a promise that covered them.
+		Encrypted: false,
 	}
 }
 

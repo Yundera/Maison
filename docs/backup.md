@@ -271,7 +271,8 @@ engine, and nothing in the UI produces one.
 
 **One write deliberately stays local**, and is an exception rather than an oversight:
 the update rollback point (`BackupWith`). It needs a rename it can undo in seconds, and
-a repository upload is not that. `keep_local` pruning is local by definition.
+a repository upload is not that. The local engine's own retention prunes it like any
+other local archive — see [Retention](#retention).
 
 Archive-on-uninstall used to be listed here as the second exception. It is not one, and
 treating it as one was the mistake this document made: an uninstall archive that only
@@ -535,16 +536,34 @@ directly onto an engine's own retention policy (`--keep-daily 7 --keep-weekly 4
 of the stable source path: with a fresh source per backup, every source would hold
 exactly one snapshot and per-source policies would be meaningless.
 
-**Local and remote retention are separate counts.** Local archives cost real disk and
-are governed by Maison's own "keep N local"; remote retention may be delegated to the
-engine.
+### Retention belongs to the engine, not to the box
 
-> "Remove local" is a **count, not a boolean** — `keep N local` / `keep N remote`,
-> where the boolean is N=0. A binary switch means one silently broken repository
-> leaves nothing at all.
+**One policy per engine, resolved by `Config.Effective(engineID, provisioned)`**: engine
+override → box-wide setting → provisioned default → compiled default. There is no
+box-wide number that means the same thing everywhere, because it cannot:
 
-Local pruning applies only after the provider has **verifiably confirmed** the
-snapshot — not merely after a subprocess exited 0.
+| | local engine | repository engine |
+|---|---|---|
+| what a backup is | a **full second copy** of the app folder | an incremental snapshot |
+| cost of 23 generations | 23× the app, on the app's own disk | a little more than one |
+| who expires them | Maison, through `retention.Plan` | the engine's own policy |
+
+So tiers are **unsound on the local engine** — not merely wasteful. `Effective`
+collapses a tier mode to a count for it (`ModeSmart` → `ModeCount` at `Keep.Latest`,
+which the smart preset already puts at 2: the copy being replaced and the one before
+it), and the settings page never offers tier modes for an engine whose `Caps` declare
+`NeedsLocalSpace`. An explicit count, age or keep-everything is left alone — each is a
+bound the user chose.
+
+This replaced a separate `keep_local` count that sat beside the tiers in one box-wide
+block. It was the wrong shape twice over: it was a second retention vocabulary for the
+same question, and on a local-only box — which is most of the fleet — it was the *only*
+one of the four numbers that did anything, sitting next to three that were inert.
+
+**Nothing can empty the local directory.** `retention.Plan` keeps the newest backup
+whatever the policy says, which is what the old "keep 0 local, but only once another
+engine has actually listed the backup" path existed to guarantee. That guarantee matters
+most for the update rollback point, which is always local and has nowhere else to be.
 
 Delegating remote retention is clean for kopia. An engine whose policy model differs
 means Maison expresses the *intent* through the provider interface rather than

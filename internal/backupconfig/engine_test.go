@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-func ptr(n int) *int { return &n }
-
 func TestEffectiveFallsAllTheWayToTheCompiledDefault(t *testing.T) {
 	got := Defaults().Effective("kopia", Provisioned{})
 	if got.Mode != ModeSmart || got.Source != SourceDefault {
@@ -19,9 +17,6 @@ func TestEffectiveFallsAllTheWayToTheCompiledDefault(t *testing.T) {
 	}
 	if got.Keep != SmartKeep() {
 		t.Errorf("keep %+v, want the smart preset %+v", got.Keep, SmartKeep())
-	}
-	if got.KeepLocal != 2 {
-		t.Errorf("keep local %d, want 2", got.KeepLocal)
 	}
 }
 
@@ -98,20 +93,57 @@ func TestModesResolveToTiersThatCannotDeleteMoreThanTheModeMeans(t *testing.T) {
 	}
 }
 
-func TestKeepLocalResolvesSeparatelyFromTheMode(t *testing.T) {
+// Retention is per-engine: what one engine is told has no bearing on another. This is
+// what makes the settings page's tab-per-engine honest — kopia expires its snapshots
+// under its own policy while the local archives are thinned by Maison, and switching
+// the default engine must not rewrite the intent of the one holding the backups.
+func TestRetentionDoesNotLeakAcrossEngines(t *testing.T) {
 	c := Defaults()
-	c.Engines = map[string]EngineSettings{"kopia": {KeepLocal: ptr(0)}}
+	c.Engines = map[string]EngineSettings{"kopia": {Mode: ModeCount, Count: 3}}
+
 	got := c.Effective("kopia", Provisioned{})
-	if got.KeepLocal != 0 {
-		t.Errorf("keep local %d, want the explicit 0", got.KeepLocal)
+	if got.Mode != ModeCount || got.Count != 3 || got.Source != SourceEngine {
+		t.Errorf("kopia resolved to %q/%d from %q, want count/3 from engine", got.Mode, got.Count, got.Source)
 	}
-	// Keeping no local copies is a choice about disk, not about retention: the mode
-	// still comes from the layer that decided it.
-	if got.Mode != ModeSmart {
-		t.Errorf("mode %q, want the inherited smart", got.Mode)
+	// The local engine keeps its own answer — the default two copies — rather than
+	// kopia's count of three.
+	if other := c.Effective(EngineLocal, Provisioned{}); other.Count != 2 {
+		t.Errorf("kopia's override leaked onto local: %q count %d", other.Mode, other.Count)
 	}
-	if other := c.Effective("local", Provisioned{}); other.KeepLocal != 2 {
-		t.Errorf("keep local leaked across engines: %d", other.KeepLocal)
+}
+
+// Tiers are unsound on the local engine because its archives are full copies, so a
+// tier mode resolved for it degrades to counting. Twenty-three complete copies of an
+// app on the same disk as the app is a filled disk, not a retention policy.
+func TestLocalEngineCountsCopiesInsteadOfKeepingTiers(t *testing.T) {
+	c := Defaults()
+
+	// The smart preset: 7 daily / 4 weekly / 12 monthly for a repository, two copies
+	// on disk — Keep.Latest, which is what the preset already names.
+	got := c.Effective(EngineLocal, Provisioned{})
+	if got.Mode != ModeCount || got.Count != 2 || got.Keep != (Keep{Latest: 2}) {
+		t.Errorf("local resolved to %q %+v, want a count of 2", got.Mode, got.Keep)
+	}
+	if kopia := c.Effective("kopia", Provisioned{}); kopia.Keep != SmartKeep() {
+		t.Errorf("the repository lost its tiers: %+v", kopia.Keep)
+	}
+
+	// A legacy box carries typed tiers in the box-wide fields. They were only ever
+	// pushed into a repository's own policy, and must not become 30 full copies here.
+	c.Mode, c.Keep = ModeCustom, Keep{Latest: 3, Daily: 30}
+	if got := c.Effective(EngineLocal, Provisioned{}); got.Count != 3 {
+		t.Errorf("legacy tiers reached the local engine: %q %+v", got.Mode, got.Keep)
+	}
+
+	// An explicit count, age or keep-everything is the user's own bound and is left
+	// alone.
+	c.Mode, c.MaxAgeDays = ModeAge, 30
+	if got := c.Effective(EngineLocal, Provisioned{}); got.Mode != ModeAge {
+		t.Errorf("an explicit age was overridden: %q", got.Mode)
+	}
+	c.Mode = ModeAll
+	if got := c.Effective(EngineLocal, Provisioned{}); got.Mode != ModeAll {
+		t.Errorf("an explicit keep-everything was overridden: %q", got.Mode)
 	}
 }
 
@@ -120,7 +152,7 @@ func TestLockedFieldsAreReportedNotEnforced(t *testing.T) {
 		Settings: EngineSettings{Mode: ModeSmart},
 		Locked:   []string{"mode"},
 	})
-	if !got.Locks("mode") || got.Locks("keep_local") {
+	if !got.Locks("mode") || got.Locks("keep") {
 		t.Fatalf("locked reported as %v", got.Locked)
 	}
 }
@@ -145,9 +177,9 @@ func TestLegacyFileMigration(t *testing.T) {
 		in       Config
 		wantMode Mode
 	}{
-		"untouched box tracks its provisioning": {Config{Keep: SmartKeep(), KeepLocal: 2}, ModeInherit},
-		"typed tiers are preserved as custom":   {Config{Keep: Keep{Latest: 2, Daily: 30}, KeepLocal: 2}, ModeCustom},
-		"no tiers at all":                       {Config{KeepLocal: 2}, ModeInherit},
+		"untouched box tracks its provisioning": {Config{Keep: SmartKeep()}, ModeInherit},
+		"typed tiers are preserved as custom":   {Config{Keep: Keep{Latest: 2, Daily: 30}}, ModeCustom},
+		"no tiers at all":                       {Config{}, ModeInherit},
 	} {
 		if got := migrate(tc.in).Mode; got != tc.wantMode {
 			t.Errorf("%s: mode %q, want %q", name, got, tc.wantMode)
@@ -166,7 +198,7 @@ func TestStoreRoundTripKeepsUnknownEngines(t *testing.T) {
 	c := s.Get()
 	c.Mode = ModeSmart
 	c.Engines = map[string]EngineSettings{
-		"rclone": {Mode: ModeAge, MaxAgeDays: 45, KeepLocal: ptr(0)},
+		"rclone": {Mode: ModeAge, MaxAgeDays: 45, UploadLimitMB: 8},
 	}
 	if err := s.Set(c); err != nil {
 		t.Fatal(err)
@@ -176,12 +208,12 @@ func TestStoreRoundTripKeepsUnknownEngines(t *testing.T) {
 	// carry its settings through: the user can switch back.
 	back := New(path).Get()
 	got, ok := back.Engines["rclone"]
-	if !ok || got.Mode != ModeAge || got.MaxAgeDays != 45 || got.KeepLocal == nil || *got.KeepLocal != 0 {
+	if !ok || got.Mode != ModeAge || got.MaxAgeDays != 45 || got.UploadLimitMB != 8 {
 		t.Fatalf("per-engine settings did not survive the round trip: %+v", back.Engines)
 	}
 
-	// keep_local must serialise as an explicit 0 rather than vanishing, or "keep none
-	// locally" would read back as "not set".
+	// And they must be in the file under that engine's own key, not folded into the
+	// box-wide fields — which is what keeps one engine's retention out of another's.
 	raw := map[string]any{}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -192,17 +224,17 @@ func TestStoreRoundTripKeepsUnknownEngines(t *testing.T) {
 	}
 	engines, _ := raw["engines"].(map[string]any)
 	rclone, _ := engines["rclone"].(map[string]any)
-	if _, ok := rclone["keep_local"]; !ok {
-		t.Errorf("keep_local was omitted from the file: %s", b)
+	if rclone["mode"] != string(ModeAge) {
+		t.Errorf("rclone's settings are not under its own key: %s", b)
 	}
 }
 
 func TestSaneClampsPerEngineValues(t *testing.T) {
 	got := sane(Config{
 		Keep:    SmartKeep(),
-		Engines: map[string]EngineSettings{"kopia": {Mode: Mode("nope"), Count: -3, MaxAgeDays: -1, KeepLocal: ptr(-5)}},
+		Engines: map[string]EngineSettings{"kopia": {Mode: Mode("nope"), Count: -3, MaxAgeDays: -1, UploadLimitMB: -5}},
 	}).Engines["kopia"]
-	if got.Mode != ModeInherit || got.Count != 0 || got.MaxAgeDays != 0 || *got.KeepLocal != 0 {
+	if got.Mode != ModeInherit || got.Count != 0 || got.MaxAgeDays != 0 || got.UploadLimitMB != 0 {
 		t.Fatalf("negative per-engine values survived: %+v", got)
 	}
 }
@@ -214,8 +246,8 @@ func TestSaneIsIdempotent(t *testing.T) {
 	for name, c := range map[string]Config{
 		"defaults":   Defaults(),
 		"empty":      {},
-		"legacy":     migrate(Config{Keep: Keep{Latest: 2, Daily: 30}, KeepLocal: 1}),
-		"per engine": {Mode: ModeAll, Engines: map[string]EngineSettings{"kopia": {Mode: ModeCount, Count: 3, KeepLocal: ptr(0)}}},
+		"legacy":     migrate(Config{Keep: Keep{Latest: 2, Daily: 30}}),
+		"per engine": {Mode: ModeAll, Engines: map[string]EngineSettings{"kopia": {Mode: ModeCount, Count: 3}}},
 	} {
 		once := sane(c)
 		twice := sane(once)
@@ -318,9 +350,6 @@ func TestAnAbsentFieldKeepsTheCompiledDefault(t *testing.T) {
 	if got.Keep != SmartKeep() {
 		t.Errorf("keep %+v, want the smart preset %+v", got.Keep, SmartKeep())
 	}
-	if got.KeepLocal != 2 {
-		t.Errorf("keep local %d, want the default 2", got.KeepLocal)
-	}
 }
 
 // An explicit zero is still an opinion and must not be mistaken for an absence — this
@@ -328,7 +357,7 @@ func TestAnAbsentFieldKeepsTheCompiledDefault(t *testing.T) {
 // defaults rather than merged onto them.
 func TestAnExplicitZeroBeatsTheDefault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "backup.json")
-	if err := os.WriteFile(path, []byte(`{"hour":0,"minute":0,"user_data":false,"keep_local":0}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"hour":0,"minute":0,"user_data":false}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -338,8 +367,5 @@ func TestAnExplicitZeroBeatsTheDefault(t *testing.T) {
 	}
 	if got.UserData {
 		t.Error("user_data:false was ignored")
-	}
-	if got.KeepLocal != 0 {
-		t.Errorf("keep local %d, want the requested 0", got.KeepLocal)
 	}
 }

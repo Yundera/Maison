@@ -3,8 +3,23 @@
   import { settings } from '../stores/settings'
   import { t, languages } from '../i18n'
   import { openSettings } from '../route'
+  import { incidents, loadIncidents, subscribeIncidents } from '../stores/incidents'
 
   let open = $state(false)
+
+  // The bell is the register's primary surface, and deliberately so: mail leaves the
+  // box through a relay nobody here can see the far end of, and a PCS alert filed as
+  // spam fails silently. This does not.
+  //
+  // Seeded from one GET and then followed live. The hub only produces a channel while
+  // somebody is subscribed, so holding a subscription for the whole session is exactly
+  // what that design is trying to avoid — but this channel is event-driven and pushes
+  // nothing on a tick, which is what makes it affordable to hold.
+  loadIncidents()
+  $effect(() => subscribeIncidents())
+
+  const alerts = $derived($incidents.open.filter((i) => !i.acked))
+  const worst = $derived(alerts.some((i) => i.severity === 'critical') ? 'critical' : 'warning')
 
   // Language, wallpaper and widgets stay here rather than moving to the settings
   // page: they are instant and previewed against the dashboard behind them, and
@@ -87,6 +102,20 @@
   </div>
 
   <div class="spacer"></div>
+
+  {#if alerts.length > 0}
+    <button
+      class="picon bell"
+      title={$t('notifications')}
+      aria-label={$t('notifications')}
+      onclick={() => openSettings('notifications')}
+    >
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M9 17a3 3 0 0 0 6 0M12 6v1M8 17V12a4 4 0 0 1 8 0v5" />
+      </svg>
+      <span class="count" class:critical={worst === 'critical'}>{alerts.length}</span>
+    </button>
+  {/if}
 </header>
 
 <style>
@@ -126,6 +155,28 @@
   }
   .picon:hover {
     background: rgba(0, 0, 0, 0.05);
+  }
+  /* Only rendered when there is something to say, so it needs no resting state: an
+     always-present bell that is usually empty trains people not to look at it. */
+  .bell {
+    position: relative;
+    margin-right: 0.35rem;
+  }
+  .count {
+    position: absolute;
+    top: 0.15rem;
+    right: 0.1rem;
+    min-width: 1rem;
+    padding: 0 0.2rem;
+    border-radius: 999px;
+    background: var(--warning, #d29922);
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 700;
+    line-height: 1rem;
+  }
+  .count.critical {
+    background: var(--red, #d1242f);
   }
   .menu-wrap {
     position: relative;

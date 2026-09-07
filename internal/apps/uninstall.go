@@ -192,12 +192,37 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 		return "", nil
 	}
 
-	// The default engine, never a named one. An uninstall is not a "back this up over
-	// there" request — there is no dialog to choose in and nobody to choose — so it
-	// writes where the schedule writes, which is what the settings page says it does.
-	p, err := r.engineFor("")
+	// Every engine configured to receive an uninstall archive, never a named one. An
+	// uninstall is not a "back this up over there" request — there is no dialog to
+	// choose in and nobody to choose — so it writes wherever the settings say uninstall
+	// archives go.
+	ps, err := r.enginesFor("", TriggerUninstall)
 	if err != nil {
 		return "", err
+	}
+
+	// The engine that TAKES the folder goes last, and there may be at most one.
+	//
+	// This is the ordering the whole fan-out uninstall turns on. An engine that
+	// consumes renames the live app folder into its archive (see SnapshotOpts.Consume),
+	// so every engine that merely reads has to have finished first — and a second
+	// consuming engine would rename a folder that no longer exists, failing *after* the
+	// point of no return. Refused up front rather than discovered halfway through.
+	var consuming Provider
+	var reading []Provider
+	for _, p := range ps {
+		if p.Caps().ConsumesSource {
+			if consuming != nil {
+				return "", fmt.Errorf("two backup engines (%s and %s) are set to archive uninstalls by taking the app folder; only one can", consuming.ID(), p.ID())
+			}
+			consuming = p
+			continue
+		}
+		reading = append(reading, p)
+	}
+	ordered := reading
+	if consuming != nil {
+		ordered = append(ordered, consuming)
 	}
 
 	// Consume: this app's folder is going away, so an engine that can take it wholesale
@@ -215,12 +240,21 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 	// Nothing staged is durable until Commit, so an interrupted uninstall discards it
 	// rather than leaving something a later List would offer for restore. Registered
 	// before the stop below so it runs after the restart: bringing the app back up
-	// always takes precedence over cleaning up.
-	committed := false
+	// always takes precedence over cleaning up. One defer for every engine, never one
+	// per engine inside the loop — defers are LIFO, so those would run before the
+	// restart and hold the app down for the length of the cleanup.
+	committed := make([]bool, len(ordered))
+	// taken records that an engine has consumed the app folder. From that moment the
+	// archive IS the user's data: the app must not be restarted (it would come up on a
+	// directory Docker recreates empty) and the archive must never be rolled back.
+	taken := false
 	defer func() {
-		if !committed {
+		for i, p := range ordered {
+			if committed[i] {
+				continue
+			}
 			if err := p.Abort(context.WithoutCancel(ctx), id, stamp); err != nil {
-				log.Printf("uninstall %s: discard incomplete backup: %v", id, err)
+				log.Printf("uninstall %s (%s): discard incomplete backup: %v", id, p.ID(), err)
 			}
 		}
 	}()
@@ -235,9 +269,16 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 			return "", fmt.Errorf("stop app: %w", err)
 		}
 		defer func() {
-			// Only if we did not finish. A successful uninstall has no app to restart, and
-			// starting one whose folder has just been archived would recreate it empty.
-			if committed {
+			// Only if no engine took the folder. A successful uninstall has no app to
+			// restart, and starting one whose folder has just been archived would have
+			// Docker recreate the bind-mount source as an EMPTY directory — the app comes
+			// up blank on a fresh data dir and the next nightly run backs that up.
+			//
+			// Guarded on `taken` and not on "did every engine commit": a consuming commit
+			// is the point of no return whatever happens after it, and reading the flag
+			// the other way round is how a partly-failed fan-out would restart an app
+			// whose data had already been moved into the archive.
+			if taken {
 				return
 			}
 			if err := r.EnsureStarted(context.WithoutCancel(ctx), id); err != nil {
@@ -256,21 +297,44 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 		defer cancel()
 	}
 
-	emit(UninstallEvent{Phase: PhaseBackup, Message: "Backing up " + id})
-	if err := p.Snapshot(downCtx, id, stamp, opts, func(ev Event) {
-		emit(UninstallEvent{Phase: PhaseBackup, Message: ev.Message, Backup: max(ev.Pct, 0)})
-	}); err != nil {
-		return "", fmt.Errorf("back up app: %w", err)
-	}
-	emit(UninstallEvent{Phase: PhaseBackup, Message: "Backed up", Backup: 100})
+	// Every destination, reading engines first and the consuming one last.
+	//
+	// ALL OR NOTHING: if any engine fails, the ones that already committed are rolled
+	// back, the app is restarted and the uninstall refuses. That is what keeps the
+	// promise the settings page makes — you asked for two copies, you get two or none —
+	// and it is why the loop cannot simply carry on past a failure the way a scheduled
+	// backup does.
+	var name string
+	n := float64(len(ordered))
+	for i, p := range ordered {
+		// Each engine gets its own slice of the two tracks, so the bar advances through
+		// the destinations instead of restarting at each one.
+		lo := float64(i) / n * 100
+		scale := func(pct float64) float64 { return lo + max(pct, 0)/n }
 
-	b, err := p.Commit(downCtx, id, stamp, opts, func(ev Event) {
-		emit(UninstallEvent{Phase: PhaseArchive, Message: ev.Message, Backup: 100, Archive: max(ev.Pct, 0)})
-	})
-	if err != nil {
-		return "", fmt.Errorf("finalise backup: %w", err)
+		emit(UninstallEvent{Phase: PhaseBackup, Message: "Backing up " + id, Backup: lo})
+		if err := p.Snapshot(downCtx, id, stamp, opts, func(ev Event) {
+			emit(UninstallEvent{Phase: PhaseBackup, Message: ev.Message, Backup: scale(ev.Pct)})
+		}); err != nil {
+			r.rollBackArchives(ctx, id, stamp, ordered, committed)
+			return "", fmt.Errorf("back up app to %s: %w", p.ID(), archiveHint(err, p.ID()))
+		}
+
+		b, err := p.Commit(downCtx, id, stamp, opts, func(ev Event) {
+			emit(UninstallEvent{Phase: PhaseArchive, Message: ev.Message, Backup: 100, Archive: scale(ev.Pct)})
+		})
+		if err != nil {
+			r.rollBackArchives(ctx, id, stamp, ordered, committed)
+			return "", fmt.Errorf("finalise backup in %s: %w", p.ID(), archiveHint(err, p.ID()))
+		}
+		committed[i] = true
+		// The folder is gone from here on. Nothing after this may restart the app or
+		// delete this archive — see the restart defer and rollBackArchives.
+		if p.Caps().ConsumesSource {
+			taken = true
+		}
+		name = b.Name
 	}
-	committed = true
 	emit(UninstallEvent{Phase: PhaseArchive, Message: "Archived", Backup: 100, Archive: 100})
 
 	// Past the commit point: the data is safe, so what follows is cleanup and its
@@ -294,7 +358,7 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 	}
 
 	emit(UninstallEvent{Phase: PhaseDone, Message: "Uninstalled", Backup: 100, Archive: 100, Remove: 100})
-	return b.Name, nil
+	return name, nil
 }
 
 // removeContainers stops and removes the project's containers, ticking the Remove
@@ -318,4 +382,46 @@ func (r *Registry) removeContainers(ctx context.Context, id string, emit func(Un
 			Backup: earlier, Archive: earlier, Remove: p,
 		})
 	})
+}
+
+// rollBackArchives removes the archives a failed uninstall attempt already wrote, so a
+// retry does not find a half-set that reads as a finished uninstall backup.
+//
+// It is a COMPENSATING ACTION, not a transaction, and it is written to fail safe rather
+// than to succeed:
+//
+//   - **An engine that consumed the folder is never rolled back.** Its archive is not a
+//     spare copy, it *is* the app's data — the folder was renamed into it. Deleting that
+//     would destroy the only copy, which is the exact opposite of a rollback. In practice
+//     the consuming engine goes last, so reaching here with it committed means everything
+//     succeeded; the guard is here because getting this wrong is unrecoverable.
+//   - **Best effort, and logged.** Delete goes through the engine, and the overwhelmingly
+//     likely reason a fan-out uninstall failed is that a repository is unreachable —
+//     which is exactly when its delete cannot run either. An archive left behind is
+//     untidy; refusing to restart the app because we could not tidy it would be worse.
+//
+// The app is left installed either way, so anything left behind is an extra backup of an
+// app that still exists, which retention will expire like any other.
+func (r *Registry) rollBackArchives(ctx context.Context, id, stamp string, ordered []Provider, committed []bool) {
+	if r.Engines == nil {
+		return
+	}
+	for i, p := range ordered {
+		if !committed[i] || p.Caps().ConsumesSource {
+			continue
+		}
+		if err := r.Engines.Delete(context.WithoutCancel(ctx), p.ID(), id, stamp); err != nil {
+			log.Printf("uninstall %s: could not remove the %s archive written before the failure (%s): %v",
+				id, p.ID(), stamp, err)
+		}
+	}
+}
+
+// archiveHint appends the way out of a refused uninstall.
+//
+// All-or-nothing means an engine nobody can reach blocks every uninstall on the box, so
+// the error has to say what to do about it rather than leaving the user to guess that a
+// backup setting is what is holding an app hostage.
+func archiveHint(err error, engine string) error {
+	return fmt.Errorf("%w — the app is still installed and running. Either fix %s, or stop archiving uninstalls there in Settings, Backups", err, engine)
 }

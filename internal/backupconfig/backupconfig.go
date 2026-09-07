@@ -88,11 +88,6 @@ type Config struct {
 	// is why an adopted box used to keep emitting an empty `smtp` block that nothing
 	// read. Nil is the state every box reaches and stays in.
 	LegacySMTP *notify.SMTP `json:"smtp,omitempty"`
-
-	// KeepLocal is how many on-disk archives of an app to retain. It is separate
-	// from Keep because local archives cost real disk while remote ones cost a
-	// quota, and because it is Maison that enforces it rather than the engine.
-	KeepLocal int `json:"keep_local"`
 }
 
 // Keep is grandfather-father-son retention.
@@ -111,12 +106,11 @@ type Keep struct {
 // unpacking into it is a collision worth thirty minutes to avoid.
 func Defaults() Config {
 	return Config{
-		Enabled:   false,
-		Hour:      3,
-		Minute:    30,
-		UserData:  true,
-		Keep:      Keep{Latest: 2, Daily: 7, Weekly: 4, Monthly: 12},
-		KeepLocal: 2,
+		Enabled:  false,
+		Hour:     3,
+		Minute:   30,
+		UserData: true,
+		Keep:     Keep{Latest: 2, Daily: 7, Weekly: 4, Monthly: 12},
 	}
 }
 
@@ -134,9 +128,9 @@ type Store struct {
 // THE SEEDED DOCUMENT IS EMPTY — `{}` — and that is only safe because of how it is
 // read back. Decoding happens ONTO a Defaults() value, so a field the file does not
 // carry keeps the compiled default rather than becoming the zero value. Without that,
-// an empty document would mean midnight, no user data, no local archives and a
-// one-snapshot retention policy pushed into the repository, since sane() only clamps
-// values that are out of range and every zero here is in range.
+// an empty document would mean midnight, no user data, and a one-snapshot retention
+// policy pushed into the repository, since sane() only clamps values that are out of
+// range and every zero here is in range.
 //
 // An empty seed rather than a rendered one is what keeps the fleet unpinned: a box
 // states an opinion only about fields someone actually set, so a later change to
@@ -264,9 +258,6 @@ func sane(c Config) Config {
 	if c.Keep.Latest < 1 {
 		c.Keep.Latest = 1
 	}
-	if c.KeepLocal < 0 {
-		c.KeepLocal = 0
-	}
 	c.Count = max(c.Count, 0)
 	c.MaxAgeDays = max(c.MaxAgeDays, 0)
 	if !c.Mode.Valid() {
@@ -280,10 +271,6 @@ func sane(c Config) Config {
 		es.Count = max(es.Count, 0)
 		es.MaxAgeDays = max(es.MaxAgeDays, 0)
 		es.UploadLimitMB = max(es.UploadLimitMB, 0)
-		if es.KeepLocal != nil && *es.KeepLocal < 0 {
-			zero := 0
-			es.KeepLocal = &zero
-		}
 		c.Engines[id] = es
 	}
 	return c

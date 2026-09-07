@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -28,10 +29,17 @@ import (
 // read-only, because backups it wrote in the past are still on the box or still in
 // a repository, and they have to remain listable, restorable and deletable.
 type Set struct {
-	mu      sync.RWMutex
-	byID    map[string]apps.Provider
-	order   []string // registration order, so listing is stable across restarts
-	written string   // ID of the engine that receives new backups
+	mu    sync.RWMutex
+	byID  map[string]apps.Provider
+	order []string // registration order, so listing is stable across restarts
+
+	// writers is which engines receive each trigger, by engine ID.
+	//
+	// A map of slices rather than one `written string`: engines are independent
+	// destinations and a backup can land in several at once. The single writer was
+	// the last thing that made them mutually exclusive for writing, while List and
+	// Locate had always treated them as independent for reading.
+	writers map[apps.Trigger][]string
 
 	// listings caches each engine's whole listing for the store's install picker.
 	// See ListForInstall.
@@ -58,11 +66,11 @@ type engineListing struct {
 	byApp map[string][]apps.Backup
 }
 
-// New builds a Set from the engines a deployment has. The first one registered is
-// the initial write target, which makes the local engine — always present, needing
-// no configuration — the natural default.
+// New builds a Set from the engines a deployment has. The first one registered
+// receives every trigger, which makes the local engine — always present, needing no
+// configuration — the natural default until the settings say otherwise.
 func New(providers ...apps.Provider) *Set {
-	s := &Set{byID: map[string]apps.Provider{}}
+	s := &Set{byID: map[string]apps.Provider{}, writers: map[apps.Trigger][]string{}}
 	for _, p := range providers {
 		s.Register(p)
 	}
@@ -82,8 +90,12 @@ func (s *Set) Register(p apps.Provider) {
 		s.order = append(s.order, id)
 	}
 	s.byID[id] = p
-	if s.written == "" {
-		s.written = id
+	// The first engine registered receives everything, so a Set built without any
+	// configuration behaves exactly as Maison always has.
+	for _, t := range apps.Triggers {
+		if len(s.writers[t]) == 0 {
+			s.writers[t] = []string{id}
+		}
 	}
 }
 
@@ -102,28 +114,47 @@ func (s *Set) Get(id string) (apps.Provider, bool) {
 	return p, ok
 }
 
-// Writer is the engine new backups go to.
+// Writers is every engine a trigger writes to, in registration order.
 //
-// **The selected engine governs writes only.** Nothing reads through it — see List
-// and Locate — because a backup written by a previously selected engine is still
-// the user's backup.
-func (s *Set) Writer() apps.Provider {
+// **The write set governs writes only.** Nothing reads through it — see List and
+// Locate — because a backup written by an engine that no longer receives anything is
+// still the user's backup.
+//
+// The order is registration order, which puts the local engine first. That is load
+// bearing for a fan-out backup: the local pass is the cheap one and it ignores the
+// context deadline entirely, so running it first leaves the whole remaining downtime
+// budget to the engines that honour one.
+func (s *Set) Writers(t apps.Trigger) []apps.Provider {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.byID[s.written]
+	out := make([]apps.Provider, 0, len(s.writers[t]))
+	for _, id := range s.order {
+		if slices.Contains(s.writers[t], id) {
+			if p := s.byID[id]; p != nil {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
-// SetWriter picks the engine that receives new backups. It refuses an unknown ID
-// rather than silently falling back, because silently writing somewhere other than
+// SetWriters replaces which engines receive a trigger. It refuses an unknown ID
+// rather than silently dropping it, because silently writing somewhere other than
 // where the user asked is how a user ends up believing their data is offsite when
 // it is not.
-func (s *Set) SetWriter(id string) error {
+//
+// An empty set is allowed and means "nothing receives this trigger" — a real state
+// the settings page can produce, and one the backup path reports as a refusal rather
+// than backing up nowhere and calling it a success.
+func (s *Set) SetWriters(t apps.Trigger, ids []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.byID[id]; !ok {
-		return fmt.Errorf("unknown backup engine: %s", id)
+	for _, id := range ids {
+		if _, ok := s.byID[id]; !ok {
+			return fmt.Errorf("unknown backup engine: %s", id)
+		}
 	}
-	s.written = id
+	s.writers[t] = append([]string(nil), ids...)
 	return nil
 }
 

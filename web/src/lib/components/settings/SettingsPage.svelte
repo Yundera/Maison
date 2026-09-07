@@ -20,6 +20,7 @@
   import StoreSection from './StoreSection.svelte'
   import BackupsSection from './BackupsSection.svelte'
   import ResourcesSection from './ResourcesSection.svelte'
+  import NotificationsSection from './NotificationsSection.svelte'
 
   // route.ts guarantees the store holds a real section (it normalises the URL), so
   // this cast only re-states what the router already checked.
@@ -47,6 +48,10 @@
     resources: {
       label: 'resources',
       icon: 'M4 16l4-5 3 3 4-6 5 8',
+    },
+    notifications: {
+      label: 'notifications',
+      icon: 'M9 17a3 3 0 0 0 6 0M12 6v1M8 17V12a4 4 0 0 1 8 0v5',
     },
   }
 
@@ -93,6 +98,8 @@
         <BackupsSection />
       {:else if current === 'resources'}
         <ResourcesSection />
+      {:else if current === 'notifications'}
+        <NotificationsSection />
       {/if}
     </main>
   </div>

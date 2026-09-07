@@ -172,8 +172,10 @@ install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdat
 The rollback point (step 3) is **always the local engine**, whatever engine is configured for scheduled
 backups. A rollback happens in the seconds after an update broke something, so it
 has to be a rename; restoring from a repository is a download, and the app would be
-broken for the duration. These are ordinary local archives, so the nightly run's
-keep-N prunes them like any other — there is no separate retention for them.
+broken for the duration. These are ordinary local archives, so the nightly run prunes
+them under the local engine's own retention like any other — there is no separate
+retention for them, and `retention.Plan` never drops the newest, so a rollback point
+cannot be expired out from under an update.
 
 If the rollback point cannot be taken — almost always because the app is too large
 to hold a second copy of — **the update still proceeds**, and the response carries a

@@ -84,6 +84,9 @@ func (a *CatalogApp) IconRel() string { return a.iconRel }
 type Source struct {
 	URL  string `json:"url"`
 	Name string `json:"name"`
+	// Custom is true when Name is the operator's own, set in the settings panel,
+	// rather than the name the store declares in its store.json.
+	Custom bool `json:"custom,omitempty"`
 }
 
 // Manager holds the merged catalog across all configured stores.
@@ -119,6 +122,14 @@ type Manager struct {
 	// rather than read on demand: naming a source otherwise costs a directory walk
 	// to find the store root, per source, every time the menu opens.
 	names map[string]string
+	// custom is the operator's own name for a store, by URL — set in the settings
+	// panel and persisted in settings.json. It beats the store's self-declared
+	// name, which is the point: two branches of one repository ship the same
+	// store.json and are otherwise indistinguishable in the list.
+	//
+	// Kept separate from names rather than overwriting it, so clearing the custom
+	// name falls back to what the store calls itself without waiting for a refresh.
+	custom map[string]string
 }
 
 // New creates a Manager for the given store URLs, caching under cacheDir.
@@ -128,6 +139,7 @@ func New(urls []string, cacheDir string) *Manager {
 		cacheDir: cacheDir,
 		catalog:  map[string]*CatalogApp{},
 		names:    map[string]string{},
+		custom:   map[string]string{},
 	}
 }
 
@@ -157,23 +169,88 @@ func canonicalURLs(urls []string) []string {
 	return out
 }
 
-// Sources returns the configured stores, each named as it names itself. A store
-// that has never been read successfully has no name of its own and is listed by
-// URL — which is also the fallback for one that ships no store.json, since a
-// store with nothing to say about itself is best identified by where it came
-// from rather than by a guess made from its URL's shape.
+// Sources returns the configured stores, each under the name it is displayed by:
+// the operator's own name for it if they set one, else the name it gives itself
+// in store.json. A store that has never been read successfully has neither and is
+// listed by URL — which is also the fallback for one that ships no store.json,
+// since a store with nothing to say about itself is best identified by where it
+// came from rather than by a guess made from its URL's shape.
+//
+// Custom reports whether the name is the operator's rather than the store's, so
+// the settings panel can show a rename as a rename (and offer to undo it) instead
+// of silently presenting it as what the store calls itself.
 func (m *Manager) Sources() []Source {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]Source, 0, len(m.urls))
 	for _, u := range m.urls {
-		name := m.names[u]
-		if name == "" {
-			name = u
-		}
-		out = append(out, Source{URL: u, Name: name})
+		out = append(out, Source{URL: u, Name: m.displayName(u), Custom: m.custom[u] != ""})
 	}
 	return out
+}
+
+// displayName resolves one store's label. Callers hold m.mu.
+func (m *Manager) displayName(u string) string {
+	if n := m.custom[u]; n != "" {
+		return n
+	}
+	if n := m.names[u]; n != "" {
+		return n
+	}
+	return u
+}
+
+// CustomName returns the operator's own name for one store, or "" when they have
+// not named it. Unlike Sources it does not fall back to anything: the caller is
+// asking whether to override a name it already resolved.
+func (m *Manager) CustomName(u string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.custom[CanonicalURL(u)]
+}
+
+// Names returns the operator's custom store names, by URL.
+func (m *Manager) Names() map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string, len(m.custom))
+	for k, v := range m.custom {
+		out[k] = v
+	}
+	return out
+}
+
+// SetNames replaces the operator's custom store names. An empty or blank name
+// drops the override, so the store goes back to calling itself whatever its
+// store.json says without a re-download.
+//
+// The catalog is relabelled in place rather than left to the next refresh: a
+// rename is a display change, and re-reading every store over the network to make
+// one take effect would be absurd. Only StoreName is touched — it is what the app
+// tiles and the app detail page show as the origin — and the URL each app was
+// read from, which is what actually identifies its store, is untouched.
+func (m *Manager) SetNames(names map[string]string) {
+	custom := make(map[string]string, len(names))
+	for u, n := range names {
+		u, n = CanonicalURL(u), strings.TrimSpace(n)
+		if u == "" || n == "" {
+			continue
+		}
+		custom[u] = n
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.custom = custom
+	m.relabelLocked()
+}
+
+// relabelLocked re-resolves every catalog app's store label from the current
+// names. Callers hold m.mu for writing. The merged catalog holds the same
+// pointers as all, so relabelling all covers both.
+func (m *Manager) relabelLocked() {
+	for _, a := range m.all {
+		a.StoreName = m.displayName(a.StoreURL)
+	}
 }
 
 // Catalog returns all apps sorted by name.
@@ -301,6 +378,14 @@ func (m *Manager) appIn(root string, ref Ref) (*CatalogApp, []byte, error) {
 	apps, _, _ := parseStore(root, ref.URL, ref.Apps())
 	for _, a := range apps {
 		if a.ID == ref.ID {
+			// parseStore resolved the store's own name; a store the operator renamed
+			// is shown under their name here too, so the app detail page and the
+			// browse grid agree about where an app came from. Only an override is
+			// applied — a store reached by a deep link and never configured keeps
+			// whatever its store.json says.
+			if n := m.CustomName(a.StoreURL); n != "" {
+				a.StoreName = n
+			}
 			raw, err := os.ReadFile(a.composePath)
 			if err != nil {
 				return nil, nil, err
@@ -390,6 +475,9 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	m.cats = cats
 	m.recommend = recommend
 	m.names = names
+	// The apps were parsed with whatever each store calls itself; a store the
+	// operator has renamed keeps their name across a refresh.
+	m.relabelLocked()
 	m.mu.Unlock()
 	return errors.Join(errs...)
 }
@@ -424,9 +512,17 @@ func (m *Manager) RefreshStore(ctx context.Context, storeURL string) error {
 // The delay is recomputed before every wait instead of a fixed 24h ticker: a DST
 // shift or a clock correction would otherwise drift the run off the wall-clock
 // time and never come back to it.
-func (m *Manager) StartDailyRefresh(ctx context.Context, hour, minute int) {
+//
+// onResult is handed every refresh's outcome, nil included. This used to be
+// `_ = m.Refresh(ctx)` — the only caller of Refresh that discarded it — which meant a
+// box whose store URL had rotted browsed a stale catalog indefinitely with nothing but
+// a log line to say why. Nil is accepted and means the old behaviour.
+func (m *Manager) StartDailyRefresh(ctx context.Context, hour, minute int, onResult func(error)) {
+	if onResult == nil {
+		onResult = func(error) {}
+	}
 	go func() {
-		_ = m.Refresh(ctx)
+		onResult(m.Refresh(ctx))
 		for {
 			t := time.NewTimer(untilNext(time.Now(), hour, minute))
 			select {
@@ -434,7 +530,7 @@ func (m *Manager) StartDailyRefresh(ctx context.Context, hour, minute int) {
 				t.Stop()
 				return
 			case <-t.C:
-				_ = m.Refresh(ctx)
+				onResult(m.Refresh(ctx))
 			}
 		}
 	}()

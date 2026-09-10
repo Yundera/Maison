@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -255,7 +256,39 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 			return s.apps.BackupWith(ctx, local, project, false, nil)
 		}
 		s.installer.RollBack = func(ctx context.Context, project, name string) error {
-			return s.apps.Restore(ctx, project, "", name, nil)
+			if err := s.apps.Restore(ctx, project, "", name, nil); err != nil {
+				return err
+			}
+			// Restore restarts only an app it found running, and a failed update has
+			// usually left it stopped: StopBeforeUpdate took it down before the converge
+			// that failed. Started here, and its failure returned rather than logged — an
+			// app that does not come back is a rollback that did not work.
+			if s.apps.Running(ctx, project) {
+				return nil
+			}
+			return s.apps.EnsureStarted(ctx, project)
+		}
+		// A system app keeps running through its update: stopping the dashboard, or the
+		// gateway in front of it, takes down the process doing the update, and nothing
+		// is left to start it again.
+		s.installer.StopBeforeUpdate = func(ctx context.Context, project string) error {
+			if s.apps.Protected(project) {
+				return nil
+			}
+			err := s.dx.StopProject(ctx, project)
+			if err == nil || errors.Is(err, dockerx.ErrNoContainers) {
+				return nil
+			}
+			// A stop that failed part-way can leave the app down with nothing about to
+			// start it. The update is abandoned before anything is written, so this
+			// starts the version the app already had.
+			if startErr := s.apps.EnsureStarted(ctx, project); startErr != nil {
+				log.Printf("update %s: restart after a failed stop: %v", project, startErr)
+			}
+			return err
+		}
+		s.installer.VerifyRunning = func(ctx context.Context, project string) error {
+			return installer.Steady(ctx, s.dx, project, installer.SteadyWindow)
 		}
 		// Install-from-backup, which — unlike the rollback point above — goes through
 		// whichever engine holds the backup the user picked. A store reinstall is not a

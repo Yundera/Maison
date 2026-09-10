@@ -82,9 +82,9 @@ type UpdateResult struct {
 }
 
 // ApplyUpdate pulls the store's current docker-compose.yml, and — if it differs
-// from the installed copy — takes a rollback point, overwrites the strict base and
-// brings the stack back up (base + override) with `docker compose up -d`. The user's
-// override and .env are untouched.
+// from the installed copy — pulls its images, takes a rollback point, stops the old
+// version, overwrites the strict base and brings the stack back up (base + override)
+// with `docker compose up -d`. The user's override and .env are untouched.
 //
 // An update is the most common way an app breaks, and it is the one destructive
 // change Maison makes on the user's behalf, so it takes a backup first and puts the
@@ -109,6 +109,13 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 	}
 	if bytes.Equal(current, newBase) {
 		return res, nil // already up to date — nothing to do
+	}
+
+	// The new version's images, pulled while the old version is still serving: the stop
+	// below would otherwise cost the whole download, not just the swap. Not fatal —
+	// `compose up` pulls whatever is still missing, and fails loudly if it cannot.
+	if f, err := composefile.Parse(newBase); err == nil {
+		in.pullImages(ctx, f, func(Event) {})
 	}
 
 	// The rollback point, before anything is written.
@@ -138,6 +145,19 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 			})
 		default:
 			res.Backup = name
+		}
+	}
+
+	// Stop the old version before anything of the new one runs. The new version's init
+	// steps run in pre_up against the app's data, and the old containers still have that
+	// data open — taking the rollback point restarts them on its way out — so a database
+	// that takes an exclusive lock fails every step that opens it (FileBrowser's bolt
+	// answers "timeout") and the update is rolled back for nothing. Nothing has been
+	// written yet, so a stop that fails needs no undo.
+	if in.StopBeforeUpdate != nil {
+		if err := in.StopBeforeUpdate(ctx, project); err != nil {
+			log.Printf("update %s: stop before update: %v", project, err)
+			return res, fmt.Errorf("stop %s before updating: %w", project, err)
 		}
 	}
 
@@ -183,8 +203,19 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 // A failed rollback is reported alongside the failure that caused it rather than
 // replacing it: the operator needs to know both that the update failed *and* that
 // the app is now in neither state.
+//
+// Every way out of here leaves an incident, not only the ones where the rollback went
+// wrong. The error also reaches the tile, but a tile is read only by whoever is looking
+// at it when the update fails.
 func (in *Installer) rollBack(ctx context.Context, project string, res UpdateResult, cause error) (UpdateResult, error) {
+	log.Printf("update %s failed: %v", project, cause)
 	if in.RollBack == nil || res.Backup == "" {
+		in.report(incident.Report{
+			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
+			Title:  project + " is broken after a failed update",
+			Detail: "The update failed and there was no rollback point to put the old version back from:\n" + cause.Error() + "\n\nThe new version is in place and did not come up. Its logs, from the tile's menu, will say why.",
+			Args:   map[string]string{"app": project},
+		})
 		return res, fmt.Errorf("update failed and could not be undone: %w", cause)
 	}
 	// Deliberately not the request's context: it may already be cancelled by the
@@ -203,6 +234,30 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 		return res, fmt.Errorf("update failed and the rollback failed too (%v): %w", err, cause)
 	}
 	res.RolledBack = true
+
+	// Put back is not running. The restore returns the old compose and the old data, but
+	// whatever broke the update can be in that data, or in what the restore put back.
+	if in.VerifyRunning != nil {
+		if err := in.VerifyRunning(context.WithoutCancel(ctx), project); err != nil {
+			res.Warning = "the update was rolled back, but the previous version is not running: " + err.Error()
+			log.Printf("update %s: %s", project, res.Warning)
+			in.report(incident.Report{
+				ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
+				Title:  project + " is down after a failed update",
+				Detail: "The update failed:\n" + cause.Error() + "\n\nThe previous version was put back from the backup named " + res.Backup + ", but it is not running: " + err.Error() + "\n\nIts logs, from the tile's menu, will say why. What the failed update left behind was archived with the app's other backups.",
+				Args:   map[string]string{"app": project},
+			})
+			return res, fmt.Errorf("update failed and was rolled back, but %s is not running (%v): %w", project, err, cause)
+		}
+	}
+	// Rolled back and running is still a failed update: the app is on the old version,
+	// and the store keeps offering the one that just failed.
+	in.report(incident.Report{
+		ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
+		Title:  project + " could not be updated",
+		Detail: "The update failed and the previous version was put back; it is running.\n\n" + cause.Error() + "\n\nThe store will keep offering this update. If it fails the same way again, the store's version of the app needs a fix.",
+		Args:   map[string]string{"app": project},
+	})
 	return res, fmt.Errorf("update failed and was rolled back: %w", cause)
 }
 

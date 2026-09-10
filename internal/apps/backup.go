@@ -1167,6 +1167,10 @@ func (r *Registry) EstimateRestore(id, engine, name string) (Estimate, error) {
 	return Estimate{Size: size, Needed: needed, Free: free, Enough: free >= needed}, nil
 }
 
+// Running reports whether any of the app's containers are up. See isRunning for why
+// a Docker hiccup answers no.
+func (r *Registry) Running(ctx context.Context, id string) bool { return r.isRunning(ctx, id) }
+
 // isRunning reports whether any of the project's containers are up. A Docker
 // hiccup answers "no", which is the safe direction: the worst case is that a
 // stopped-looking app is not restarted, and the operator can start it from the

@@ -93,8 +93,26 @@ type Installer struct {
 	// specifically: a rollback has to be a rename, and restoring from a repository is
 	// a download. Nil on either disables the rollback point, which is the correct
 	// behaviour on a box with no Docker.
+	//
+	// RollBack also brings the app back up. A failed update has usually left the app
+	// stopped (see StopBeforeUpdate), so putting the files back is not the whole of it,
+	// and an app that does not start again is a rollback that did not work.
 	BackupBeforeUpdate func(ctx context.Context, project string) (string, error)
 	RollBack           func(ctx context.Context, project, name string) error
+
+	// StopBeforeUpdate stops the app's containers once the rollback point is taken and
+	// before the new version is converged. The new version's pre_up init steps run
+	// against the app's data, and the old containers still have it open: a database that
+	// takes an exclusive lock fails every such step, and the update is rolled back for
+	// nothing. Nil skips the stop.
+	StopBeforeUpdate func(ctx context.Context, project string) error
+
+	// VerifyRunning watches an app for a moment after a rollback and says why it is not
+	// staying up, nil when it is. The rollback returns the old compose and the old data,
+	// but whatever broke the update can still be in that data, and "rolled back" over a
+	// crash-looping app is how an owner finds out days later. See Steady. Nil skips the
+	// check.
+	VerifyRunning func(ctx context.Context, project string) error
 
 	// FetchBackup puts (project, engine, name) back as the app's folder before an
 	// install runs over it — the store's install-from-backup path.

@@ -161,15 +161,17 @@ install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdat
 ```
 1. fetch the store's current compose for the app store-ref names
 2. equal to what's on disk, byte for byte? → nothing to do, report "up to date"
-3. back up the app  ← the rollback point, taken before anything is written
-4. overwrite docker-compose.yml (the strict base only)
-5. refresh .seed from the same store sync as the compose above
-6. stackup.Up  → converge (folders, secrets, variables, init, seed, files — including
+3. pull the new version's images  ← while the old version is still serving
+4. back up the app  ← the rollback point, taken before anything is written
+5. stop the old version  (system apps excepted)
+6. overwrite docker-compose.yml (the strict base only)
+7. refresh .seed from the same store sync as the compose above
+8. stackup.Up  → converge (folders, secrets, variables, init, seed, files — including
                  anything the new version introduces) → pre_up → up → post_up
-7. Up failed? → restore the rollback point and report both failures
+9. Up failed? → restore the rollback point, start it, watch it, and report
 ```
 
-The rollback point (step 3) is **always the local engine**, whatever engine is configured for scheduled
+The rollback point (step 4) is **always the local engine**, whatever engine is configured for scheduled
 backups. A rollback happens in the seconds after an update broke something, so it
 has to be a rename; restoring from a repository is a download, and the app would be
 broken for the duration. These are ordinary local archives, so the nightly run prunes
@@ -183,10 +185,30 @@ to hold a second copy of — **the update still proceeds**, and the response car
 the largest apps on old versions, including for security fixes, which is the worse
 failure.
 
-The restore (step 7) replaces the whole folder, so it takes the old compose with it: the app
+The old version is **stopped before anything of the new one runs** (step 5). The new
+version's `init` steps run in `pre_up`, against the app's data, and the old containers
+still have that data open — taking the rollback point restarts them on its way out. A
+database that takes an exclusive lock fails every such step: FileBrowser's bolt database
+answers `timeout` after a second, and the update is rolled back for nothing. The images
+are pulled first (step 3) so the stop costs the swap rather than the download. A system
+app is not stopped: stopping the dashboard, or the gateway in front of it, takes down the
+process doing the update.
+
+The restore (step 9) replaces the whole folder, so it takes the old compose with it: the app
 returns to the state the rollback point captured rather than to a new compose running
 against old data. A rolled-back update still reports as a **failure** — the app is
 running the old version, and rendering that as success would be a lie.
+
+Put back is not running, so the rollback does two more things. It **starts** the app —
+`Restore` restarts only an app it found running, and step 5 stopped it — and an app that
+does not start is a rollback that failed. Then it **watches** it: two looks at its
+containers 30 seconds apart (`installer.Steady`). A container restarting, one whose restart
+counter moved, or one that was running at the first look and is not at the second means
+the previous version is not staying up, whatever the restore said.
+
+Every failed update leaves an `app.update:<app>` incident, not just a tile: a warning when
+the previous version is back and running, **critical** when it is not, when the rollback
+itself failed, or when there was no rollback point to undo it. See `incidents.md`.
 
 The override and `.env` are never touched — that is the entire point of keeping the
 base byte-identical to the store. `pre_install` / `post_install` do **not** re-run;

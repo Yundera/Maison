@@ -113,7 +113,7 @@ what nobody is present for.
 | `backup.run` | `backup.failed` | `backup.Scheduler.reportOutcome`, every run |
 | `app.install:<app>` | `app.install` | `installer.StartInstall`, cleared by a later success |
 | `app.hook:<app>` | `app.stackup` | `stackup.Up` (`.env` sync, `RunInit`, `post_up`) and `installer` (`post_install`) |
-| `app.update:<app>` | `app.update` | `installer.Update` — warning for "no rollback point", **critical** for "update failed and the rollback failed too" |
+| `app.update:<app>` | `app.update` | `installer.ApplyUpdate` — warning for "no rollback point" and for "failed and rolled back" (the old version is running); **critical** for "the rollback failed too", "rolled back but not running" (`installer.Steady`) and "failed with no rollback point to undo it". Cleared by a later successful update |
 | `store.source` | `store.source` | `appstore.StartDailyRefresh`, after two consecutive failures |
 
 `internal/stackup` is package-level functions with no receiver to hang a hook on, so

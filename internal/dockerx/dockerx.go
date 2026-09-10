@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -118,6 +119,9 @@ func (c *Client) ListProjectContainers(ctx context.Context) ([]Container, error)
 // None of it is on the ContainerList summary, which is why it needs an inspect and why
 // only a few containers per pass are worth spending one on — see ProjectRunStates.
 type RunState struct {
+	// State is the container's state when it was inspected: running, restarting,
+	// exited, created, …
+	State string
 	// Restarts is Docker's own restart counter. A number that climbs between two
 	// observations is the definition of a crash loop, and it is the only signal here
 	// that separates "crashed once" from "crashing continuously".
@@ -136,6 +140,22 @@ type RunState struct {
 // all fine would be the most expensive thing the dashboard does. A container that is
 // up has nothing to say here, so only "restarting" and "exited" are asked.
 func (c *Client) ProjectRunStates(ctx context.Context, project string) (map[string]RunState, error) {
+	return c.projectRunStates(ctx, project, false)
+}
+
+// ProjectStates inspects EVERY container of one project, running ones included, keyed
+// by service name.
+//
+// It is the inspect ProjectRunStates deliberately skips, for a question that one cannot
+// answer: whether an app that was just started is staying up. A crash-looping container
+// is "running" for part of every cycle, and its restart counter — only on the inspect —
+// is what gives it away. Asked once, of one app, it is cheap; never put it on a periodic
+// path.
+func (c *Client) ProjectStates(ctx context.Context, project string) (map[string]RunState, error) {
+	return c.projectRunStates(ctx, project, true)
+}
+
+func (c *Client) projectRunStates(ctx context.Context, project string, all bool) (map[string]RunState, error) {
 	f := filters.NewArgs(filters.Arg("label", labelProject+"="+project))
 	list, err := c.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
 	if err != nil {
@@ -143,7 +163,7 @@ func (c *Client) ProjectRunStates(ctx context.Context, project string) (map[stri
 	}
 	out := map[string]RunState{}
 	for _, ct := range list {
-		if ct.State != "restarting" && ct.State != "exited" {
+		if !all && ct.State != "restarting" && ct.State != "exited" {
 			continue
 		}
 		info, err := c.cli.ContainerInspect(ctx, ct.ID)
@@ -155,6 +175,7 @@ func (c *Client) ProjectRunStates(ctx context.Context, project string) (map[stri
 			name = ct.ID[:12]
 		}
 		out[name] = RunState{
+			State:     info.State.Status,
 			Restarts:  info.RestartCount,
 			ExitCode:  info.State.ExitCode,
 			OOMKilled: info.State.OOMKilled,
@@ -162,6 +183,10 @@ func (c *Client) ProjectRunStates(ctx context.Context, project string) (map[stri
 	}
 	return out, nil
 }
+
+// ErrNoContainers is returned for a project Docker has no containers for — one that
+// was never brought up, or whose containers were removed.
+var ErrNoContainers = errors.New("no containers")
 
 func (c *Client) projectContainerIDs(ctx context.Context, project string) ([]string, error) {
 	f := filters.NewArgs(filters.Arg("label", labelProject+"="+project))
@@ -174,7 +199,7 @@ func (c *Client) projectContainerIDs(ctx context.Context, project string) ([]str
 		ids = append(ids, ct.ID)
 	}
 	if len(ids) == 0 {
-		return nil, errors.New("no containers for project " + project)
+		return nil, fmt.Errorf("%w for project %s", ErrNoContainers, project)
 	}
 	return ids, nil
 }

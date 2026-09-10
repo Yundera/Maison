@@ -1,6 +1,7 @@
 import { get, writable } from 'svelte/store'
 import { live } from '../live/ws'
 import { api } from '../api/client'
+import { settings } from './settings'
 
 export interface App {
   id: string
@@ -498,8 +499,12 @@ export function appUrl(a: App): string {
  *  "starting", or unhealthy) goes through `/launch?app=<id>`, which starts the
  *  stack if needed and holds a friendly status page until it responds — instead of
  *  a browser connection error or a gateway 502. Both paths open synchronously in
- *  the click handler so the popup blocker stays clear. */
-export function openApp(a: App): void {
+ *  the click handler so the popup blocker stays clear.
+ *
+ *  New tab or this one is the operator's choice (Settings → "open apps in a new
+ *  tab"), except that a modifier/middle click always means a new tab because that
+ *  is what it means everywhere else in the browser. `ev` carries that click. */
+export function openApp(a: App, ev?: MouseEvent): void {
   const url = appUrl(a)
   if (url === '') {
     alert(
@@ -511,5 +516,21 @@ export function openApp(a: App): void {
   }
   const cleanlyUp = a.status === 'running' && a.health !== 'starting' && a.health !== 'unhealthy'
   const target = cleanlyUp ? url : `/launch?app=${encodeURIComponent(a.id)}`
-  window.open(target, '_blank', 'noopener')
+  openTarget(target, ev)
+}
+
+/** Whether this click should open a new tab regardless of the setting: the
+ *  browser's own conventions for "somewhere else" — ctrl/cmd/shift-click and the
+ *  middle button — outrank a preference about the plain left click. */
+function forcesNewTab(ev?: MouseEvent): boolean {
+  return !!ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey || ev.shiftKey)
+}
+
+/** Navigate to a tile's target, honouring the new-tab preference.
+ *
+ *  Same-tab uses assign, not replace: the dashboard has to stay in history for
+ *  Back to come back to it, which is the entire point of the option. */
+export function openTarget(url: string, ev?: MouseEvent): void {
+  if (get(settings).open_in_new_tab || forcesNewTab(ev)) window.open(url, '_blank', 'noopener')
+  else window.location.assign(url)
 }

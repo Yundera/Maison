@@ -37,6 +37,10 @@ export interface Settings {
    *  measures with nobody watching, so it is the only thing with an off switch —
    *  see the Recording card on the Resources page. */
   metrics_history: boolean
+  /** How a tile click opens an app: a new tab (the default) or the current one.
+   *  Opening in place is what makes the browser's Back button return to the
+   *  dashboard instead of leaving a tab behind per app. */
+  open_in_new_tab: boolean
   /** Mail transport. It lived under the backup configuration until it moved here,
    *  because it is a property of the box rather than of the backup schedule. */
   smtp?: SmtpConfig
@@ -48,6 +52,7 @@ const DEFAULTS: Settings = {
   widgets: { clock: true, system: true, storage: true },
   domains: [],
   metrics_history: true,
+  open_in_new_tab: true,
 }
 
 export const settings = writable<Settings>({ ...DEFAULTS })

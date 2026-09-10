@@ -1,7 +1,15 @@
 <script lang="ts">
   import { get } from 'svelte/store'
   import { clickOutside } from '../actions'
-  import { appAction, appProgress, dismissAppError, openApp, appUrl, type App } from '../stores/apps'
+  import {
+    appAction,
+    appProgress,
+    dismissAppError,
+    openApp,
+    openTarget,
+    appUrl,
+    type App,
+  } from '../stores/apps'
   import { renderDuration, renderRate, renderSize } from '../format'
   import { removeLink, type Link } from '../stores/links'
   import { settingsApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
@@ -56,7 +64,11 @@
   // stay clickable: opening one lands on the launch gate, which starts it.
   const openable = $derived(tile.kind !== 'app' || appUrl(tile.app) !== '')
 
-  function open() {
+  // `ev` is the click that asked for it, when there is one: openApp/openTarget read
+  // its modifiers so a ctrl/cmd/middle click still opens a new tab even when the
+  // preference says "this tab". The menu's Open entry passes none — it is a plain
+  // command, not a link.
+  function open(ev?: MouseEvent) {
     // A drag that just dropped fires a trailing click on this tile; swallow it so
     // reordering never opens the app. Genuine clicks never set this flag.
     if (get(tileDragging)) return
@@ -66,8 +78,8 @@
     if (tile.kind === 'system') openStore()
     else if (tile.kind === 'app') {
       if (!openable) return
-      openApp(tile.app)
-    } else window.open(tile.link.url, '_blank', 'noopener')
+      openApp(tile.app, ev)
+    } else openTarget(tile.link.url, ev)
   }
 
   async function act(action: 'start' | 'stop' | 'restart') {
@@ -157,7 +169,13 @@
     </div>
   {/if}
 
-  <button class="body" onclick={open} disabled={!openable || locked} title={openable ? '' : 'No reachable web address'}>
+  <button
+    class="body"
+    onclick={open}
+    onauxclick={(e) => e.button === 1 && open(e)}
+    disabled={!openable || locked}
+    title={openable ? '' : 'No reachable web address'}
+  >
     <div class="icon">
       {#if tile.kind === 'system'}
         <img src="/img/appstore.svg" alt="" />

@@ -19,6 +19,8 @@
   "language": "Language",
   "wallpaper": "Wallpaper",
   "widgets": "Widgets",
+  "apps": "Apps",
+  "open_in_new_tab": "Open in a new tab",
   "domains": "Domains",
   "domains_hint": "Extra names your apps answer on, added on top of your main domain — never instead of it. Each one becomes a Caddy label on every app, so it carries its own routing directives. Saving rewrites those labels and restarts every running app.",
   "main_domain": "Main domain",

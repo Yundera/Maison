@@ -51,6 +51,18 @@ type Settings struct {
 	// distinguishable from one that was never sent.
 	SMTP *notify.SMTP `json:"smtp,omitempty"`
 
+	// OpenInNewTab is how a tile click opens an app: a new tab (the default, and
+	// what Maison has always done) or the current one.
+	//
+	// The current tab is what makes the browser's Back button work — an app opened
+	// in place returns to the dashboard the way every other page does, instead of
+	// leaving a tab per app behind. The launch gate already navigates with
+	// location.replace, so Back skips it and lands on the dashboard either way.
+	//
+	// A POINTER, for the same reason MetricsHistory is: merge reads a zero value as
+	// "not supplied", so a plain bool could be turned off and never on again.
+	OpenInNewTab *bool `json:"open_in_new_tab,omitempty"`
+
 	// MetricsHistory switches the resource-history sampler on and off. It is the
 	// one thing Maison measures when nobody is looking at the dashboard, so it is
 	// the one thing worth being able to turn off.
@@ -71,6 +83,9 @@ func Defaults() Settings {
 		// one cheap reading a minute, and the alternative is a graph that is empty
 		// the first time anyone looks for it.
 		MetricsHistory: boolPtr(true),
+		// New tab: the behaviour every existing box already has, so upgrading does
+		// not silently change what a click does.
+		OpenInNewTab: boolPtr(true),
 	}
 }
 
@@ -214,6 +229,9 @@ func merge(base, in Settings) Settings {
 	}
 	if in.MetricsHistory != nil {
 		base.MetricsHistory = in.MetricsHistory
+	}
+	if in.OpenInNewTab != nil {
+		base.OpenInNewTab = in.OpenInNewTab
 	}
 	if in.SMTP != nil {
 		base.SMTP = in.SMTP

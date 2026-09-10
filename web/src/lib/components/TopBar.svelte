@@ -42,6 +42,12 @@
   function setLanguage(code: string) {
     settings.update((s) => ({ ...s, language: code }))
   }
+  // Where an app opens is a per-box preference like the others here, and it is
+  // previewed by the very next tile click — so it belongs in this menu rather than
+  // on the settings page, which configures the box itself.
+  function toggleNewTab() {
+    settings.update((s) => ({ ...s, open_in_new_tab: !s.open_in_new_tab }))
+  }
   function toggleWidget(key: string) {
     settings.update((s) => ({ ...s, widgets: { ...s.widgets, [key]: !s.widgets[key] } }))
   }
@@ -87,6 +93,16 @@
                   {$t(key === 'system' ? 'system_status' : key)}
                 </label>
               {/each}
+            </div>
+          </div>
+
+          <div class="field">
+            <span>{$t('apps')}</span>
+            <div class="toggles">
+              <label class="toggle">
+                <input type="checkbox" checked={$settings.open_in_new_tab} onchange={toggleNewTab} />
+                {$t('open_in_new_tab')}
+              </label>
             </div>
           </div>
 

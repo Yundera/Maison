@@ -36,7 +36,7 @@ change. Five call sites, one guarantee.
   save web-UI  ────────┤     folders → secrets → variables       │
                        │       → init(pre_up) → seed → files     │
                        │     → pre_up                            │
-                       │       → docker compose up -d            │
+                       │       → compose up -d --remove-orphans  │
                        │         → init(post_up) → post_up       │
                        └─────────────────────────────────────────┘
 ```
@@ -62,7 +62,7 @@ recreates a removed one, and re-applies a changed compose, all with the same cal
 | **6. Seed** | Mirror the app's `.seed` tree into its folder: `.tmpl` rendered, everything else copied, **create-if-absent**. Paths a `files` entry claims are left to it. | **Fatal** — including an unresolved `${VAR}` in a template. |
 | **7. Files** | Write each `files` entry: `ensure: once` skips an existing file, `ensure: always` re-renders it. | **Fatal.** |
 | **8. `pre_up`** | Run the hook. | **Fatal** — a precondition that doesn't hold must not start the stack. |
-| **9. `docker compose up -d`** | Base + override, with the app's `.env` and interpolation variables. | **Fatal.** |
+| **9. `docker compose up -d --remove-orphans`** | Base + override, with the app's `.env` and interpolation variables. `--remove-orphans` removes the containers of services the file no longer declares — a store update that renames a service would otherwise leave the old container holding its `container_name`, and the new service comes up as `<id>_<name>`. | **Fatal.** |
 | **10. `init` (post_up)** | Run each `phase: post_up` step — a seeder that needs the app's own network or a running service. | **Logged and swallowed.** |
 | **11. `post_up`** | Run the hook. | **Logged and swallowed** — the stack is already running; tearing a healthy app back down over a failed after-the-fact tweak is worse than the failed tweak. |
 

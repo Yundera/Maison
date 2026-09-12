@@ -94,7 +94,8 @@ func merge(base, over map[string]any) map[string]any {
 }
 
 // Up brings a managed app's stack up: it ensures the app's folders exist, runs
-// its pre_up hook, invokes `docker compose up -d`, then runs its post_up hook.
+// its pre_up hook, invokes `docker compose up -d --remove-orphans`, then runs its
+// post_up hook.
 //
 // A failing pre_up aborts the up — the hook is the app's precondition, so a stack
 // whose precondition doesn't hold must not start. A failing post_up is logged and
@@ -111,8 +112,8 @@ func merge(base, over map[string]any) map[string]any {
 // byte-for-byte, and Maison never writes to it: the deployment reaches the app
 // through the ${VAR}s that file already references — ${APP_NET}, ${DATA_ROOT},
 // ${APP_DOMAIN} — resolved afresh by `docker compose` on every up against the .env
-// below. That is what makes a hand-run `docker compose up -d` in the app's folder
-// do exactly what this function does.
+// below. That is what makes a hand-run `docker compose up -d --remove-orphans` in
+// the app's folder do exactly what this function does.
 func Up(ctx context.Context, cfg config.Config, project, dir string, files []string) error {
 	files = SyncRoutes(cfg, project, dir, files)
 	// After SyncRoutes: the vars Maison owns win over its seeds.

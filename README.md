@@ -281,8 +281,8 @@ by URL until it has.
   `${VAR}` its own compose already references — `APP_NET`, `DATA_ROOT`, `APP_DOMAIN`, the
   rest of `.env.app`, plus the base vars Maison computes (`PUID`, `PGID`, `TZ`, `AppID`).
   They are written into the app's `.env` and resolved by `docker compose` on every up, so
-  a `docker compose up -d` you run by hand in the app's folder does exactly what Maison
-  does. See [`docs/app-env.md`](./docs/app-env.md).
+  a `docker compose up -d --remove-orphans` you run by hand in the app's folder does exactly
+  what Maison does. See [`docs/app-env.md`](./docs/app-env.md).
 
 ### 5.1 Per-app configuration
 
@@ -337,7 +337,7 @@ daemon. No database: **the filesystem and the Docker daemon are the state.**
 Every `docker compose up` goes through `internal/stackup`:
 
 ```
-ensure folders  →  pre_up hook  →  docker compose up -d  →  post_up hook
+ensure folders  →  pre_up hook  →  docker compose up -d --remove-orphans  →  post_up hook
 ```
 
 Install, start, update, save-config and save-web-UI all land there. **Never call

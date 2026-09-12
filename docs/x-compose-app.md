@@ -240,7 +240,7 @@ the app's config all take the same path:
 
 ```
 folders → secrets → variables → init(pre_up) → seed → files
-        → pre_up → docker compose up -d → init(post_up) → post_up
+        → pre_up → docker compose up -d --remove-orphans → init(post_up) → post_up
 ```
 
 `pre_install` / `post_install` bracket that sequence, but only the **first** time —

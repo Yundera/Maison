@@ -9,12 +9,25 @@
   import { renderMarkdown } from '../../markdown'
   import InstallButton from './InstallButton.svelte'
   import { refOf, type StoreRef } from '../../storeref'
+  import { apps } from '../../stores/apps'
+  import { sanitizeProject } from '../../project'
+  import { openStoreApp } from '../../route'
 
   let {
     ref,
     installed = false,
+    catalog = [],
     onback,
-  }: { ref: StoreRef; installed?: boolean; onback: () => void } = $props()
+  }: {
+    ref: StoreRef
+    installed?: boolean
+    /** The loaded catalog, so this page can show the apps that extend this one.
+     *  Empty while the catalog is still loading, or for a deep link into a store
+     *  the box does not have — in which case the page renders without the section
+     *  rather than waiting on a fetch it does not need. */
+    catalog?: StoreApp[]
+    onback: () => void
+  } = $props()
 
   let app = $state<StoreApp | null>(null)
   let loading = $state(true)
@@ -43,6 +56,25 @@
   const unlisted = $derived(
     !!app?.store && !!sources && !sources.some((s) => s.url === app!.store),
   )
+
+  const installedIds = $derived(new Set($apps.map((a) => a.id)))
+
+  // The apps that declare this one as their parent, from its own store: an install
+  // takes the copy the tile belongs to, so listing another store's extension here
+  // would offer a button that installs from somewhere else.
+  const extensions = $derived(
+    app ? catalog.filter((c) => c.store === app!.store && c.parent === app!.id) : [],
+  )
+
+  // The other direction: this app extends something. The parent is named whether or
+  // not the box has it — an extension installs regardless, since the app it extends
+  // may be reachable in a way the catalog cannot see — but an absent one is said out
+  // loud, because that is the case where installing this alone does nothing useful.
+  const parent = $derived(
+    app?.parent ? (catalog.find((c) => c.store === app!.store && c.id === app!.parent) ?? null) : null,
+  )
+  const parentName = $derived(parent?.name || app?.parent || '')
+  const parentInstalled = $derived(!!app?.parent && installedIds.has(sanitizeProject(app.parent)))
 </script>
 
 <div class="detail">
@@ -82,6 +114,16 @@
         <span class="label">{$t('developer')}</span>
         <span class="value">{app.developer || '—'}</span>
       </div>
+      {#if app.parent}
+        <div class="item">
+          <span class="label">{$t('extends')}</span>
+          {#if parent}
+            <button class="value link" onclick={() => openStoreApp(refOf(parent!))}>{parentName}</button>
+          {:else}
+            <span class="value">{parentName}</span>
+          {/if}
+        </div>
+      {/if}
       {#if app.min_memory}
         <div class="item">
           <span class="label">Require memory</span>
@@ -98,6 +140,26 @@
       </div>
     {/if}
 
+    {#if app.parent && !parentInstalled}
+      <p class="hint standalone">{$t('parent_not_installed', { app: parentName })}</p>
+    {/if}
+
+    {#if extensions.length}
+      <section class="extensions">
+        <h4>{$t('extensions')}</h4>
+        {#each extensions as ext (ext.id)}
+          <div class="ext-row">
+            <img class="ext-icon" src={ext.icon} alt="" loading="lazy" />
+            <button class="ext-meta" onclick={() => openStoreApp(refOf(ext))}>
+              <span class="ext-name one-line">{ext.name}</span>
+              <span class="ext-tag one-line">{ext.tagline}</span>
+            </button>
+            <InstallButton ref={refOf(ext)} installed={installedIds.has(sanitizeProject(ext.id))} />
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     {#if app.description}
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
       <div class="description markdown">{@html renderMarkdown(app.description)}</div>
@@ -108,6 +170,59 @@
 </div>
 
 <style>
+  .extensions h4 {
+    margin: 0 0 0.6rem;
+    font-size: 0.95rem;
+  }
+  .ext-row {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.08));
+  }
+  .ext-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    flex: none;
+  }
+  .ext-meta {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+  }
+  .ext-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .ext-tag {
+    font-size: 0.78rem;
+    color: var(--text-subtle);
+  }
+  .hint.standalone {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-subtle);
+  }
+  .value.link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--primary);
+    cursor: pointer;
+  }
   .detail {
     display: flex;
     flex-direction: column;

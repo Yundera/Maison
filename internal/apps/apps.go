@@ -68,6 +68,16 @@ type App struct {
 	// explicit `protected:` key would slot in, should a system-looking app ever
 	// need to stay uninstallable.
 	Protected bool `json:"protected,omitempty"`
+	// Parent is the app this one extends, by project id — declared by the app's
+	// own x-compose-app `parent` and kept only when it actually resolves (see
+	// resolveParents). An app carrying one is an *extension*: the dashboard nests
+	// its tile under the parent's rather than giving it one of its own.
+	//
+	// That is all it confers. Lifecycle, protection and backups stay per-app: the
+	// value is a maintainer's unverified claim about a *different* app, and
+	// cascading stop, uninstall or backup off it would let one misspelling take
+	// down — or delete the data of — an app that belongs to someone else.
+	Parent string `json:"parent,omitempty"`
 	// Busy is set while a lifecycle operation (start/stop/restart/uninstall) is
 	// in flight for this app. The tile then shows a "…" overlay and hides its
 	// burger menu until the operation settles.
@@ -368,8 +378,48 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	resolveParents(out)
 	r.rememberViews(out)
 	return out, nil
+}
+
+// resolveParents keeps each app's declared `parent` only when it names another
+// app in this listing, and clears it otherwise.
+//
+// A parent is a claim about someone else's app: the id may be misspelled, may
+// name an app from a store this box does not have, or may simply not be installed
+// yet. So an unresolvable one is never an error and never hides the app — it
+// falls back to an ordinary tile, the same forgiveness NormalizeView gives an
+// unrecognised view, and for the same reason: a cosmetic hint must not be able to
+// make an app disappear. The rules:
+//
+//   - an app cannot extend itself;
+//   - the parent must be present in the listing;
+//   - the parent must not itself declare one — nesting is a single level, which
+//     is also what makes a cycle unrepresentable.
+//
+// The last rule reads the *declared* parents rather than the resolved ones, so
+// the answer cannot depend on the order the list happens to be in. Matching is
+// case-insensitive and the resolved value is rewritten to the app's own id, so a
+// consumer can compare it against an id directly.
+func resolveParents(list []App) {
+	ids := make(map[string]string, len(list))   // lowercased id -> the app's own id
+	extends := make(map[string]bool, len(list)) // id -> declares a parent
+	for _, a := range list {
+		ids[strings.ToLower(a.ID)] = a.ID
+		extends[a.ID] = a.Parent != ""
+	}
+	for i := range list {
+		if list[i].Parent == "" {
+			continue
+		}
+		id, ok := ids[strings.ToLower(list[i].Parent)]
+		if !ok || id == list[i].ID || extends[id] {
+			list[i].Parent = ""
+			continue
+		}
+		list[i].Parent = id
+	}
 }
 
 // rememberViews caches the view resolved for each app on the last listing.
@@ -536,6 +586,9 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 		}
 		app.URL = ca.WebURL(domain)
 		app.View = xcomposeapp.NormalizeView(ca.View)
+		// Declared only: whether it resolves depends on what else is installed,
+		// which this function cannot see. List() settles it (resolveParents).
+		app.Parent = strings.TrimSpace(ca.Parent)
 	}
 	// A system app is a protected app: no stop, no uninstall, no scheduled
 	// backup. One derivation for all three (see the Protected field).

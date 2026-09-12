@@ -73,6 +73,7 @@ x-compose-app:
 | `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
 | `category` | string | no | Store grouping. | `category` |
 | **`view`** | `apps` \| `system` \| `hidden` | no (default `apps`) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
+| **`parent`** | string | no | Compose project name of the app this one **extends**. Its tile nests under that app's instead of standing alone. Unresolvable — absent, misspelled, itself an extension — falls back to an ordinary tile. See [`parent` makes the app an extension of another](#parent-makes-the-app-an-extension-of-another). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
 | `description` | string \| localized | no | Store long description (Markdown). | `description` |
 | `developer` | string | no | Store attribution. | `developer` / `author` |
@@ -455,6 +456,9 @@ also not protected.
 An unrecognised value falls back to `apps` rather than failing the app, in
 keeping with "unknown keys are tolerated and skipped".
 
+There is no `view` value for "extension of another app" — that is a relationship,
+not a grid, and it is spelled [`parent`](#parent-makes-the-app-an-extension-of-another).
+
 ### `view: system` protects the app
 
 A system app is the platform itself — the dashboard, the gateway in front of it,
@@ -478,6 +482,76 @@ Being self-declared, it is a **foot-gun guard, not a security boundary**: Maison
 has no authentication, and for a managed app the operator can edit `view` out
 through Settings → override. That is deliberate — it is also the escape hatch for
 an operator who genuinely means to remove a platform piece.
+
+### `parent` makes the app an extension of another
+
+Some apps are only meaningful beside a specific other app — a metadata agent for
+a media server, a request front-end, a companion indexer. Given a top-level tile
+each, a box with four of them reads as four unrelated apps.
+
+`parent` names the app being extended, by its **Compose project name**:
+
+```yaml
+x-compose-app:
+  parent: jellyfin
+```
+
+An app with a resolvable `parent` is an **extension**. It gets no top-level tile
+of its own: the dashboard nests it under the parent's tile, and the store shows
+it in an *Extensions* section on the parent's detail page rather than loose in
+the catalog. There is no third grid and no third value of `view` — "which grid"
+and "attached to what" are different questions, and only the second one has an
+answer worth showing the operator.
+
+Whether an app is an extension is the **maintainer's call**, exactly as `view`
+is. Maison does not infer it from shared volumes, networks or naming.
+
+#### An unresolvable `parent` is an ordinary app
+
+`parent` is an unverified claim about *another maintainer's* app: the id may be
+misspelled, may come from a store this box does not have, or may simply not be
+installed yet. So the fallback is the same one an unrecognised `view` gets, for
+the same reason — a cosmetic hint must never be able to make an app disappear:
+
+| Situation | Result |
+|---|---|
+| Parent installed | Tile nests under it. |
+| Parent absent, misspelled, or from another store | **Ordinary tile in the app grid.** No error, no hidden app. |
+| Parent is itself an extension | `parent` ignored — ordinary tile. Nesting is **one level**; there are no chains. |
+| `parent` names the app itself | Ignored, as above. |
+
+An extension whose parent is later installed nests on the next refresh, and
+un-nests if the parent is removed. Nothing about the app's own lifecycle
+changes when that happens.
+
+#### It is presentation, plus warnings
+
+Unlike `view: system`, `parent` buys **no** behaviour. It is a declaration about
+someone else's app, and the operations it invites — cascading stop, cascading
+uninstall, a shared backup set — would each turn an unverified string into a way
+to take down or delete data that belongs to a different app. So:
+
+| Operation | On an extension / its parent |
+|---|---|
+| **Start / stop / restart** | Independent, both directions. Stopping the parent does not stop its extensions. |
+| **Uninstall the extension** | Ordinary uninstall. |
+| **Uninstall the parent** | Allowed. The dialog **lists the extensions that declare it** so the operator can see what is about to be orphaned — it does not remove them, and offers no checkbox that would. |
+| **Backup** | Each app is backed up on its own schedule, into its own set. |
+| **Install from the store** | Allowed with the parent missing; the store says which app it extends and flags that it is not installed. Never refused — the parent may be reachable some other way. |
+
+Cascades can be added later on evidence that the relationship is reliable. They
+cannot be walked back after one has removed an app folder the operator wanted.
+
+#### `parent` is not `category`
+
+`category` groups an app for **browsing the store** and is free-form store
+metadata. `parent` places a tile on **this box's dashboard** and names a specific
+installed app. An extension still carries whatever `category` its maintainer
+chose; it is simply not shown as a top-level tile while its parent is there.
+
+Like `view`, `parent` does **not** raise `schema_version`: a Maison that predates
+it ignores the key and renders an ordinary tile — which is exactly where an
+unresolvable parent lands anyway.
 
 ---
 

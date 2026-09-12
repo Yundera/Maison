@@ -100,6 +100,21 @@ func TestParseView(t *testing.T) {
 	}
 }
 
+// `parent` rides in the same block and, like `view`, does not raise the schema
+// version — an app declaring it installs on a build that has never heard of it.
+func TestParseParent(t *testing.T) {
+	a, err := Parse(map[string]any{"parent": "jellyfin"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if a.Parent != "jellyfin" {
+		t.Fatalf("parent = %q, want %q", a.Parent, "jellyfin")
+	}
+	if a, err := Parse(map[string]any{"schema_version": SchemaVersion, "parent": "jellyfin"}); err != nil || a.Parent != "jellyfin" {
+		t.Fatalf("parent at the current schema version: %q, %v", a.Parent, err)
+	}
+}
+
 // An unknown view is a cosmetic mistake, not a reason to refuse the app: it
 // falls back to the ordinary grid, which is where the app would have been
 // anyway.

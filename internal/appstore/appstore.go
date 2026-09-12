@@ -44,10 +44,16 @@ type CatalogApp struct {
 	Thumbnail   string   `json:"thumbnail"`
 	Screenshots []string `json:"screenshots"`
 	Category    string   `json:"category"`
-	Developer   string   `json:"developer"`
-	Author      string   `json:"author"`
-	MinMemory   int      `json:"min_memory,omitempty"`
-	StoreURL    string   `json:"store"`
+	// Parent is the catalog id of the app this one extends, read from the app's
+	// x-compose-app `parent`. The catalog shows an app carrying one under that
+	// app's detail page instead of loose in the browse grid. Unverified here: the
+	// named app may live in another store or nowhere at all, which the client
+	// treats the same way the dashboard does — as an ordinary app.
+	Parent    string `json:"parent,omitempty"`
+	Developer string `json:"developer"`
+	Author    string `json:"author"`
+	MinMemory int    `json:"min_memory,omitempty"`
+	StoreURL  string `json:"store"`
 	// AppsPath is the folder inside the archive this app was found in. It rides
 	// back to the client so a pinned install goes to the same place the app was
 	// read from, rather than to whatever the default happens to be.
@@ -913,7 +919,13 @@ func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, reco
 		if err != nil {
 			continue
 		}
-		apps = append(apps, catalogApp(e.Name(), si, composePath, storeURL, appsPath, storeName))
+		// Read for `parent` alone, and never fatally: an app with no x-compose-app
+		// block (or an unparseable one) is still a catalog app, exactly as before.
+		parent := ""
+		if ca, err := f.ComposeApp(); err == nil && ca != nil {
+			parent = strings.TrimSpace(ca.Parent)
+		}
+		apps = append(apps, catalogApp(e.Name(), si, parent, composePath, storeURL, appsPath, storeName))
 	}
 
 	cats = readCategories(root)
@@ -921,7 +933,7 @@ func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, reco
 	return apps, cats, recommend
 }
 
-func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPath, storeName string) *CatalogApp {
+func catalogApp(id string, si *xcasaos.StoreInfo, parent, composePath, storeURL, appsPath, storeName string) *CatalogApp {
 	name := xcasaos.Localized(si.Title)
 	if name == "" {
 		name = id
@@ -935,6 +947,7 @@ func catalogApp(id string, si *xcasaos.StoreInfo, composePath, storeURL, appsPat
 		Thumbnail:   si.Thumbnail,
 		Screenshots: si.ScreenshotLink,
 		Category:    si.Category,
+		Parent:      parent,
 		Developer:   si.Developer,
 		Author:      si.Author,
 		MinMemory:   si.MinMemory,

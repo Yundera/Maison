@@ -10,6 +10,10 @@ export interface StoreApp {
   thumbnail: string
   screenshots: string[]
   category: string
+  /** The catalog id of the app this one extends, from its x-compose-app `parent`.
+   *  Unverified: the named app may be in another store or in none, in which case
+   *  this app is browsed and installed like any other. */
+  parent?: string
   developer: string
   author: string
   min_memory?: number

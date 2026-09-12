@@ -43,7 +43,20 @@ type App struct {
 	// constants. Presentation only, which is why it does NOT raise
 	// SchemaVersion: a build that predates it renders the app in the ordinary
 	// grid, which is exactly where the app used to be.
-	View          string    `yaml:"view,omitempty"`
+	View string `yaml:"view,omitempty"`
+	// Parent names the app this one extends, by Compose project name. An app with
+	// a resolvable parent is an *extension*: the dashboard gives it no top-level
+	// tile and nests it under the parent's instead.
+	//
+	// Like View this is presentation, so it does NOT raise SchemaVersion — a build
+	// that predates the key renders an ordinary tile, which is exactly where an
+	// unresolvable parent lands anyway.
+	//
+	// The value is an unverified claim about *another maintainer's* app, so it is
+	// resolved against what is actually installed rather than trusted: that rule
+	// lives with the app listing, the only place that knows what else is on the
+	// box — see apps.resolveParents.
+	Parent        string    `yaml:"parent,omitempty"`
 	Tagline       Localized `yaml:"tagline,omitempty"`
 	Description   Localized `yaml:"description,omitempty"`
 	Developer     string    `yaml:"developer,omitempty"`

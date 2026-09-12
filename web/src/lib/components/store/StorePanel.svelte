@@ -85,11 +85,26 @@
     category === 'All' && developer === 'All' && store === 'All' && !search.trim(),
   )
 
+  /** True for an app that declares a parent shipped by the same store.
+   *
+   *  The parent has to be in that store: an install takes the copy the tile belongs
+   *  to, so an extension whose parent lives somewhere else has nothing to be folded
+   *  under here and stays an ordinary catalog app — the same fallback the dashboard
+   *  makes for a parent it cannot resolve. */
+  const isExtension = (a: StoreApp): boolean =>
+    !!a.parent && (data?.apps ?? []).some((p) => p.store === a.store && p.id === a.parent)
+
   // Everything matching the toolbar, across every store. The store is NOT filtered
   // here — it decides which *group* an app lands in, below.
+  //
+  // Extensions are folded out of the grid and listed on their parent's page
+  // instead — but only while browsing. Once something is typed the person is
+  // looking for a named app, and a search that cannot find an installable app
+  // because of a presentation rule is a search that is simply wrong.
   const filtered = $derived.by(() => {
     const q = search.trim().toLowerCase()
     return (data?.apps ?? []).filter((a) => {
+      if (!q && isExtension(a)) return false
       if (category !== 'All' && a.category !== category) return false
       if (developer !== 'All' && a.developer !== developer) return false
       if (q && !`${a.name} ${a.tagline} ${a.category}`.toLowerCase().includes(q)) return false
@@ -160,6 +175,7 @@
         <AppDetail
           ref={selected}
           installed={installedIds.has(sanitizeProject(selected.id))}
+          catalog={data?.apps ?? []}
           onback={backToCatalog}
         />
       {:else if loading}

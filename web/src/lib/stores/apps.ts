@@ -18,6 +18,12 @@ export interface App {
   /** Which dashboard grid this tile belongs in, from the app's x-compose-app
    *  `view`. Absent means the ordinary grid; "hidden" apps get no tile. */
   view?: 'apps' | 'system' | 'hidden'
+  /** The id of the app this one extends, from its x-compose-app `parent`, and
+   *  only ever an app that is actually installed — the server clears a parent it
+   *  cannot resolve, so an extension whose parent is missing arrives as an
+   *  ordinary app. Carrying one means: no top-level tile, shown under the
+   *  parent's instead. It confers nothing else; lifecycle stays per-app. */
+  parent?: string
   /** Fully-resolved click URL from x-compose-app (webui-*); wins when set. */
   url?: string
   /** Aggregated Docker health-check verdict; drives the tile status dot.

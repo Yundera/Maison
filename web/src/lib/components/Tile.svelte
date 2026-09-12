@@ -18,10 +18,26 @@
 
   export type TileData =
     | { kind: 'system'; id: string; name: string }
-    | { kind: 'app'; id: string; app: App }
+    | {
+        kind: 'app'
+        id: string
+        app: App
+        /** How many installed apps declare this one as their parent. A tile with
+         *  any gets a fold/unfold pill; zero looks exactly as it always did. */
+        extensions?: number
+        /** Whether those are currently unfolded behind this tile. */
+        expanded?: boolean
+        /** This tile IS one of them: rendered smaller and marked, so a row of
+         *  four reads as "these belong to the app on the left". */
+        child?: boolean
+      }
     | { kind: 'link'; id: string; link: Link }
 
-  let { tile }: { tile: TileData } = $props()
+  let { tile, ontoggleextensions }: { tile: TileData; ontoggleextensions?: () => void } =
+    $props()
+
+  const extensions = $derived(tile.kind === 'app' ? (tile.extensions ?? 0) : 0)
+  const isChild = $derived(tile.kind === 'app' && tile.child === true)
 
   let menuOpen = $state(false)
   let imgFailed = $state(false)
@@ -97,7 +113,7 @@
   }
 </script>
 
-<div class="tile" class:stopped class:busy={locked} class:unavailable={!openable}>
+<div class="tile" class:stopped class:busy={locked} class:unavailable={!openable} class:child={isChild}>
   <div class="glass"></div>
 
   {#if tile.kind !== 'system' && !locked}
@@ -204,6 +220,24 @@
         <span class="pfill {progress.kind}" style:width={`${progress.pct}%`}></span>
       </div>
     </div>
+  {/if}
+
+  <!-- Folding is the tile's own affordance, not a menu entry: it changes nothing
+       about the app, and the thing it reveals is right underneath. -->
+  {#if extensions > 0 && !locked}
+    <button
+      class="ext"
+      title={$t('extensions')}
+      aria-label={$t('extensions')}
+      aria-expanded={tile.kind === 'app' && tile.expanded === true}
+      onclick={(e) => {
+        e.stopPropagation()
+        ontoggleextensions?.()
+      }}
+    >
+      {tile.kind === 'app' && tile.expanded ? '⌃' : '⌄'}
+      {extensions}
+    </button>
   {/if}
 
   {#if tile.kind === 'app' && !tile.app.managed && !progressing}
@@ -444,6 +478,60 @@
   }
   .menu button.danger:hover {
     background: hsla(18, 98%, 94%, 1);
+  }
+  /* Bottom-right: the only free corner — the health dot is top-left, the burger
+     top-right and the "unmanaged" badge bottom-left. */
+  .ext {
+    position: absolute;
+    bottom: 0.4rem;
+    right: 0.5rem;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.65rem;
+    line-height: 1.5;
+    color: var(--grey-100);
+    background: rgba(0, 0, 0, 0.35);
+    border-radius: 4px;
+    padding: 0 0.3rem;
+  }
+  .ext:hover {
+    background: rgba(0, 0, 0, 0.55);
+  }
+  /* An extension keeps its cell but draws a smaller, dimmer card inside it, so an
+     unfolded row reads as one app followed by its extensions rather than as three
+     more apps. The grid itself is untouched: a tile that changed the cell size
+     would reflow the row it was unfolded into. */
+  .tile.child .glass {
+    inset: 9%;
+    width: auto;
+    height: auto;
+    opacity: 0.65;
+  }
+  .tile.child .icon {
+    width: 44px;
+    height: 44px;
+  }
+  .tile.child .title {
+    font-size: 0.75rem;
+    opacity: 0.85;
+  }
+  /* The corner marks follow the smaller card in, or they float outside it. */
+  .tile.child .burger {
+    top: 12%;
+    right: 13%;
+  }
+  .tile.child .dot {
+    top: 12%;
+    left: 13%;
+  }
+  .tile.child .badge {
+    bottom: 11%;
+    left: 12%;
   }
   .badge {
     position: absolute;

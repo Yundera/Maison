@@ -1,11 +1,17 @@
 <script lang="ts">
   import { uninstallTarget } from '../stores/ui'
-  import { uninstallApp } from '../stores/apps'
+  import { apps, uninstallApp } from '../stores/apps'
   import { fetchBackupStatus } from '../stores/backupengine'
   import { engineLabel } from '../stores/backups'
   import { t } from '../i18n'
 
   let { target }: { target: { id: string; name: string } } = $props()
+
+  // The apps that declare this one as their parent. They are named, and nothing
+  // more: an uninstall removes exactly the app that was asked for. `parent` is a
+  // maintainer's claim about someone else's app, and letting it delete a second
+  // app's data would make one misspelling in a compose file destructive.
+  const extensions = $derived($apps.filter((a) => a.parent === target.id))
 
   let zip = $state(false)
   let busy = $state(false)
@@ -90,6 +96,13 @@
           The app's folder is moved into the backups directory as it is — instant, whatever the
           app's size.
         {/if}
+      </p>
+    {/if}
+
+    {#if extensions.length > 0}
+      <p class="note">
+        {$t('uninstall_extensions_stay')}
+        <strong>{extensions.map((a) => a.name).join(', ')}</strong>
       </p>
     {/if}
 

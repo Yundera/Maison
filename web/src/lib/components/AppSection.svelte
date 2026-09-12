@@ -16,6 +16,11 @@
   type View = 'apps' | 'system'
   let view = $state<View>('apps')
 
+  // Parents whose extensions are currently unfolded. Collapsed by default and
+  // deliberately not persisted: an extension is the parent's business, and a grid
+  // that reopens unfolded is a grid whose layout moved on its own.
+  let expanded = $state(new Set<string>())
+
   let items = $state<TileData[]>([])
   let dragging = $state(false)
   let addMenu = $state(false)
@@ -54,9 +59,29 @@
    *  clicking. External links and the App Store tile belong to the app grid —
    *  the store installs apps, not platform pieces. */
   function buildOrdered(v: View, a: App[], l: Link[]): TileData[] {
+    // An app that declares a parent the server could resolve is an extension: it
+    // is listed under that app, never beside it. Note the children are NOT
+    // filtered by view — an extension follows its parent's tile into whichever
+    // grid the parent is in, because "under jellyfin" is where it means anything.
+    const extensions = new Map<string, App[]>()
+    for (const app of a) {
+      if (!app.parent || (app.view ?? 'apps') === 'hidden') continue
+      const kids = extensions.get(app.parent) ?? []
+      kids.push(app)
+      extensions.set(app.parent, kids)
+    }
     const tiles: TileData[] = a
-      .filter((app) => (app.view ?? 'apps') === v)
-      .map((app) => ({ kind: 'app', id: 'app:' + app.id, app }) as TileData)
+      .filter((app) => (app.view ?? 'apps') === v && !app.parent)
+      .map(
+        (app) =>
+          ({
+            kind: 'app',
+            id: 'app:' + app.id,
+            app,
+            extensions: extensions.get(app.id)?.length ?? 0,
+            expanded: expanded.has(app.id),
+          }) as TileData,
+      )
     if (v === 'apps') tiles.push(...l.map((link) => ({ kind: 'link', id: link.id, link }) as TileData))
     const order = loadOrder()
     const rank = (id: string) => {
@@ -64,8 +89,28 @@
       return i < 0 ? Number.MAX_SAFE_INTEGER : i
     }
     tiles.sort((x, y) => rank(x.id) - rank(y.id))
+    // Unfolded extensions ride immediately behind their parent. They are placed
+    // here rather than ordered like everything else, so a drag can shuffle them
+    // within the row but never strand one away from the app it belongs to: the
+    // next rebuild puts it back.
+    const withKids: TileData[] = []
+    for (const tile of tiles) {
+      withKids.push(tile)
+      if (tile.kind !== 'app' || !expanded.has(tile.app.id)) continue
+      for (const kid of extensions.get(tile.app.id) ?? []) {
+        withKids.push({ kind: 'app', id: 'app:' + kid.id, app: kid, child: true } as TileData)
+      }
+    }
     // App Store system tile is always pinned first.
-    return v === 'apps' ? [STORE_TILE, ...tiles] : tiles
+    return v === 'apps' ? [STORE_TILE, ...withKids] : withKids
+  }
+
+  /** Fold or unfold one parent's extensions. Reassigned rather than mutated so
+   *  the grid rebuilds. */
+  function toggleExtensions(id: string) {
+    const next = new Set(expanded)
+    if (!next.delete(id)) next.add(id)
+    expanded = next
   }
 
   // Rebuild the grid when the view or apps/links change, except while a drag is
@@ -74,6 +119,7 @@
     const v = view
     const a = $apps
     const l = $links
+    expanded
     if (dragging) return
     items = buildOrdered(v, a, l)
   })
@@ -94,7 +140,10 @@
     const rest = e.detail.items.filter((t) => t.id !== '__store')
     items = [STORE_TILE, ...rest]
     dragging = false
-    saveOrder(rest.map((t) => t.id))
+    // Extensions are positioned by their parent, so their ids are not part of the
+    // saved arrangement — persisting them would leave dead entries behind the
+    // first time one was folded away.
+    saveOrder(rest.filter((t) => !(t.kind === 'app' && t.child)).map((t) => t.id))
     // A mouse drop fires a trailing `click` on the tile right after this handler.
     // Clear on the next tick so that click is swallowed (see tileDragging) while
     // genuine clicks — which never trigger a drag — still open the app.
@@ -142,7 +191,9 @@
     onfinalize={onFinalize}
   >
     {#each items as tile (tile.id)}
-      <div class="cell" class:grabbing={dragging}><Tile {tile} /></div>
+      <div class="cell" class:grabbing={dragging}>
+        <Tile {tile} ontoggleextensions={() => tile.kind === 'app' && toggleExtensions(tile.app.id)} />
+      </div>
     {/each}
   </div>
 </section>

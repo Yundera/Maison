@@ -10,7 +10,8 @@ import (
 )
 
 // LocalProvider is the built-in backup engine: archives on the data disk under
-// .backups/<app>/<stamp>, exactly as Maison has always written them.
+// config.BackupsDir — AppData/maison/.backups/<app>/<stamp> — exactly as Maison has
+// always written them, bar the folder they sit in.
 //
 // It lives in this package rather than under internal/backup because it is a
 // wrapper around this package's own unexported machinery — mirror, archiveDir, the
@@ -116,8 +117,8 @@ func (p *LocalProvider) Snapshot(ctx context.Context, app, stamp string, opts Sn
 // Commit turns the staged copy into a real archive.
 //
 // A folder archive is a rename, which consumes the staging directory and is
-// instantaneous — .backups lives inside AppData, so the rename never crosses a
-// filesystem. A zip is written to a dotted temporary and renamed only once whole,
+// instantaneous — the archive tree lives inside AppData, so the rename never crosses
+// a filesystem. A zip is written to a dotted temporary and renamed only once whole,
 // so an interrupted compress can never be restored as though it had finished; the
 // staging directory is then scratch and is removed.
 //
@@ -193,7 +194,7 @@ func (p *LocalProvider) List(ctx context.Context, app string) ([]Backup, error) 
 	return ListBackups(p.cfg.BackupsDir(), app), nil
 }
 
-// ListAll walks .backups/ and returns each app's archives. The directory is created
+// ListAll walks the archive tree and returns each app's archives. The directory is created
 // by the writers on demand, so its absence is an empty result rather than an error —
 // that is the normal state of a box that has never taken a backup.
 //

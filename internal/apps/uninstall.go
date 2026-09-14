@@ -14,6 +14,21 @@ import (
 // one whose compose declares `view: system` (see Registry.Protected).
 var ErrProtected = errors.New("this is a system app and cannot be stopped or uninstalled")
 
+// ErrHoldsBackups is returned when an uninstall or a restore targets the app whose
+// folder CONTAINS the local archive tree (see Registry.ownsBackupsDir). It is a
+// refusal up front rather than a failure part-way, because every path this blocks
+// fails badly on its own:
+//
+//   - the uninstall and the swap restore rename the app folder into .backups/<app>/,
+//     which for this app is a directory inside itself — EINVAL, with no explanation;
+//   - an in-place restore runs the engine with --delete-extra over the folder, and the
+//     archive tree is excluded from the backup, so "delete what the backup does not
+//     have" deletes every archive on the box.
+//
+// The data is still reachable: the folder is Maison's own state and the archives in it
+// are ordinary directories on disk.
+var ErrHoldsBackups = errors.New("this app's folder holds the local backups, so it cannot be uninstalled or restored")
+
 // Uninstall phases, in order.
 //
 // The order is the point of the sequence: capture the data, make it durable, then tear
@@ -68,6 +83,9 @@ type UninstallState struct {
 func (r *Registry) StartUninstall(id string, zip bool) error {
 	if r.Protected(id) {
 		return ErrProtected
+	}
+	if _, ok := r.ownsBackupsDir(id); ok {
+		return ErrHoldsBackups
 	}
 
 	r.mu.Lock()
@@ -156,7 +174,8 @@ func (r *Registry) progressed() {
 // them first would make "put it back" mean re-creating the stack, and it is what the
 // previous version did before archiving unconditionally.
 //
-// What it replaces renamed the app folder into .backups and called that the backup. On
+// What it replaces renamed the app folder into the archive tree and called that the
+// backup. On
 // the local engine that is still exactly what happens — SnapshotOpts.Consume makes the
 // commit a single rename, so an uninstall stays instant and free at any size. On a
 // remote engine it now uploads first and drops the folder after, which is the whole
@@ -174,6 +193,9 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 	}
 	if r.Protected(id) {
 		return "", ErrProtected
+	}
+	if _, ok := r.ownsBackupsDir(id); ok {
+		return "", ErrHoldsBackups
 	}
 	if !projectRe.MatchString(id) {
 		return "", fmt.Errorf("invalid app name: %s", id)

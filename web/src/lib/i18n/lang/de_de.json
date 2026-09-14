@@ -171,6 +171,7 @@
   "backups_empty": "Noch keine Sicherungen.",
   "backups_orphan": "deinstalliert",
   "backups_orphan_hint": "Diese App ist nicht installiert. Eine Sicherung wiederherzustellen bringt sie samt Kachel zurück.",
+  "backups_count": "{count} Sicherungen",
   "backup_hint": "Eine Sicherung archiviert den ganzen Ordner der App: Compose-Datei, .env und Daten. Die App wird kurz gestoppt, damit die Kopie konsistent ist, und danach wieder gestartet.",
   "backup_now": "Jetzt sichern",
   "backup_compress": "Komprimieren (langsamer, kleiner)",

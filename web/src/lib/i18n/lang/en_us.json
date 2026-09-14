@@ -171,6 +171,7 @@
   "backups_empty": "No backups yet.",
   "backups_orphan": "uninstalled",
   "backups_orphan_hint": "This app is not installed. Restoring a backup brings it — and its tile — back.",
+  "backups_count": "{count} backups",
   "backup_hint": "A backup archives this app's whole folder: its compose file, its .env and its data. The app is stopped briefly so the copy is consistent, then started again.",
   "backup_now": "Back up now",
   "backup_compress": "Compress (slower, smaller)",

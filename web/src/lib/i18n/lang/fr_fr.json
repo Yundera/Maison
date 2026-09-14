@@ -171,6 +171,7 @@
   "backups_empty": "Aucune sauvegarde pour l'instant.",
   "backups_orphan": "désinstallée",
   "backups_orphan_hint": "Cette app n'est pas installée. Restaurer une sauvegarde la fait revenir, avec sa tuile.",
+  "backups_count": "{count} sauvegardes",
   "backup_hint": "Une sauvegarde archive tout le dossier de l'app : son fichier compose, son .env et ses données. L'app est brièvement arrêtée pour que la copie soit cohérente, puis redémarrée.",
   "backup_now": "Sauvegarder",
   "backup_compress": "Compresser (plus lent, plus petit)",

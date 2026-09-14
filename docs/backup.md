@@ -62,7 +62,7 @@ the provider layer can be exercised against it before app orchestration enters t
 picture.
 
 **The user-data set is remote-only.** The local engine deliberately does not implement
-it and must not: its archives live under `AppData/.backups/`, on the same disk the set
+it and must not: its archives live under `AppData/maison/.backups/`, on the same disk the set
 would be copied from, so the copy protects against nothing while doubling the space
 used. The scheduler therefore does not offer it as a target for an engine that cannot do
 it — otherwise a default install (local engine, user data on) reports a failed backup
@@ -82,8 +82,8 @@ get the stop treatment and user data does not.
 ${DATA_ROOT}/
   AppData/
     <app>/                     an app — the backup source for the app set
-    .backups/<app>/<stamp>/    local archives (exists today: Config.BackupsDir)
     maison/                    Maison's own state (Config.StateDir)
+      .backups/<app>/<stamp>/  local archives (Config.BackupsDir)
   AppDataShared/
     backup/<engine>/
       repository.config        endpoint, region, bucket, prefix
@@ -115,8 +115,15 @@ not a leak, it is merely useless — the recovery path runs on the emailed copy,
 on the repo. `repository.config` riding along is mildly useful; a restored box gets
 its endpoint, bucket and prefix back without re-deriving them.
 
-`.backups/` needs no exclusion. It lives inside `AppData/` and is therefore already
-outside the user-data set.
+The archive tree needs no exclusion. It lives inside `AppData/` — two levels down, in
+Maison's own folder — and is therefore already outside the user-data set.
+
+It **is** excluded from the *app* set, and there it is not free: `AppData/maison` is an
+app folder like any other, so backing it up would copy the archive tree into a staging
+directory inside itself. `Registry.exclusionsFor` adds the exclusion for whichever app
+holds the tree, and restoring or uninstalling that app is refused outright — a restore
+renames the folder into its own subtree, and the in-place path deletes what the backup
+does not have, which here is every archive on the box.
 
 ---
 
@@ -248,7 +255,7 @@ and every backup is listed under the engine that holds it.
 
 What made the split more than cosmetic is that the two halves had drifted apart in the
 code. Writes went through the engine set; **reads did not.** Both listing endpoints
-walked `.backups/` directly, and `StartRestore` gated on a file being there before
+walked the local archive tree directly, and `StartRestore` gated on a file being there before
 dispatching to the engine-aware path underneath. So on a box configured for kopia the
 Backups page was empty while the repository held everything, and a remote-only backup
 could not be restored from the UI at all — the code to do it was reachable only from
@@ -697,7 +704,7 @@ which engine is currently selected, which is the same rule that governs listing.
 on disk           rename the live folder aside, rename the archive in.
                   Instant, atomic, and the displaced state becomes an archive of
                   its own, so the restore is itself undoable.
-remote, room      the engine materialises it to .backups/<app>/<stamp>, then
+remote, room      the engine materialises it into the local tree, then
                   exactly the above. RestoreBackup runs unmodified.
 remote, no room   the engine writes over the live folder. ~1x space. NOT atomic.
 ```
@@ -853,7 +860,7 @@ retention, but a deliberate choice rather than a surprise.
 ## A backup belongs to one engine
 
 **The identity of a backup is `(engine, app, stamp)`.** Engines run in parallel and
-never coordinate: a stamp present both in `.backups/` and in a repository is two
+never coordinate: a stamp present both in the local archive tree and in a repository is two
 backups that happen to share a name. They were written by different runs, they can be
 deleted independently, and restoring one is not restoring the other.
 

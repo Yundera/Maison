@@ -562,3 +562,62 @@ func TestEstimateBackupReportsRefusedPatterns(t *testing.T) {
 		t.Errorf("Size = %d, want the surviving exclusion applied (whole = %d)", est.Size, whole)
 	}
 }
+
+// The app whose folder holds the archive tree — Maison's own, since BackupsDir is
+// inside it — must not copy that tree into its own backup. Without the exclusion the
+// staging directory is inside the folder being mirrored, which is a runaway copy of
+// every archive on the box.
+func TestBackupOfTheAppHoldingTheArchivesExcludesThem(t *testing.T) {
+	r, appsDir, backupsDir := newTestRegistry(t)
+	seedApp(t, filepath.Join(appsDir, "maison"))
+	// An archive of some other app, which is what must not be swept up.
+	seedApp(t, filepath.Join(backupsDir, "jellyfin", "2026-07-10_153045"))
+
+	skip, errs := r.exclusionsFor("maison")
+	if len(errs) != 0 {
+		t.Fatalf("exclusionsFor returned errors: %v", errs)
+	}
+	if !skip.Match(".backups") || !skip.Match(".backups/jellyfin/2026-07-10_153045") {
+		t.Fatalf("the archive tree is not excluded: patterns = %v", skip.Patterns())
+	}
+
+	// And an ordinary app declaring nothing still gets no exclusions, so the rule is
+	// about the path rather than about every app.
+	seedApp(t, filepath.Join(appsDir, "jellyfin"))
+	if set, _ := r.exclusionsFor("jellyfin"); !set.Empty() {
+		t.Errorf("jellyfin excludes %v, want nothing", set.Patterns())
+	}
+}
+
+// A restore or an uninstall of that same app is refused up front. Both would rename
+// the folder into a directory inside itself, and an in-place restore would delete the
+// archive tree outright — see ErrHoldsBackups.
+func TestRestoreAndUninstallRefuseTheAppHoldingTheArchives(t *testing.T) {
+	r, appsDir, backupsDir := newTestRegistry(t)
+	seedApp(t, filepath.Join(appsDir, "maison"))
+	seedBackupDirs(t, backupsDir, "maison", "2026-07-10_153045")
+
+	if err := r.StartRestore(context.Background(), "maison", "", "2026-07-10_153045"); !errors.Is(err, ErrHoldsBackups) {
+		t.Errorf("StartRestore = %v, want ErrHoldsBackups", err)
+	}
+	if err := r.Restore(context.Background(), "maison", "", "2026-07-10_153045", nil); !errors.Is(err, ErrHoldsBackups) {
+		t.Errorf("Restore = %v, want ErrHoldsBackups", err)
+	}
+	if err := r.RestoreForInstall(context.Background(), "maison", "", "2026-07-10_153045", nil); !errors.Is(err, ErrHoldsBackups) {
+		t.Errorf("RestoreForInstall = %v, want ErrHoldsBackups", err)
+	}
+	if err := r.StartUninstall("maison", false); !errors.Is(err, ErrHoldsBackups) {
+		t.Errorf("StartUninstall = %v, want ErrHoldsBackups", err)
+	}
+	if _, err := r.Uninstall(context.Background(), "maison", false, nil); !errors.Is(err, ErrHoldsBackups) {
+		t.Errorf("Uninstall = %v, want ErrHoldsBackups", err)
+	}
+
+	// The refusal is up front: nothing was touched.
+	if _, err := os.Stat(filepath.Join(appsDir, "maison", ".env")); err != nil {
+		t.Errorf("the app folder was disturbed by a refused operation: %v", err)
+	}
+	if len(ListBackups(backupsDir, "maison")) != 1 {
+		t.Error("the archive was disturbed by a refused operation")
+	}
+}

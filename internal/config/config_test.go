@@ -14,6 +14,26 @@ func TestStateDirDefaultsToMaisonsOwnAppFolder(t *testing.T) {
 	}
 }
 
+// The archive tree lives inside Maison's own app folder, which is what keeps
+// AppData's top level nothing but app folders — and, being still under AppData, keeps
+// an uninstall's archive step a rename rather than a copy.
+func TestBackupsDirIsInsideMaisonsOwnAppFolder(t *testing.T) {
+	c := Config{DataRoot: "/DATA"}
+	if got, want := c.BackupsDir(), filepath.Join("/DATA", "AppData", "maison", ".backups"); got != want {
+		t.Errorf("BackupsDir() = %q, want %q", got, want)
+	}
+}
+
+// STATE_DIR relocates Maison's state, deliberately WITHOUT taking the archives with
+// it: it may point at another volume, and following it there would silently turn every
+// uninstall from a rename into a full copy.
+func TestBackupsDirIgnoresStateDirOverride(t *testing.T) {
+	c := Config{DataRoot: "/DATA", StateDirPath: "/var/lib/maison"}
+	if got, want := c.BackupsDir(), filepath.Join("/DATA", "AppData", "maison", ".backups"); got != want {
+		t.Errorf("BackupsDir() = %q, want %q", got, want)
+	}
+}
+
 // STATE_DIR moves everything Maison owns — settings, store cache, and the
 // .env.app it reads the deployment's variables from.
 func TestStateDirOverride(t *testing.T) {

@@ -32,8 +32,8 @@ type Backup struct {
 	Zip   bool   `json:"zip"`   // compressed archive rather than a plain folder
 	Size  int64  `json:"size"`  // bytes; see ListBackups on when it is measured
 
-	// Tier is where this backup is: "local" for an archive on disk under .backups/,
-	// "remote" for one in a backup engine's repository.
+	// Tier is where this backup is: "local" for an archive on the data disk, under
+	// config.BackupsDir; "remote" for one in a backup engine's repository.
 	//
 	// It is a property of the engine that holds it, never a summary across engines:
 	// there used to be a "both" value, from when a stamp present in two engines was
@@ -53,7 +53,8 @@ const (
 	TierRemote = "remote"
 )
 
-// EngineLocal is the built-in engine: archives on the data disk under .backups/.
+// EngineLocal is the built-in engine: archives on the data disk, under
+// config.BackupsDir (AppData/maison/.backups/).
 // It needs no configuration and is always present, which is what makes it the
 // default and the fallback.
 const EngineLocal = "local"
@@ -76,8 +77,8 @@ var stampRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}_\d{6})(\.zip)?$`)
 
 // projectRe matches a compose project name we are willing to touch on disk. It is
 // the traversal guard for every path built from a caller-supplied app name: no
-// separators, no dots (which the app model reserves for archives and hidden
-// dirs), so "..", "a/b" and ".backups" are all rejected.
+// separators, no dots (which the app model reserves for staging directories and
+// hidden dirs), so "..", "a/b" and ".staging-2026-07-10_153045" are all rejected.
 var projectRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
 // parseBackup reads an archive's on-disk name back into a Backup. ok is false for

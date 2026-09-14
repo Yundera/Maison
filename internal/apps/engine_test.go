@@ -153,7 +153,7 @@ func TestBackupKeepsWhatItCommitted(t *testing.T) {
 }
 
 // With no engine configured, a Registry behaves exactly as Maison always has: the
-// built-in local engine writes an archive to .backups/.
+// built-in local engine writes an archive to the local archive tree.
 func TestBackupWithoutAnEngineUsesTheLocalOne(t *testing.T) {
 	r, cfg := newRegistry(t)
 
@@ -179,7 +179,7 @@ func TestBackupWithoutAnEngineUsesTheLocalOne(t *testing.T) {
 // by reading the code, not by a test, until dockerx grows a seam of its own.
 
 // StartRestore is what the UI calls, and it used to gate on the data disk: an app's
-// archive had to exist under .backups/ before the restore was allowed to start. On a
+// archive had to exist on the data disk before the restore was allowed to start. On a
 // box configured for a remote engine that rejected every backup it had — the restore
 // path underneath dispatches on where a backup actually is and would have handled it
 // fine, but nothing could reach it. The precondition has to ask the engines the same
@@ -282,7 +282,7 @@ func TestEstimateFollowsTheTargetEngineNotTheDefault(t *testing.T) {
 // --- Uninstall through the engine seam -------------------------------------
 //
 // An uninstall used to be the one write that never reached an engine: it renamed the
-// app folder into .backups and called that the backup. On a box whose default engine
+// app folder into the archive tree and called that the backup. On a box whose default engine
 // writes offsite that produced nothing offsite — while the settings page said the
 // opposite — so the data an uninstall was supposed to be protecting died with the
 // disk. These pin the sequence that replaced it.

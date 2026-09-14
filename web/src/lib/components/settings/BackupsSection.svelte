@@ -493,6 +493,22 @@
   // copy is restored and deleted on its own.
   const restore = (app: string, b: Backup) => run(() => restoreBackup(app, b.name, b.engine))
   const remove = (app: string, b: Backup) => run(() => deleteBackup(app, b.name, b.engine ?? ''))
+
+  /** Which app groups are unfolded, by app name. Kept out of `active` on purpose: the
+   *  list is refetched after every restore and delete, and an unfold that survives its
+   *  own action is the difference between deleting three old archives and reopening the
+   *  same group three times. Keyed by name rather than by index for the same reason —
+   *  a deleted group shifts every index after it. */
+  let opened = $state<Record<string, boolean>>({})
+
+  /** Folded unless the user says otherwise, because the scroll is the thing being
+   *  fixed — except where there is only one app, since folding a one-item list hides
+   *  everything and saves nothing. */
+  const isOpen = (app: string) => opened[app] ?? active?.apps.length === 1
+
+  const toggle = (app: string) => {
+    opened[app] = !isOpen(app)
+  }
 </script>
 
 <header class="head">
@@ -867,23 +883,38 @@
       <p class="empty">{$t('backups_empty')}</p>
     {:else}
       {#each active.apps as group (group.app)}
-        <div class="group">
+        <div class="group" class:open={isOpen(group.app)}>
+          <!-- The heading is the control. An app with a nightly schedule accumulates
+               archives faster than anything else on this page, so the list is folded
+               away and the heading carries what the folded rows would have said: how
+               many there are and what they cost. -->
           <h5>
-            {group.app}
-            {#if group.orphan}
-              <span class="tag" title={$t('backups_orphan_hint')}>{$t('backups_orphan')}</span>
-            {/if}
-            <span class="size">{renderSize(group.total)}</span>
+            <button
+              type="button"
+              class="group-head"
+              aria-expanded={isOpen(group.app)}
+              onclick={() => toggle(group.app)}
+            >
+              <span class="chev" class:open={isOpen(group.app)} aria-hidden="true">›</span>
+              <span class="name">{group.app}</span>
+              {#if group.orphan}
+                <span class="tag" title={$t('backups_orphan_hint')}>{$t('backups_orphan')}</span>
+              {/if}
+              <span class="count">{$t('backups_count', { count: String(group.backups.length) })}</span>
+              <span class="size">{renderSize(group.total)}</span>
+            </button>
           </h5>
-          <!-- showEngine is off: this tab is already one engine, so naming it above
-               every app would repeat the tab label down the page. -->
-          <BackupRows
-            backups={group.backups}
-            showEngine={false}
-            {busy}
-            onrestore={(b) => restore(group.app, b)}
-            ondelete={(b) => remove(group.app, b)}
-          />
+          {#if isOpen(group.app)}
+            <!-- showEngine is off: this tab is already one engine, so naming it above
+                 every app would repeat the tab label down the page. -->
+            <BackupRows
+              backups={group.backups}
+              showEngine={false}
+              {busy}
+              onrestore={(b) => restore(group.app, b)}
+              ondelete={(b) => remove(group.app, b)}
+            />
+          {/if}
         </div>
       {/each}
     {/if}
@@ -1184,20 +1215,64 @@
     color: var(--text-subtle);
   }
 
-  .group {
+  /* Folded groups sit closer together than open ones did: the gap was separating
+     lists of rows, and between two one-line headings it read as a gap in the list. */
+  .group + .group {
+    margin-top: 0.35rem;
+  }
+  .group.open {
     margin-bottom: 1.4rem;
   }
   h5 {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin: 0 0 0.45rem;
+    margin: 0;
     font-size: 0.9rem;
     font-weight: 600;
     color: var(--text);
   }
-  .size {
+  /* The whole heading is the hit target, not just the chevron — the row is what the
+     eye is already on, and a 12px arrow is a hard thing to aim at on a phone. */
+  h5 .group-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    margin: 0;
+    padding: 0.4rem 0.1rem;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  h5 .group-head:hover .name {
+    text-decoration: underline;
+  }
+  h5 .group-head:focus-visible {
+    outline: 2px solid var(--border-strong);
+    outline-offset: 2px;
+    border-radius: 5px;
+  }
+  .chev {
+    display: inline-block;
+    width: 0.75rem;
+    flex: none;
+    color: var(--text-muted);
+    transition: transform 0.12s ease;
+  }
+  .chev.open {
+    transform: rotate(90deg);
+  }
+  /* What the folded rows would have said. The count first because it is the reason to
+     unfold, the size last because it lines up with the totals above. */
+  .count {
     margin-left: auto;
+    font-size: 0.8rem;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+  }
+  .size {
     font-size: 0.8rem;
     font-weight: 400;
     font-variant-numeric: tabular-nums;

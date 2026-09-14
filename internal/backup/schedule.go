@@ -310,9 +310,8 @@ func (s *Scheduler) Targets() []Target {
 	if err == nil {
 		var names []string
 		for _, e := range entries {
-			// The same guard the on-disk paths use, so ".backups", ".staging-*" and
-			// anything else with a dot are excluded for free rather than by a second,
-			// drifting filter.
+			// The same guard the on-disk paths use, so ".staging-*" and anything else
+			// with a dot are excluded for free rather than by a second, drifting filter.
 			if !e.IsDir() || !apps.ValidProjectName(e.Name()) {
 				continue
 			}
@@ -368,7 +367,8 @@ func (s *Scheduler) canBackUpUserData() bool { return s.userDataEngine() != nil 
 //   - Maison's own state directory. It sits at AppData/maison and therefore looks
 //     exactly like an app — deliberately, so the dashboard tiles itself. Stopping it
 //     would kill the process running the backup, and the run would end mid-flight
-//     with nothing to report it.
+//     with nothing to report it. It is also where the archive tree lives, so it is the
+//     one folder a nightly run has least business copying.
 //   - System apps: the platform's own pieces, which is what `view: system` names.
 //     Taking the gateway or the dashboard down nightly is not a backup strategy.
 //

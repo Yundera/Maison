@@ -175,7 +175,10 @@ func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 		s.installer.ClearInstall(id)
 	}
 	err := s.apps.StartUninstall(id, zip)
-	if errors.Is(err, apps.ErrProtected) {
+	// Both refusals, not failures: the app is the platform's own (ErrProtected), or its
+	// folder is where every archive on the box lives (ErrHoldsBackups). The UI withholds
+	// the menu entry for the first and the API says why for anything that asks anyway.
+	if errors.Is(err, apps.ErrProtected) || errors.Is(err, apps.ErrHoldsBackups) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		return
 	}

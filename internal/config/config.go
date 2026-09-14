@@ -210,16 +210,32 @@ func (c Config) AppsDir() string {
 }
 
 // BackupsDir holds every app archive, one sub-directory per app
-// (${DATA_ROOT}/AppData/.backups/<app>/<stamp>). Archives land here whether they
-// came from an uninstall or from an on-demand backup.
+// (${DATA_ROOT}/AppData/maison/.backups/<app>/<stamp>). Archives land here whether
+// they came from an uninstall or from an on-demand backup.
 //
 // It sits inside AppData rather than beside it so that an archive is always on
 // the same filesystem as the app it came from — which is what keeps uninstall's
 // archive step, and restore's swap, an instantaneous rename instead of a copy.
-// The leading dot keeps it off the dashboard for free: a name containing a dot is
-// never a tile (see apps.Registry.managedDirs and docs/app-model.md).
+//
+// Inside Maison's OWN app folder rather than beside the apps, so that AppData's top
+// level holds app folders and nothing else. That nesting is what hides it now:
+// apps.Registry.managedDirs reads only the top level of AppData and never descends,
+// so an archive tree one level down is invisible to the dashboard whatever it is
+// called. The leading dot is no longer load-bearing for that — it is kept because
+// every lister still rejects a dotted name as an app, and because a stray dot-name
+// under a state directory reads as "not yours to touch".
+//
+// Spelled out against AppData rather than built from StateDir(), deliberately:
+// STATE_DIR may point at another volume, and following it would silently move every
+// archive off the data disk and turn each uninstall into a full copy.
+//
+// The consequence is that Maison's own folder contains the archives of every app —
+// including its own. That is handled where it matters rather than by a special case:
+// apps.Registry.exclusionsFor excludes this tree from the backup of whichever app
+// owns it, and Restore refuses an app whose folder contains it (a restore would
+// rename that folder into its own subtree, or delete the tree with --delete-extra).
 func (c Config) BackupsDir() string {
-	return filepath.Join(c.DataRoot, "AppData", ".backups")
+	return filepath.Join(c.DataRoot, "AppData", brand.Slug, ".backups")
 }
 
 // SharedDir holds state that belongs to the deployment rather than to any one app:

@@ -461,7 +461,7 @@ networks:
   page. Each row says where it is, and a restore comes from wherever it actually is
   rather than from whichever engine is selected today, so switching engines never
   strands what the previous one wrote.
-  - **`local`** (default) writes archives to `${DATA_ROOT}/AppData/.backups/<app>/<stamp>`,
+  - **`local`** (default) writes archives to `${DATA_ROOT}/AppData/maison/.backups/<app>/<stamp>`,
     one per app per moment, holding the whole app folder (compose + override + `.env`
     + data). On the data disk, so on its own it is a rollback mechanism, not disaster
     recovery.
@@ -474,7 +474,7 @@ networks:
     its own disk can still be backed up. The engine runs as a container; Maison ships
     no binary and installs nothing on the host. Credentials are rendered onto the box
     out of band — Maison only reads them. See [`docs/backup.md`](docs/backup.md).
-- **Uninstall never deletes.** The app folder is **moved** into `.backups/` (or zipped,
+- **Uninstall never deletes.** The app folder is **moved** into the archive tree (or zipped,
   on request); the data stays put and is one restore away.
 - **Health:** `GET /ping` → 200.
 - **TLS / public routing** is out of scope — front Maison with a reverse proxy

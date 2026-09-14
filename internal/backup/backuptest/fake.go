@@ -37,7 +37,7 @@ type Fake struct {
 	DeleteErr    error
 	SnapshotHang time.Duration // block this long in Snapshot, to exercise timeouts
 
-	// MaterializeInto, when set, is the .backups directory this fake writes into when
+	// MaterializeInto, when set, is the local archive directory this fake writes into when
 	// asked to bring a backup down — enough of a real download for the paths above it
 	// (restore, and the store's install-from-backup) to be exercised end to end against
 	// an engine whose backups are not already on the disk. Left empty, Materialize only

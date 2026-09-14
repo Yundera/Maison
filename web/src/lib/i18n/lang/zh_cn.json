@@ -171,6 +171,7 @@
   "backups_empty": "暂无备份。",
   "backups_orphan": "已卸载",
   "backups_orphan_hint": "该应用未安装。恢复备份会连同磁贴一起恢复。",
+  "backups_count": "{count} 个备份",
   "backup_hint": "备份会归档该应用的整个文件夹：compose 文件、.env 和数据。应用会短暂停止以保证副本一致，随后重新启动。",
   "backup_now": "立即备份",
   "backup_compress": "压缩（更慢，更小）",

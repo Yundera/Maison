@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yundera/maison/internal/config"
 )
 
 // seedApp writes a minimal app folder: a compose file, an .env and one nested
@@ -118,9 +120,8 @@ func TestMeasureSizesFolderArchivesAndLeavesZipsAlone(t *testing.T) {
 }
 
 func TestRestoreBackupFolderIsARename(t *testing.T) {
-	root := t.TempDir()
-	appsDir := filepath.Join(root, "AppData")
-	backupsDir := filepath.Join(appsDir, ".backups")
+	cfg := config.Config{DataRoot: t.TempDir()}
+	appsDir, backupsDir := cfg.AppsDir(), cfg.BackupsDir()
 	archive := filepath.Join(backupsDir, "jellyfin", "2026-07-10_153045")
 	seedApp(t, archive)
 
@@ -145,9 +146,8 @@ func TestRestoreBackupFolderIsARename(t *testing.T) {
 }
 
 func TestRestoreBackupZipRoundTripKeepsTheZip(t *testing.T) {
-	root := t.TempDir()
-	appsDir := filepath.Join(root, "AppData")
-	backupsDir := filepath.Join(appsDir, ".backups")
+	cfg := config.Config{DataRoot: t.TempDir()}
+	appsDir, backupsDir := cfg.AppsDir(), cfg.BackupsDir()
 	src := filepath.Join(appsDir, "jellyfin")
 	seedApp(t, src)
 	if err := os.MkdirAll(filepath.Join(backupsDir, "jellyfin"), 0o755); err != nil {
@@ -186,9 +186,8 @@ func TestRestoreBackupZipRoundTripKeepsTheZip(t *testing.T) {
 }
 
 func TestRestoreBackupRefusesLiveAppAndBadNames(t *testing.T) {
-	root := t.TempDir()
-	appsDir := filepath.Join(root, "AppData")
-	backupsDir := filepath.Join(appsDir, ".backups")
+	cfg := config.Config{DataRoot: t.TempDir()}
+	appsDir, backupsDir := cfg.AppsDir(), cfg.BackupsDir()
 	seedApp(t, filepath.Join(appsDir, "jellyfin")) // already installed
 	seedBackupDirs(t, backupsDir, "jellyfin", "2026-07-10_153045")
 
@@ -203,7 +202,7 @@ func TestRestoreBackupRefusesLiveAppAndBadNames(t *testing.T) {
 		{"jellyfin", "2026-07-10_153045/db"},  // not a base name
 		{"jellyfin", "../../etc/passwd"},      // traversal via the name
 		{"..", "2026-07-10_153045"},           // traversal via the app
-		{".backups", "2026-07-10_153045"},     // the backups dir itself
+		{".backups", "2026-07-10_153045"},     // a dotted name is never an app
 		{"jellyfin", ".staging-2026-07-10_1"}, // an in-flight snapshot
 	} {
 		if err := RestoreBackup(backupsDir, appsDir, c.app, c.name); err == nil {
@@ -213,9 +212,8 @@ func TestRestoreBackupRefusesLiveAppAndBadNames(t *testing.T) {
 }
 
 func TestDeleteBackupOnlyReachesArchives(t *testing.T) {
-	root := t.TempDir()
-	appsDir := filepath.Join(root, "AppData")
-	backupsDir := filepath.Join(appsDir, ".backups")
+	cfg := config.Config{DataRoot: t.TempDir()}
+	appsDir, backupsDir := cfg.AppsDir(), cfg.BackupsDir()
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 	seedBackupDirs(t, backupsDir, "jellyfin", "2026-07-10_153045")
 
@@ -242,9 +240,8 @@ func TestDeleteBackupOnlyReachesArchives(t *testing.T) {
 }
 
 func TestExtractZipRejectsTraversalEntries(t *testing.T) {
-	root := t.TempDir()
-	appsDir := filepath.Join(root, "AppData")
-	backupsDir := filepath.Join(appsDir, ".backups")
+	cfg := config.Config{DataRoot: t.TempDir()}
+	appsDir, backupsDir := cfg.AppsDir(), cfg.BackupsDir()
 	if err := os.MkdirAll(filepath.Join(backupsDir, "jellyfin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +267,7 @@ func TestExtractZipRejectsTraversalEntries(t *testing.T) {
 	if err := RestoreBackup(backupsDir, appsDir, "jellyfin", name); err == nil {
 		t.Fatal("extracting a traversal entry should fail")
 	}
-	if _, err := os.Stat(filepath.Join(root, "escaped.txt")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(cfg.DataRoot, "escaped.txt")); !os.IsNotExist(err) {
 		t.Error("zip-slip wrote outside the app dir")
 	}
 }

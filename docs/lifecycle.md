@@ -259,7 +259,7 @@ backing up offsite puts that app's data offsite — it did not use to, and the s
 page said it did.
 
 On the local engine the backup is still a single rename of the app folder into
-`.backups/<app>/<stamp>`, so an uninstall stays instant and free whatever the app's
+`maison/.backups/<app>/<stamp>`, so an uninstall stays instant and free whatever the app's
 size (`SnapshotOpts.Consume`). `zip` is a local-engine option only, and the dialog
 hides it against a remote engine, where a zip would defeat deduplication.
 
@@ -312,7 +312,7 @@ What each pass *does* depends on the engine:
 
 | | `local` (built in, always available) | `kopia` (and any later remote engine) |
 |---|---|---|
-| A pass | mirrors into `.backups/<app>/.staging-<stamp>` | snapshots `AppData/<app>` straight into the repository |
+| A pass | mirrors into `maison/.backups/<app>/.staging-<stamp>` | snapshots `AppData/<app>` straight into the repository |
 | Commit | renames staging → `<stamp>`, or zips it | drops the torn pass-1 snapshot |
 | Needs free disk | yes, a full second copy | **no** |
 | Survives losing the box | no — same disk as the app | yes |
@@ -355,10 +355,10 @@ rule that keeps a user's older backups reachable after they switch engines.
 
 ```
 on disk           1. stop (if running)
-                  2. archive   rename AppData/<app> → .backups/<app>/<now>  ← instant, free
+                  2. archive   rename AppData/<app> → the archive tree      ← instant, free
                   3. restore   folder archive renamed back; zip extracted
                   4. start     deferred
-remote, room      0. fetch     the engine downloads it to .backups/<app>/<stamp>
+remote, room      0. fetch     the engine downloads it into the archive tree
                   … then exactly the above
 remote, no room   1. stop
                   2. undo      the engine snapshots the current state — and if that
@@ -375,9 +375,10 @@ reversible only while the repository is reachable. That is the price of restorin
 app too large to hold two copies of, and it is why the undo snapshot is mandatory
 rather than best-effort.
 
-While an in-place restore is running, `.backups/<app>/.restoring` exists. It lives
+While an in-place restore is running, `<backups>/<app>/.restoring` exists. It lives
 *outside* the folder being written (a delete-extra restore would remove it from
-inside) and its name cannot parse as a stamp, so no lister mistakes it for an
+inside) — which is also why the one app whose folder *contains* the archive tree
+cannot be restored at all; see [`app-model.md`](./app-model.md) and its name cannot parse as a stamp, so no lister mistakes it for an
 archive. **It gates `EnsureStarted`:** an app whose restore was cut short is not
 started, because it would initialise over the gap — fresh database, default config —
 and that invented state would become the next backup.

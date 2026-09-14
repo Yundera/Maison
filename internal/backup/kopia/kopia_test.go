@@ -812,3 +812,25 @@ func TestTheStoppedPassDoesNotRewriteThePolicy(t *testing.T) {
 		t.Errorf("the stopped pass carried the excluded directory:\n%s", listed)
 	}
 }
+
+// TestUserDataPolicyStaysInOneFilesystem pins the flag that keeps the data root's
+// snapshot off anything an app mounts underneath it — see oneFileSystem for why, and
+// for the field incident that put it there. Pure argv, so it runs without a daemon.
+func TestUserDataPolicyStaysInOneFilesystem(t *testing.T) {
+	user := policyArgs("/DATA", UserDataSource(), DefaultRetention())
+	i := slices.Index(user, "--one-file-system")
+	if i < 0 {
+		t.Fatalf("the user-data policy does not stay in one filesystem: %v", user)
+	}
+	// Tri-state, so the value is a separate argument and "true" is not the default.
+	if i+1 >= len(user) || user[i+1] != "true" {
+		t.Errorf("--one-file-system is not set to true: %v", user)
+	}
+
+	// An app's source is one directory inside AppData with nothing mounted under it,
+	// and narrowing it would only add a way for an app's data to go missing.
+	app := policyArgs("/DATA/AppData/jellyfin", AppSource("jellyfin"), DefaultRetention())
+	if slices.Contains(app, "--one-file-system") {
+		t.Errorf("an app source must not be narrowed to one filesystem: %v", app)
+	}
+}

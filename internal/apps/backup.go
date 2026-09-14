@@ -140,19 +140,53 @@ type Estimate struct {
 // over one typo would be. The refusals are returned so the dialog can show them —
 // a mistake in a store app should be visible, not silent.
 func (r *Registry) exclusionsFor(id string) (*exclude.Set, []error) {
+	appDir := filepath.Join(r.cfg.AppsDir(), id)
+	var patterns []string
+
+	// The archive tree, on the one app whose folder holds it. This is not the app's
+	// choice and cannot be left to a declaration: without it, backing that app up
+	// copies every archive on the box into a staging directory inside the very folder
+	// being copied, and the dialog's size walk reports the whole backup history as the
+	// app's own size. First in the list so it is there whatever the app declared.
+	if backups, ok := r.ownsBackupsDir(id); ok {
+		patterns = append(patterns, backups)
+	}
+
 	_, ca := r.metaFor(id, "")
-	if ca == nil || len(ca.Backup.Exclude) == 0 {
+	if ca != nil {
+		for _, p := range ca.Backup.Exclude {
+			// Rendered the way a folder path is, then mapped back into this container's
+			// data mount — so the absolute spelling an author copies out of `folders:`
+			// (/DATA/AppData/${AppID}/cache, a HOST path) is compared against the app
+			// folder Maison actually reads.
+			patterns = append(patterns, envinject.ContainerPath(envinject.Render(p, r.cfg, id, nil), r.cfg))
+		}
+	}
+	if len(patterns) == 0 {
 		return nil, nil
 	}
-	patterns := make([]string, 0, len(ca.Backup.Exclude))
-	for _, p := range ca.Backup.Exclude {
-		// Rendered the way a folder path is, then mapped back into this container's
-		// data mount — so the absolute spelling an author copies out of `folders:`
-		// (/DATA/AppData/${AppID}/cache, a HOST path) is compared against the app
-		// folder Maison actually reads.
-		patterns = append(patterns, envinject.ContainerPath(envinject.Render(p, r.cfg, id, nil), r.cfg))
+	return exclude.Parse(patterns, appDir)
+}
+
+// ownsBackupsDir reports whether app `id`'s folder CONTAINS the local archive tree,
+// and where that tree is.
+//
+// It is true for exactly one app on a box — Maison's own folder, which is both an app
+// folder and the parent of BackupsDir (see config.BackupsDir) — but it is asked as a
+// question about two paths rather than about a name, so a deployment that moves either
+// one still gets the right answer, and no code path has to know what Maison is called.
+//
+// Two things depend on it, both because a folder holding the archives cannot be
+// treated as ordinary app data: that app's backup has to leave the tree out
+// (exclusionsFor), and a restore of that app has to be refused (Restore) — a restore
+// would either rename the folder into its own subtree or delete the tree outright.
+func (r *Registry) ownsBackupsDir(id string) (string, bool) {
+	appDir := filepath.Clean(filepath.Join(r.cfg.AppsDir(), id))
+	backups := filepath.Clean(r.cfg.BackupsDir())
+	if appDir == backups || !strings.HasPrefix(backups, appDir+string(os.PathSeparator)) {
+		return "", false
 	}
-	return exclude.Parse(patterns, filepath.Join(r.cfg.AppsDir(), id))
+	return backups, true
 }
 
 // excludeSet is exclusionsFor for the paths that only need the answer, logging what
@@ -295,7 +329,12 @@ func (r *Registry) StartBackup(id, engine string, zip bool) error {
 // leave it running. Nothing has been touched at that point, so refusing is safe. The
 // restore itself is deliberately detached below.
 func (r *Registry) StartRestore(ctx context.Context, id, engine, name string) error {
-	// Resolve through the engines, not the data disk. Checking .backups/ here would
+	// Up front rather than inside the goroutine, so the API refuses the request instead
+	// of accepting it and parking the refusal on the tile. See ErrHoldsBackups.
+	if _, ok := r.ownsBackupsDir(id); ok {
+		return ErrHoldsBackups
+	}
+	// Resolve through the engines, not the data disk. Checking the archive tree here would
 	// reject a backup that exists only in a repository — the restore path below
 	// handles it perfectly well via locate() — so the check has to ask the same
 	// question the restore will: does any engine have this backup.
@@ -893,6 +932,11 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 	if !projectRe.MatchString(id) {
 		return fmt.Errorf("invalid app name: %s", id)
 	}
+	// Refused before the app is stopped: none of the three paths below can run on the
+	// folder that holds the archives. See ErrHoldsBackups.
+	if _, ok := r.ownsBackupsDir(id); ok {
+		return ErrHoldsBackups
+	}
 	src, _, err := r.locate(ctx, id, engine, name)
 	if err != nil {
 		return err
@@ -985,6 +1029,12 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 func (r *Registry) RestoreForInstall(ctx context.Context, id, engine, name string, emit func(Event)) error {
 	if !projectRe.MatchString(id) {
 		return fmt.Errorf("invalid app name: %s", id)
+	}
+	// Same refusal as Restore. This path reaches RestoreBackup, which renames the
+	// archive into the app folder — and the archive it would move lives inside the
+	// folder it is moving to. See ErrHoldsBackups.
+	if _, ok := r.ownsBackupsDir(id); ok {
+		return ErrHoldsBackups
 	}
 	if emit == nil {
 		emit = func(Event) {}
@@ -1082,6 +1132,10 @@ func (r *Registry) restoreInPlace(ctx context.Context, src Provider, id, name, a
 	// 2. The marker. It lives outside the folder being written, because a restore
 	//    that deletes files absent from the backup would otherwise delete it. Its
 	//    name cannot parse as a stamp, so ListBackups ignores it for free.
+	//
+	//    "Outside" holds for every app that can reach this point: the one app whose
+	//    folder CONTAINS the archive tree — and whose marker would therefore be inside
+	//    it — is refused by Restore before anything here runs. See ErrHoldsBackups.
 	if err := r.markRestoring(id, name); err != nil {
 		return err
 	}

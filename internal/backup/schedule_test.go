@@ -25,11 +25,16 @@ func newScheduler(t *testing.T, appNames ...string) (*Scheduler, *backupconfig.S
 			t.Fatal(err)
 		}
 	}
-	// Directories the on-disk guard excludes, which the run must also skip.
-	for _, n := range []string{".backups", ".staging-2026-01-01_000000"} {
-		if err := os.MkdirAll(filepath.Join(cfg.AppsDir(), n), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	// A dotted directory under AppData is never a target: the run reuses the same name
+	// guard the on-disk paths use rather than a second, drifting filter.
+	if err := os.MkdirAll(filepath.Join(cfg.AppsDir(), ".staging-2026-01-01_000000"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Maison's own folder looks exactly like an app — deliberately, so the dashboard
+	// tiles itself — and holds the archive tree. Backing it up would stop the process
+	// running the backup, so the run skips it by path (Scheduler.skip).
+	if err := os.MkdirAll(cfg.StateDir(), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	store := backupconfig.New(filepath.Join(cfg.StateDir(), "backup.json"))
 	// A real registry, because the run's skip guard asks it which apps are system

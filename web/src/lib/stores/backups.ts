@@ -1,7 +1,7 @@
 import { api } from '../api/client'
 
 /** One backup of an app, wherever it lives — an archive under
- *  ${DATA_ROOT}/AppData/.backups/<app>/, or a snapshot in a remote engine's
+ *  ${DATA_ROOT}/AppData/maison/.backups/<app>/, or a snapshot in a remote engine's
  *  repository.
  *
  *  Backups are made three ways — as the side effect of an uninstall, on demand from

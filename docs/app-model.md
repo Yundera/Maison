@@ -211,15 +211,16 @@ name takes an app out of the model entirely (see below).
 
 ---
 
-## Backups live in `.backups/`
+## Backups live in Maison's own folder
 
-Every archive of every app sits under one directory, one sub-directory per app:
+Every archive of every app sits under one directory inside Maison's app folder, one
+sub-directory per app:
 
 ```
-/DATA/AppData/<app>/                          the live app
-/DATA/AppData/.backups/<app>/<stamp>/         a folder archive
-/DATA/AppData/.backups/<app>/<stamp>.zip      a compressed archive
-/DATA/AppData/.backups/<app>/.staging-<stamp>/ a snapshot still being taken
+/DATA/AppData/<app>/                                 the live app
+/DATA/AppData/maison/.backups/<app>/<stamp>/         a folder archive
+/DATA/AppData/maison/.backups/<app>/<stamp>.zip      a compressed archive
+/DATA/AppData/maison/.backups/<app>/.staging-<stamp>/ a snapshot still being taken
 ```
 
 `<stamp>` is `YYYY-MM-DD_HHMMSS` — seconds included, so the name is the whole
@@ -230,12 +231,32 @@ an interrupted backup inert rather than dangerous.
 
 Two properties of the location are load-bearing:
 
-- **The leading dot hides it.** `.backups` contains a `.`, so the existing "dot in a
-  name = hidden" rule (below) keeps it off the dashboard with no special case.
+- **The nesting hides it.** `managedDirs` reads the top level of `AppData` and never
+  descends, so an archive tree one level down cannot be mistaken for an app whatever
+  it is called. The leading dot is no longer what does the hiding — it is kept because
+  every lister still rejects a dotted name as an app, and because a dot-name under a
+  state directory reads as "not yours to touch".
 - **It is inside `AppData`, so archiving is a rename.** Same filesystem means
-  `os.Rename`, which is instantaneous no matter how much data the folder holds.
-  Moving `.backups` to another volume would silently turn every uninstall into a
-  full copy.
+  `os.Rename`, which is instantaneous no matter how much data the folder holds. This
+  is why the path is spelled out against `AppData` rather than built from `STATE_DIR`:
+  `STATE_DIR` may point at another volume, and following it there would silently turn
+  every uninstall into a full copy.
+
+The cost of the nesting is that **Maison's own folder contains the archives of every
+app, including its own.** That is handled where it matters, not by a special case for
+one app name:
+
+- Backing up the app whose folder holds the tree **excludes the tree** — the same
+  mechanism an app uses to declare a derived folder (`x-compose-app`'s
+  `backup.exclude`), applied by Maison rather than declared. Without it the staging
+  directory would be inside the folder being mirrored.
+- **Restoring or uninstalling that app is refused** up front. Both would rename the
+  folder into a directory inside itself, and an in-place restore — which deletes what
+  the backup does not have — would delete every archive on the box.
+
+A previous version kept the tree at `/DATA/AppData/.backups/`. Boxes that have one
+there keep it: it is **not migrated and never read again**, so archives taken before
+the move stop appearing in the UI and the directory can be deleted by hand.
 
 An archive carries the **whole app folder** — `docker-compose.yml`, the override,
 `.env` and the data — so it restores into a working app on its own, without the
@@ -255,7 +276,7 @@ the backups tree:
 ```
 /DATA/AppData/<app>
       ↓ uninstall — local engine
-/DATA/AppData/.backups/<app>/2026-07-10_153045
+/DATA/AppData/maison/.backups/<app>/2026-07-10_153045
       ↓ uninstall — remote engine
 a snapshot in the repository; nothing is left on this disk
 ```
@@ -267,7 +288,7 @@ a snapshot in the repository; nothing is left on this disk
   the bytes on disk are untouched and only the path changes, which is what keeps an
   uninstall instant at any size.
 - On a **remote** engine the folder is uploaded and then deleted, so an uninstalled
-  app's data survives losing this disk. Nothing is left in `.backups/`.
+  app's data survives losing this disk. Nothing is left in the local archive tree.
 - **Zip is an option, and a local-engine one.** When enabled, the folder is compressed
   to `<stamp>.zip` instead of a plain move. Default is a plain move (fast, no copy). A
   remote engine ignores it — a zip defeats deduplication — and the dialog hides it.
@@ -317,7 +338,7 @@ Restoring over a live app **archives what is there first**:
 
 ```
 1. stop the app (if it was running)
-2. rename AppData/<app>  →  .backups/<app>/<now>      ← instant, costs nothing
+2. rename AppData/<app>  →  maison/.backups/<app>/<now>   ← instant, costs nothing
 3. put the chosen archive back as AppData/<app>
 4. start the app (if it was running)
 ```
@@ -332,7 +353,7 @@ Restoring an app with no live folder — an uninstalled one, reached from
 Settings → Backups — is the same path with steps 1, 2 and 4 having nothing to do.
 Once the folder lands, the app has a tile again.
 
-> **Scope.** Archives under `.backups/` are on the same disk as the apps. They cover
+> **Scope.** Local archives are on the same disk as the apps. They cover
 > a bad update, a broken config or a regretted uninstall — **not** a failed disk.
 > On their own they are a rollback mechanism, not disaster recovery.
 >
@@ -397,15 +418,20 @@ contains a `.` is **not displayed** as an app:
 
 ```
 AppData/jellyfin        → shown  (tile "jellyfin")
-AppData/.backups        → hidden (every archive of every app lives in here)
+AppData/maison          → shown  (tile "Maison" — the dashboard tiles itself)
 AppData/.tmp-download   → hidden (scratch / hidden dir)
 ```
 
 This single rule does double duty:
 
-- It keeps **archives** (which always carry a date-dotted suffix) out of the grid.
+- It keeps **staging directories** (`.staging-<stamp>`, and anything else carrying a
+  date-dotted suffix) out of the grid.
 - It gives Maison a namespace for **scratch / internal** folders — anything it
   doesn't want to surface, it names with a `.`.
+
+Note what it is *not* doing any more: the archive tree is not hidden by this rule, it
+is hidden by living one level down, inside `AppData/maison/` (above). `managedDirs`
+reads only the top level of `AppData`.
 
 An app that needs to be visible therefore **must not** have a `.` in its directory
 name.
@@ -422,11 +448,11 @@ name.
 | Running / stopped / busy / clickable | Live Docker state |
 | Health dot | Docker health check |
 | Which grid (app / system / none) | The app's `x-compose-app` `view` |
-| Uninstall | Move to `.backups/<app>/<stamp>` (optionally `.zip`) — data never deleted |
-| Backup | Two-pass copy into `.backups/<app>/<stamp>`; the app is down only for the delta pass |
+| Uninstall | Move to `maison/.backups/<app>/<stamp>` (optionally `.zip`) — data never deleted |
+| Backup | Two-pass copy into `maison/.backups/<app>/<stamp>`; the app is down only for the delta pass |
 | Restore | Archive the current folder, then put the chosen one back — always reversible |
 | Install from backup | Restore an archive as `AppData/<app>/`, then install over it (keeps its `.env` + data) |
-| Where backups live | `AppData/.backups/<app>/<YYYY-MM-DD_HHMMSS>[.zip]` |
+| Where backups live | `AppData/maison/.backups/<app>/<YYYY-MM-DD_HHMMSS>[.zip]` |
 | Hidden entries | Any name containing `.` |
 </content>
 </invoke>

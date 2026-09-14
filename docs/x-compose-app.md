@@ -712,6 +712,19 @@ not guess that a directory looks like a cache, because a wrong guess drops real 
 from a backup silently and the loss surfaces only during a restore. If a path is
 excluded, it is because the app's author said so.
 
+### The one exclusion Maison adds itself
+
+Maison's own app folder contains the local archive tree
+(`AppData/maison/.backups/`, see [`app-model.md`](./app-model.md)). Maison excludes
+that tree from the backup of whichever app's folder holds it — otherwise the staging
+directory would sit inside the folder being copied, and the size estimate would report
+every archive on the box as that app's own data.
+
+It is not an exception to the rule above: it is a structural fact about two paths, not
+a guess about what a directory contains, and it applies to exactly one folder on a box.
+It shows up in the backup dialog's excluded list like any declared entry. Restoring or
+uninstalling that app is refused outright, because no exclusion can make either safe.
+
 ### Where it does not apply
 
 The local engine's **uninstall** archive keeps everything. Uninstalling with a backup

@@ -483,7 +483,7 @@ func (p *Provider) sourcePath(s Source) string {
 // leave a stale one behind.
 func (p *Provider) EnsurePolicy(ctx context.Context, s Source, keep Retention) error {
 	path := p.sourcePath(s)
-	if _, err := p.run(ctx, nil, 5*time.Minute, append([]string{"policy", "set", path}, keep.args()...)...); err != nil {
+	if _, err := p.run(ctx, nil, 5*time.Minute, policyArgs(path, s, keep)...); err != nil {
 		return err
 	}
 	if !s.isUserData() {
@@ -492,6 +492,51 @@ func (p *Provider) EnsurePolicy(ctx context.Context, s Source, keep Retention) e
 	// The exclusions themselves, and why each one is there, are on UserDataExclusions.
 	return p.EnsureIgnore(ctx, s, UserDataExclusions)
 }
+
+// policyArgs is the `policy set` call for one source. Split out so that what the
+// user-data set gets and an app does not can be asserted without a repository.
+func policyArgs(path string, s Source, keep Retention) []string {
+	args := append([]string{"policy", "set", path}, keep.args()...)
+	if s.isUserData() {
+		args = append(args, oneFileSystem...)
+	}
+	return args
+}
+
+// oneFileSystem keeps the user-data snapshot inside the data root's own filesystem.
+//
+// The data root is a plain directory on `/` — nothing on a PCS mounts /DATA — so on a
+// healthy box this changes nothing about what is backed up. What it drops is anything
+// an app MOUNTS underneath it, and the one that exists today is the Seafile store app:
+// it runs rclone to mount its own WebDAV server at /DATA/Seafile, propagated out to the
+// host, so that directory is a live request to another container rather than bytes on
+// a disk.
+//
+// Walking into a mount like that is wrong three ways, and the third is what forced
+// this:
+//
+//   - It is a second copy. The bytes already live in /DATA/AppData/seafile, which the
+//     seafile app's own source backs up; the mount is a view of them, re-read over HTTP
+//     every night and stored again.
+//   - An in-place restore aims `--delete-extra` at each top-level entry the snapshot
+//     holds (see RestoreUserData). A live network mount is the last thing that should
+//     be on that list — the delete would land in the user's Seafile libraries.
+//   - A readdir on it can fail. When the server behind it is not answering, the mount
+//     returns EIO; kopia counts a directory it cannot read as a FATAL error, so
+//     `snapshot create` exits 1 after it has already hashed everything else, and one
+//     app's WebDAV server being down fails the whole box's user-data backup. Seen in
+//     production on a box whose seeded rclone config still named a container the app
+//     had since renamed — the mount had been returning EIO for weeks.
+//
+// The trade is that a disk genuinely mounted under the data root — an attached volume
+// for media, say — stops being backed up, and says nothing about it. Nothing on a PCS
+// creates one today, and the case this has to survive is the other one: a mount that is
+// a view of storage something else already owns.
+//
+// Kopia's tri-state policy fields take the value as a string, not as a boolean flag —
+// `--one-file-system=true|false|inherit`. Verified against kopia 0.23.1;
+// TestUserDataPolicyStaysInOneFilesystem is what catches a regression.
+var oneFileSystem = []string{"--one-file-system", "true"}
 
 // EnsureIgnore replaces a source's ignore rules with exactly `rules`.
 //
@@ -965,7 +1010,8 @@ func (p *Provider) Delete(ctx context.Context, app, stamp string) error {
 	return p.AbortSource(ctx, AppSource(app), stamp)
 }
 
-// Materialize downloads a backup to .backups/<app>/<stamp> so the ordinary restore
+// Materialize downloads a backup into the local archive tree (config.BackupsDir,
+// <app>/<stamp>) so the ordinary restore
 // path can swap it in. It needs room for a full copy of the app; the caller is
 // responsible for having checked.
 func (p *Provider) Materialize(ctx context.Context, app, stamp string, emit func(apps.Event)) error {
@@ -997,7 +1043,7 @@ func (p *Provider) Materialize(ctx context.Context, app, stamp string, emit func
 //
 // This is the one place kopia writes to the data disk rather than to the repository.
 // The engine runs as root now (see spec), so the chown is no longer what makes the
-// write succeed — it is what keeps .backups/<app> looking like the rest of the data
+// write succeed — it is what keeps the archive tree looking like the rest of the data
 // disk instead of a root-owned island the user cannot manage from an app. It also
 // repairs a directory an older Maison left behind.
 func (p *Provider) mkdirForEngine(dir string) error {

@@ -40,7 +40,7 @@ func twoPass(t *testing.T, p *LocalProvider, app string, opts SnapshotOpts) Back
 	return b
 }
 
-// A folder backup lands as .backups/<app>/<stamp> holding the app's files, and the
+// A folder backup lands as <backups>/<app>/<stamp> holding the app's files, and the
 // staging directory is consumed by the rename rather than left behind.
 func TestLocalProviderFolderBackup(t *testing.T) {
 	p, appsDir, backupsDir := newLocalProvider(t)

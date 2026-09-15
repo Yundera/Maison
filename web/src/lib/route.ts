@@ -26,7 +26,18 @@ import { CATALOG, parseRef, refPath, type StoreRef } from './storeref'
 // vocabulary, so it lives here rather than in the component — which means the rail
 // and the deep links cannot drift, and adding a section is one entry here plus its
 // panel in SettingsPage.
-export const SETTINGS_SECTIONS = ['domain', 'env', 'store', 'backups', 'resources', 'notifications'] as const
+// 'device' is appended rather than inserted: SETTINGS_SECTIONS[0] is what an
+// unknown section normalises to and what openSettings() lands on with no argument,
+// so it has to stay 'domain'.
+export const SETTINGS_SECTIONS = [
+  'domain',
+  'env',
+  'store',
+  'backups',
+  'resources',
+  'notifications',
+  'device',
+] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 
 const isSection = (s: string): s is SettingsSection =>

@@ -4,6 +4,7 @@
   import { t, languages } from '../i18n'
   import { openSettings } from '../route'
   import { incidents, loadIncidents, subscribeIncidents } from '../stores/incidents'
+  import { canInstall, installed, installHelp, isIOSSafari, promptInstall } from '../stores/pwa'
 
   let open = $state(false)
 
@@ -28,6 +29,17 @@
   function more() {
     open = false
     openSettings()
+  }
+
+  // Installing belongs in this menu by the same rule as the three above: it is
+  // instant, it is browser-local, and it changes nothing about the box. It is shown
+  // only when it can actually do something — the argument the bell below makes for
+  // itself. On iOS there is no install API at all, only instructions, so that
+  // branch opens the dialog instead.
+  function install() {
+    open = false
+    if ($canInstall) promptInstall()
+    else installHelp.set(true)
   }
 
   const wallpapers = [
@@ -105,6 +117,15 @@
               </label>
             </div>
           </div>
+
+          {#if !$installed && ($canInstall || isIOSSafari)}
+            <button class="action" onclick={install}>
+              <span>{$t('install_app')}</span>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 4v10M8 11l4 4 4-4M5 19h14" />
+              </svg>
+            </button>
+          {/if}
 
           <button class="more" onclick={more}>
             <span>{$t('more')}</span>
@@ -269,6 +290,24 @@
     font-size: 0.85rem;
   }
   /* Way out of the dropdown, into the settings page. */
+  /* Shares .more's box but keeps its divider: .more is the way OUT of the menu and
+     should stay the only thing below the rule. */
+  .action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0.5rem;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--grey-800);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .action:hover {
+    background: rgba(0, 0, 0, 0.05);
+  }
   .more {
     display: flex;
     align-items: center;

@@ -343,5 +343,21 @@
   "incident_app.install_name": "Installation échouée",
   "incident_app.update_name": "Problème de mise à jour",
   "incident_app.stackup_name": "Étape de configuration échouée",
-  "incident_store.source_name": "Catalogue non mis à jour"
+  "incident_store.source_name": "Catalogue non mis à jour",
+  "settings_device": "Cet appareil",
+  "settings_device_hint": "Paramètres propres à ce navigateur sur cet appareil, et non à votre serveur. Ils ne vous suivent pas sur un autre ordinateur ou téléphone.",
+  "install_app": "Installer l'application",
+  "install_app_hint": "Ajoutez {app} à votre écran d'accueil ou à votre bureau. L'application s'ouvre dans sa propre fenêtre, sans barre d'adresse, et démarre plus vite car ses fichiers restent sur cet appareil. Votre serveur doit toujours être joignable — rien ne fonctionne hors ligne.",
+  "install_now": "Installer",
+  "install_installed": "Installée sur cet appareil",
+  "install_installed_hint": "Vous utilisez l'application installée. Supprimez-la comme n'importe quelle autre application de cet appareil.",
+  "install_unavailable": "Ce navigateur n'a pas proposé d'installer {app}. Chrome et Edge, sur ordinateur ou sur Android, et Safari sur iPhone et iPad, le peuvent.",
+  "install_show_how": "Montrez-moi comment",
+  "install_ios_title": "Ajouter {app} à l'écran d'accueil",
+  "install_ios_step_share": "Touchez le bouton Partager dans la barre d'outils de Safari.",
+  "install_ios_step_add": "Faites défiler la liste et choisissez Sur l'écran d'accueil.",
+  "install_ios_step_confirm": "Touchez Ajouter. {app} apparaît parmi vos autres applications.",
+  "install_ios_note": "Safari est le seul navigateur sur iPhone et iPad à pouvoir le faire.",
+  "install_host": "S'installe pour {host}.",
+  "install_host_fallback": "{host} est une adresse de secours pour ce serveur, pas son propre domaine. Une application installée depuis cette adresse cesse de fonctionner si l'adresse du serveur change. Ouvrez d'abord {app} sur son domaine, puis installez."
 }

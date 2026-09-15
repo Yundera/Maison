@@ -424,9 +424,24 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	//     but /offline.html is fetched and cached by the worker at install time, and
 	//     the Cache API ignores Cache-Control: no-store. Sitting outside the gate
 	//     needs to be a property of this table, not of isNavigation's definition.
-	r.Get("/sw.js", s.handleServiceWorker)
-	r.Get("/manifest.webmanifest", s.handleManifest)
-	r.Get("/offline.html", s.handleOffline)
+	//
+	// HEAD as well as GET, which the routes above this line do not bother with. It
+	// matters here for the same no-404 reason: chi matches a method exactly, so a
+	// HEAD that is not registered falls through to the catch-all and is answered as
+	// index.html — a probe or a proxy asking HEAD /manifest.webmanifest would be told
+	// Content-Type: text/html with a 200, which is precisely the confusing answer
+	// this whole block exists to avoid.
+	for _, rt := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{
+		{"/sw.js", s.handleServiceWorker},
+		{"/manifest.webmanifest", s.handleManifest},
+		{"/offline.html", s.handleOffline},
+	} {
+		r.Get(rt.path, rt.h)
+		r.Head(rt.path, rt.h)
+	}
 	// Content-hashed by Vite, so the filename is the version: cacheable forever, and
 	// a miss is a real 404 rather than a confusing HTML 200.
 	r.Handle("/assets/*", immutableAssets(uiFS))

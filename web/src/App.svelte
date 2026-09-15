@@ -10,6 +10,7 @@
   import TipsModal from './lib/components/TipsModal.svelte'
   import MonitorPanel from './lib/components/MonitorPanel.svelte'
   import UninstallDialog from './lib/components/UninstallDialog.svelte'
+  import InstallHelpModal from './lib/components/InstallHelpModal.svelte'
   import { get } from 'svelte/store'
   import { live } from './lib/live/ws'
   import { subscribeSystem } from './lib/stores/system'
@@ -22,6 +23,7 @@
     uninstallTarget,
     monitorOpen,
   } from './lib/stores/ui'
+  import { installHelp } from './lib/stores/pwa'
   import { openStore, start as startRouter } from './lib/route'
   import { loadSettings } from './lib/stores/settings'
 
@@ -114,6 +116,10 @@
 
 {#if $uninstallTarget}
   <UninstallDialog target={$uninstallTarget} />
+{/if}
+
+{#if $installHelp}
+  <InstallHelpModal />
 {/if}
 
 <style>

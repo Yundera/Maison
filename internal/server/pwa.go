@@ -186,10 +186,20 @@ func immutableAssets(uiFS fs.FS) http.Handler {
 // are served to the worker cache-first. A release that swapped a wallpaper would
 // leave the version unmoved and every existing install pinned to the old one.
 //
+// The Go-served documents that the worker also caches are folded in for the same
+// reason. /offline.html is stored in that cache but does not live in uiFS, so a
+// release that reworded it would otherwise leave the version unmoved and every
+// installed browser showing the old text. serviceWorkerJS is included too: a
+// browser notices a changed worker script by itself, but if the cache NAME did not
+// move with it, activate would find nothing to drop and the stale entries would
+// survive the update that was meant to replace them.
+//
 // fs.WalkDir walks in lexical order, so the result is stable across runs and
 // across machines. About 1.7 MB of input, once, at boot.
 func uiVersion(uiFS fs.FS) string {
 	h := sha256.New()
+	_, _ = io.WriteString(h, offlineHTML)
+	_, _ = io.WriteString(h, serviceWorkerJS)
 	_ = fs.WalkDir(uiFS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil //nolint:nilerr // an unreadable entry must not stop the walk
@@ -384,7 +394,10 @@ const offlineHTML = `<!doctype html>
   }
   @media (prefers-color-scheme: light) { body { background: #f3f5f8; color: #1b2330; } }
   .card { text-align: center; padding: 2rem; max-width: 24rem; width: 100%; }
-  .mark { width: 76px; height: 76px; margin: 0 auto 1.4rem; border-radius: 18px; overflow: hidden; }
+  /* No radius or overflow here: the SVG below clips itself to the same corner
+     proportion as the real icon. A radius on the wrapper is a second, different
+     rounding on top of that, and it eats the outer edge of the amber circles. */
+  .mark { width: 76px; height: 76px; margin: 0 auto 1.4rem; }
   h1 { font-size: 1.2rem; margin: 0 0 0.6rem; font-weight: 640; text-wrap: balance; }
   p { font-size: 0.92rem; line-height: 1.5; opacity: 0.75; margin: 0 0 0.6rem; }
   .host { font-weight: 600; opacity: 0.9; overflow-wrap: anywhere; }
@@ -398,11 +411,16 @@ const offlineHTML = `<!doctype html>
 <body>
   <div class="card">
     <div class="mark">
+      <!-- The same geometry as web/brand/icon.svg, inlined because this page has to
+           render with the server that would serve /icons/icon.svg unreachable. -->
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="76" height="76">
-        <rect width="192" height="192" rx="36" fill="#F8F6F5"/>
-        <circle cx="54.7" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
-        <circle cx="96" cy="92.9" r="55.4" fill="#C23800" opacity=".95"/>
-        <circle cx="136.3" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+        <clipPath id="sq"><rect width="192" height="192" rx="36" ry="36"/></clipPath>
+        <g clip-path="url(#sq)">
+          <rect width="192" height="192" fill="#F8F6F5"/>
+          <circle cx="54.7" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+          <circle cx="96" cy="92.9" r="55.4" fill="#C23800" opacity=".95"/>
+          <circle cx="136.3" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+        </g>
       </svg>
     </div>
     <h1>Can't reach your server</h1>

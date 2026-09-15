@@ -343,5 +343,21 @@
   "incident_app.install_name": "Installation fehlgeschlagen",
   "incident_app.update_name": "Aktualisierungsproblem",
   "incident_app.stackup_name": "Einrichtungsschritt fehlgeschlagen",
-  "incident_store.source_name": "App-Store nicht aktuell"
+  "incident_store.source_name": "App-Store nicht aktuell",
+  "settings_device": "Dieses Gerät",
+  "settings_device_hint": "Einstellungen, die zu diesem Browser auf diesem Gerät gehören und nicht zu Ihrem Server. Sie gelten nicht auf einem anderen Computer oder Telefon.",
+  "install_app": "App installieren",
+  "install_app_hint": "Fügen Sie {app} zu Ihrem Startbildschirm oder Desktop hinzu. Die App öffnet sich in einem eigenen Fenster ohne Adressleiste und startet schneller, weil ihre Dateien auf diesem Gerät bleiben. Ihr Server muss weiterhin erreichbar sein — offline funktioniert nichts davon.",
+  "install_now": "Installieren",
+  "install_installed": "Auf diesem Gerät installiert",
+  "install_installed_hint": "Sie verwenden die installierte App. Entfernen Sie sie wie jede andere App auf diesem Gerät.",
+  "install_unavailable": "Dieser Browser hat nicht angeboten, {app} zu installieren. Chrome und Edge auf dem Computer oder unter Android sowie Safari auf iPhone und iPad können das.",
+  "install_show_how": "Zeig mir wie",
+  "install_ios_title": "{app} zum Home-Bildschirm hinzufügen",
+  "install_ios_step_share": "Tippen Sie in der Safari-Symbolleiste auf die Schaltfläche Teilen.",
+  "install_ios_step_add": "Scrollen Sie in der Liste nach unten und wählen Sie Zum Home-Bildschirm.",
+  "install_ios_step_confirm": "Tippen Sie auf Hinzufügen. {app} erscheint neben Ihren anderen Apps.",
+  "install_ios_note": "Safari ist der einzige Browser auf iPhone und iPad, der das kann.",
+  "install_host": "Wird für {host} installiert.",
+  "install_host_fallback": "{host} ist eine Ausweichadresse für diesen Server, nicht seine eigene Domain. Eine von dort installierte App funktioniert nicht mehr, wenn sich die Adresse des Servers ändert. Öffnen Sie {app} zuerst unter seiner Domain und installieren Sie dann."
 }

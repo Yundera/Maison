@@ -343,5 +343,21 @@
   "incident_app.install_name": "安装失败",
   "incident_app.update_name": "更新问题",
   "incident_app.stackup_name": "初始化步骤失败",
-  "incident_store.source_name": "应用商店未更新"
+  "incident_store.source_name": "应用商店未更新",
+  "settings_device": "本设备",
+  "settings_device_hint": "仅适用于本设备上此浏览器的设置，与您的服务器无关。它们不会同步到其他电脑或手机。",
+  "install_app": "安装应用",
+  "install_app_hint": "将 {app} 添加到主屏幕或桌面。它会在独立窗口中打开，没有地址栏，并且因为文件保留在本设备上而启动更快。您的服务器仍需可达 —— 离线时任何功能都无法使用。",
+  "install_now": "安装",
+  "install_installed": "已在本设备安装",
+  "install_installed_hint": "您正在使用已安装的应用。可像删除本设备上的其他应用一样将其移除。",
+  "install_unavailable": "此浏览器未提示安装 {app}。电脑或 Android 上的 Chrome 和 Edge，以及 iPhone 和 iPad 上的 Safari 可以。",
+  "install_show_how": "查看方法",
+  "install_ios_title": "将 {app} 添加到主屏幕",
+  "install_ios_step_share": "点击 Safari 工具栏中的共享按钮。",
+  "install_ios_step_add": "向下滑动列表，选择“添加到主屏幕”。",
+  "install_ios_step_confirm": "点击“添加”。{app} 会出现在其他应用旁边。",
+  "install_ios_note": "Safari 是 iPhone 和 iPad 上唯一能做到这一点的浏览器。",
+  "install_host": "将为 {host} 安装。",
+  "install_host_fallback": "{host} 是此服务器的备用地址，而非其自有域名。从该地址安装的应用会在服务器地址变更后失效。请先在域名上打开 {app} 再安装。"
 }

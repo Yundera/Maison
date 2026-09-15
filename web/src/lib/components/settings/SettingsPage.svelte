@@ -21,6 +21,7 @@
   import BackupsSection from './BackupsSection.svelte'
   import ResourcesSection from './ResourcesSection.svelte'
   import NotificationsSection from './NotificationsSection.svelte'
+  import DeviceSection from './DeviceSection.svelte'
 
   // route.ts guarantees the store holds a real section (it normalises the URL), so
   // this cast only re-states what the router already checked.
@@ -52,6 +53,12 @@
     notifications: {
       label: 'notifications',
       icon: 'M9 17a3 3 0 0 0 6 0M12 6v1M8 17V12a4 4 0 0 1 8 0v5',
+    },
+    // A phone with a download arrow: this section is about THIS browser, not the
+    // box every other section configures.
+    device: {
+      label: 'settings_device',
+      icon: 'M9 18h6M12 4v7M9.5 8.5 12 11l2.5-2.5',
     },
   }
 
@@ -100,6 +107,8 @@
         <ResourcesSection />
       {:else if current === 'notifications'}
         <NotificationsSection />
+      {:else if current === 'device'}
+        <DeviceSection />
       {/if}
     </main>
   </div>

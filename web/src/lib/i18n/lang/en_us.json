@@ -343,5 +343,21 @@
   "incident_app.install_name": "Install failed",
   "incident_app.update_name": "Update problem",
   "incident_app.stackup_name": "App setup step failed",
-  "incident_store.source_name": "App store not updating"
+  "incident_store.source_name": "App store not updating",
+  "settings_device": "This device",
+  "settings_device_hint": "Settings that belong to this browser on this device rather than to your server. They do not follow you to another computer or phone.",
+  "install_app": "Install app",
+  "install_app_hint": "Add {app} to your home screen or desktop. It opens in its own window with no address bar, and starts faster because its files stay on this device. Your server still has to be reachable — nothing about it works offline.",
+  "install_now": "Install",
+  "install_installed": "Installed on this device",
+  "install_installed_hint": "You are using the installed app. Remove it the way you remove any other app on this device.",
+  "install_unavailable": "This browser has not offered to install {app}. Chrome and Edge, on a computer or on Android, and Safari on iPhone and iPad, can.",
+  "install_show_how": "Show me how",
+  "install_ios_title": "Add {app} to your Home Screen",
+  "install_ios_step_share": "Tap the Share button in Safari's toolbar.",
+  "install_ios_step_add": "Scroll down the list and choose Add to Home Screen.",
+  "install_ios_step_confirm": "Tap Add. {app} appears alongside your other apps.",
+  "install_ios_note": "Safari is the only browser on iPhone and iPad that can do this.",
+  "install_host": "Installs for {host}.",
+  "install_host_fallback": "{host} is a fallback address for this server, not its own domain. An app installed from it stops working if the server's address changes. Open {app} on its domain first, then install."
 }

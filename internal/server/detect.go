@@ -8,7 +8,6 @@ import (
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
-	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/system"
@@ -245,12 +244,17 @@ func (s *Server) checkBackup(ctx context.Context) {
 		}
 
 		incidentID := "backup.engine:" + id
-		p, isRepo := repoProvider(s.engines, id)
-		if !enabled || !isRepo || !receives {
+		p, known := engineByID(s.engines, id)
+		if !enabled || !known || !receives {
 			s.incidents.Resolve(incidentID)
 			continue
 		}
 		// Status caches for 30s, so polling it every five minutes costs one real probe.
+		//
+		// No "is this a repository" test any more: the local engine answers that it is
+		// connected, always, because it *is* the data disk — whose problems are
+		// disk.full and are reported there. So every engine can be asked the same
+		// question, which is what stops a second engine needing a case added here.
 		if st := p.Status(ctx); !st.Connected {
 			s.incidents.Report(incident.Report{
 				ID: incidentID, Kind: incident.KindBackupEngine, Severity: incident.Critical,
@@ -274,18 +278,13 @@ func engineIDs(set *backup.Set) []string {
 	return set.IDs()
 }
 
-// repoProvider is the engine as a kopia repository, when it is one. Only a repository
-// can be unreachable — the local engine is the data disk, whose problems are disk.full.
-func repoProvider(set *backup.Set, id string) (*kopia.Provider, bool) {
+// engineByID is set.Get with a nil-set guard, so a box with no engine set at all is a
+// quiet "no such engine" rather than a panic.
+func engineByID(set *backup.Set, id string) (apps.Provider, bool) {
 	if set == nil {
 		return nil, false
 	}
-	e, ok := set.Get(id)
-	if !ok {
-		return nil, false
-	}
-	p, isKopia := e.(*kopia.Provider)
-	return p, isKopia
+	return set.Get(id)
 }
 
 // receivesAnything reports whether any trigger writes to this engine. An engine holding

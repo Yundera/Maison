@@ -9,7 +9,10 @@
 > The user-data set is listable and restorable from the Backups page — both modes, with
 > the guards described in [Restore](#the-user-data-set).
 >
-> **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)).
+> **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)), and
+> the adapter boundary ([The engine adapter](#the-engine-adapter)) — kopia is still compiled
+> into Maison as `internal/backup/kopia`, and Maison still falls back to a one-shot
+> container when the resident engine is unreachable instead of reporting it.
 > The host-side pair that provisions a repository — `ensure-backup-credentials.sh` and
 > `ensure-backup-config.sh` in `template-root` — now exists and is described under
 > [What Maison consumes from the PCS](#what-maison-consumes-from-the-pcs); a
@@ -144,6 +147,11 @@ type Provider interface {
     Delete(ctx, app, stamp string) error
 }
 ```
+
+That sketch is illustrative and has drifted — `internal/apps/provider.go` is
+authoritative, and carries `Commit`, `Abort`, `RestoreInPlace` and the `Caps` fields that
+grew since. How an engine is *delivered* against this interface is
+[The engine adapter](#the-engine-adapter).
 
 `ListAll` is the bulk shape of `List` and exists for a cost reason, not a convenience
 one: for a remote engine every call is a subprocess against the repository, and the
@@ -286,6 +294,102 @@ treating it as one was the mistake this document made: an uninstall archive that
 exists on the box is a recycle bin, not a backup. It dies with the disk — the failure
 the offsite engine exists for — and the user who uninstalled an app to reclaim space is
 exactly the user who then deletes it. See [Uninstalling an app](#uninstalling-an-app).
+
+---
+
+## The engine adapter
+
+The seam above is a Go interface, and for the first engine that was enough: `kopia.Provider`
+translates `Provider` calls into kopia's argv and parses its JSON back. It works, and it is
+also the reason adding restic means editing Maison, releasing Maison, and shipping a new
+Maison image to every box — for a change that touches no Maison behaviour at all.
+
+So the *interface* stays where it is and the *implementation* moves out of the binary. An
+engine is delivered as an **adapter image**: the engine's own binary plus a small
+`maison-engine` CLI that speaks a fixed protocol. Maison ships one generic provider that
+speaks that protocol and knows nothing about any engine.
+
+The protocol is specified in its own repository, alongside the first adapter —
+`maison-kopia-engine`, `docs/protocol.md`. This section is the part that belongs here: why
+the boundary is shaped the way it is, and what Maison keeps on its side of it.
+
+### The transport is argv and stdio, not HTTP
+
+`docker exec <engine-container> maison-engine <verb> …`, NDJSON on stdout, diagnostics on
+stderr, a documented exit code. A glue *service* with an HTTP API is the obvious shape and
+the wrong one, for four reasons that are all about failure rather than elegance:
+
+- **`--network none` stays available.** A repository on a local filesystem needs no network
+  and must not have one. An HTTP daemon needs one by definition.
+- **Cancellation keeps working.** `engine.Runner` holds one pid file per in-flight exec
+  (the `/run/maison-ops` tmpfs) precisely so a cancelled backup cannot leave the engine
+  holding an app's files open while Maison restarts it. Cancelling an HTTP request does not
+  kill a child process.
+- **Progress needs no new plumbing.** Engines already report by writing lines; `Runner`
+  already streams them into `apps.Event`.
+- **There is no new client to get wrong** — no health checking, no retry policy, no
+  connection state, no second definition of "the engine is up".
+
+Nothing is gained in exchange. The adapter can be written in any language either way, and
+a verb that runs for an hour streams progress the same way a request would.
+
+### An unreachable engine is an incident, not a second code path
+
+**Maison does not fall back.** If the engine container cannot be reached, the operation
+fails, the run is recorded as failed, and `backup.engine:<id>` is raised for the owner —
+the same rule [No fallback to local](#no-fallback-to-local) already states for uninstall,
+applied to transport instead of destination. An engine that quietly does the work somewhere
+else is worse than one that stops, because the user is told a backup happened.
+
+Two things keep that from being noisy:
+
+- **Only an engine that receives writes can be at fault.** An engine holding nothing but
+  history is not broken when it is absent; nothing is trying to write to it.
+- **Retrying the same destination is not falling back.** The nightly self-check can
+  recreate the engine container, so a reachability check waits a bounded interval before
+  declaring failure. Waiting for the destination the user chose is not substituting another.
+
+### The engine is fully optional
+
+The local engine is in-process Go and always present. A box with no adapter image, no
+engine container and no repository is not a degraded box — it is the default FOSS install,
+and it must raise nothing. Everything above is conditional on an engine having been
+provisioned and being ticked to receive a trigger.
+
+### The adapter image is deployment-provisioned, never user-supplied
+
+The image is named by the host side (`ensure-kopia-stack.sh` and its pin), not by anything a
+user can type. This is the line that keeps the adapter from being the remote-execution
+surface described under [Not yet decided](#not-yet-decided): an image Maison execs as root
+with app data and storage credentials in scope is first-party infrastructure. *Which
+repository an engine points at* remains an ordinary user setting.
+
+It also collapses a pin that is currently duplicated across two repositories with only a
+comment holding it together — `KOPIA_IMAGE` in `template-root/scripts/library/kopia.sh` and
+`kopia.DefaultImage` here. An adapter image built `FROM` a pinned engine carries the engine
+version inside it, and Maison stops needing to know it.
+
+### What stays on Maison's side
+
+The split is the one [What the registry owns](#what-the-registry-owns-and-what-a-provider-owns)
+already draws, and the adapter does not move it:
+
+| Maison | The adapter |
+|---|---|
+| Which paths are a source (`app-model.md`) | Where bytes go and come back |
+| Stop → snapshot → deferred restart, the per-app lock, the two-pass structure | Being incremental between the two passes |
+| What the user asked to keep (`backupconfig.Mode`) | Whether that expiry is sound on this storage (`RetentionModel`) |
+| Deriving rate, ETA and percentage from reported events | Reporting whatever it observed |
+| Resolving an app's declared exclusions once | Spelling them in the engine's own syntax |
+
+**Maison passes paths; the adapter never derives them.** An adapter that computed a source
+path from an app name would be a second definition of the disk layout, and the two would
+disagree at restore time.
+
+**Key escrow reads the file, never the engine.** `repository.password` is read from
+`AppDataShared/backup/<engine>/` directly, because the moment the key matters most is the
+moment the box is broken — an escrow path that needs a working engine container is an
+escrow path that fails exactly when it is needed. The adapter is not consulted.
 
 ---
 
@@ -987,11 +1091,17 @@ handling lives on this side and retrofitting it during an incident is expensive.
 
 ## Not yet decided
 
-- **What "custom" means** in the engine picker. *User supplies a command* means Maison
-  executes an arbitrary binary as root with app data and storage credentials in
-  scope — a deliberate remote-execution surface that deserves an explicit decision.
-  *User supplies a repository target for an engine Maison already ships* is ordinary.
-  These are very different features wearing one word.
+- **What "custom" means** in the engine picker. Half-answered by
+  [The engine adapter](#the-engine-adapter): *user supplies a repository target for an
+  engine the deployment ships* is ordinary and is what the picker offers, while *user
+  supplies an image or a command* remains a deliberate remote-execution surface and is not
+  offered. What is still undecided is whether a user-installed adapter ever becomes a
+  supported thing for a self-hoster who wants a destination Yundera does not ship, and if
+  so what distinguishes it from the provisioned one in the UI.
+- **Whether the engine container drops to `--network none` for a filesystem repository.**
+  It gets that isolation today only as a side effect of running one-shot, which
+  [The engine adapter](#the-engine-adapter) removes. The stack would have to choose its
+  network at deploy time from what `repository.config` says.
 - **Scheduling surface** — how much of the schedule a user can change (time, tiers,
   per-app opt-out).
 - **Where recovery mode sits in the boot sequence**, and how a fresh box knows to enter

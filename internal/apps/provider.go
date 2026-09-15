@@ -36,6 +36,20 @@ type Provider interface {
 	// somewhere far away.
 	Caps() Caps
 
+	// Status is what this engine can say about its own storage right now.
+	//
+	// It is on the interface rather than on one engine because every caller that used
+	// to reach for a concrete engine type wanted exactly this and nothing else: the
+	// settings page wants a label and a reason, the global backups page wants a label,
+	// the detector wants to know whether an engine that is *meant* to be receiving
+	// backups can be reached. Reaching for the concrete type made each of those a
+	// switch statement that a second engine would have had to be added to.
+	//
+	// It must be cheap enough to call on a click path and must never fail: an engine
+	// that cannot answer reports itself unconfigured or unconnected with a Detail
+	// saying why. An engine whose answer costs a subprocess is expected to cache it.
+	Status(ctx context.Context) EngineStatus
+
 	// Snapshot captures the app folder's current state under (app, stamp).
 	//
 	// It is called twice for one backup — pass 1 with the app running, pass 2 with
@@ -160,6 +174,41 @@ type UserDataRestoreOpts struct {
 	Entries []string
 }
 
+// EngineStatus is what an engine knows about its own storage.
+//
+// **Configured and Connected are different questions and must not be conflated.**
+// An engine with no configuration is a box whose host-side provisioning has not run —
+// the ordinary state of a fresh install, and not a fault. An engine that is configured
+// and cannot be reached *is* a fault, and is what raises an incident. Collapsing the
+// two turns an unprovisioned box into a red page and hides a real outage behind the
+// same words.
+type EngineStatus struct {
+	// Configured is true when this engine has storage to talk to — a repository
+	// configuration on disk, credentials rendered, whatever the engine needs. The local
+	// engine is always configured; it is the data disk.
+	Configured bool
+
+	// Connected is true when that storage answered on this probe.
+	Connected bool
+
+	// Label is what to call this storage on screen. It is **never derived from ID**:
+	// the ID is machine identity recorded on every backup, and a deployment's branding
+	// has no business in it. Empty means nobody named it and the caller should fall back
+	// to describing the engine.
+	//
+	// It survives a disconnected repository on purpose — a box that has been issued a
+	// space but has not connected to it yet should still be able to say whose space it
+	// is, rather than being described by its engine while it is being set up.
+	Label string
+
+	// Identity is the lineage this engine files backups under, where it has one
+	// (kopia's user@host). Empty for an engine with no such notion.
+	Identity string
+
+	// Detail is why it is not connected, for the UI. Free text, never parsed.
+	Detail string
+}
+
 // Caps describes an engine's abilities. Zero values are the conservative answer,
 // so a new field defaults to "this engine cannot", not "this engine can".
 type Caps struct {
@@ -207,6 +256,19 @@ type Caps struct {
 	// archives are plain folders and always will be. The settings page states both, so
 	// it needs both answers separately.
 	Encrypted bool
+
+	// KeyEscrow is true when this engine holds a key that exists nowhere but this box,
+	// so losing the box loses every backup it wrote unless the key was sent somewhere
+	// first.
+	//
+	// It is separate from Encrypted because the two do not have to travel together: an
+	// engine could encrypt with a key the deployment already holds, and would then need
+	// no escrow at all. What it selects is which engine's key the escrow mail carries.
+	//
+	// The escrow path deliberately reads the key **from disk**, not from the engine:
+	// the moment the key matters most is the moment the box is broken, and an escrow
+	// that needs a working engine is an escrow that fails exactly when it is needed.
+	KeyEscrow bool
 }
 
 // Trigger is what caused a backup, and therefore which engines receive it.
@@ -314,6 +376,57 @@ type Event struct {
 
 // PctUnknown marks an Event that carries no measurable progress.
 const PctUnknown = -1.0
+
+// UserDataApp is the name the user-data set is recorded under.
+//
+// It is not an app and has no compose project, so it borrows the field every backup
+// already carries. The LEADING UNDERSCORE is what makes that safe: ValidProjectName
+// requires an alphanumeric first character, so no real app can ever collide with it —
+// the guard makes the reservation rather than each engine having to police it.
+const UserDataApp = "_userdata"
+
+// UserDataExclusions is what the user-data set leaves out.
+//
+// It lives here, with the rest of the set's vocabulary, rather than inside an engine:
+// what the set contains is a property of the set, and an engine that decided it for
+// itself would be a second answer to a question Maison has already answered. Every
+// engine backing up the set applies this list.
+//
+// It is exported because the page that offers a restore has to be able to say so: a restore that does not
+// bring something back is only diagnosable if the exclusions are visible. One list, so
+// what is shown can never drift from what is applied.
+//
+//   - The app tree has its own per-app sources; backing it up here too would store
+//     everything twice — and it is the reason an in-place restore is done entry by
+//     entry, since a delete-extra aimed at the data root would remove it.
+//   - Cache and logs are matched by pattern rather than by a fixed list, so the next
+//     engine someone adds does not silently ship its multi-gigabyte cache offsite every
+//     night for data that is rebuilt on demand.
+//
+// AppDataShared is deliberately *not* excluded: on a box running two engines each
+// engine's backup then carries the other's configuration, so recovering either returns
+// the rest. The password riding along is harmless — reading it requires the password
+// already — it is merely useless.
+var UserDataExclusions = []string{"/AppData/", "**/cache/", "**/logs/"}
+
+// UserDataInPlaceSkip is what an in-place restore of the user-data set leaves alone,
+// even though the snapshot holds it.
+//
+// Like UserDataExclusions above, it is a property of the set rather than of an engine,
+// and every engine restoring the set applies it.
+//
+// AppDataShared/ carries the backup engines' own configuration — endpoint, password,
+// cache — and it is in the set deliberately, so that recovering *any* engine's backup
+// returns the credentials for the others. That is exactly right for restoring onto a
+// fresh box, and exactly wrong for restoring over a live one: the files being replaced
+// are the ones the engine performing the restore is reading, and an older repository
+// config swapped in mid-restore points the engine at a repository that is not the one
+// it is currently reading from.
+//
+// It is not excluded from the *snapshot* — that would break disaster recovery, which is
+// the reason it is included — only from the in-place restore, which is the one case
+// where the live copy is more current than the backed-up one by definition.
+var UserDataInPlaceSkip = map[string]bool{"AppDataShared": true}
 
 // ErrNotConfigured is returned by an engine that has no usable configuration — no
 // repository connected, no credentials rendered yet. It is a normal state on a box

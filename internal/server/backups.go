@@ -10,7 +10,6 @@ import (
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
-	"github.com/yundera/maison/internal/backup/kopia"
 )
 
 // Backups have two surfaces, because they outlive the app they belong to.
@@ -147,18 +146,18 @@ type engineBackups struct {
 //
 // The name never comes from the ID. The ID is machine identity, recorded on every
 // backup the engine writes, and a deployment's branding has no business in it; the
-// display name comes from the provisioning side instead (see engineInfo.Name). Kopia
-// caches its answer on the provider, so asking for it on a click path costs a
-// subprocess once per half-minute rather than once per click.
+// display name comes from the provisioning side instead (see engineInfo.Name). An
+// engine whose answer costs a subprocess is expected to cache it, so asking on a click
+// path costs a probe once per half-minute rather than once per click.
+//
+// An engine with no label — the local one — returns empty, and the frontend falls back
+// to describing the engine itself (engineLabel in web/src/lib/stores/backups.ts).
 func (s *Server) engineDisplay(ctx context.Context, id string) (name string, offsite bool) {
 	p, ok := s.engines.Get(id)
 	if !ok {
 		return "", false
 	}
-	if k, isKopia := p.(*kopia.Provider); isKopia {
-		name = k.Status(ctx).Label
-	}
-	return name, p.Caps().Offsite
+	return p.Status(ctx).Label, p.Caps().Offsite
 }
 
 // handleGlobalBackups is the Backups settings page: one entry per engine, each with

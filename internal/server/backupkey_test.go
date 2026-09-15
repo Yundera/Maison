@@ -11,6 +11,9 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/backup"
+	"github.com/yundera/maison/internal/backup/backuptest"
 	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
@@ -21,15 +24,10 @@ import (
 // concerned.
 func writePassword(t *testing.T, cfg config.Config, pw string) {
 	t.Helper()
-	dir := cfg.BackupEngineDir(kopia.ID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// With a trailing newline, because that is how a shell script writes it and
-	// readEnginePassword's trim is what stops it becoming part of the key.
-	if err := os.WriteFile(filepath.Join(dir, "repository.password"), []byte(pw+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// kopia by name, because these tests drive a whole Server and kopia is the engine
+	// its set actually registers. Which engine the escrow *chooses* is a capability
+	// question, asserted separately in TestEscrowKeyPicksTheEngineByCapability.
+	writeEnginePassword(t, cfg, kopia.ID, pw)
 }
 
 // The key has to be reachable from the dashboard, because showing it there is the copy
@@ -141,5 +139,53 @@ func TestEnsureKeyEmailedReturnsWhenThereIsNothingToSend(t *testing.T) {
 				t.Fatal("EnsureKeyEmailed blocked; it must not wait on a send it cannot make")
 			}
 		})
+	}
+}
+
+// Which engine's key gets escrowed comes from Caps.KeyEscrow, not from a named engine.
+//
+// This is what makes a second encrypting engine work without another call site
+// learning its name — and what stops an engine that encrypts with a key the
+// deployment already holds being mailed a secret nobody needed.
+func TestEscrowKeyPicksTheEngineByCapability(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+
+	// The escrowing engine is registered SECOND on purpose: picking the first engine
+	// that happens to have a password file would pass a test where it is first.
+	plain := backuptest.NewFake("plain", apps.Caps{})
+	sealed := backuptest.NewFake("sealed", apps.Caps{Encrypted: true, KeyEscrow: true})
+	srv := &Server{cfg: cfg, engines: backup.New(plain, sealed)}
+
+	// A key sitting in the non-escrowing engine's directory must be ignored: it is not
+	// the secret that is lost with the box.
+	writeEnginePassword(t, cfg, "plain", "not the one")
+	if _, _, err := srv.escrowKey(); err == nil {
+		t.Fatal("escrowKey returned a key from an engine that declares no escrow")
+	}
+
+	writeEnginePassword(t, cfg, "sealed", "correct horse battery staple")
+	engine, pw, err := srv.escrowKey()
+	if err != nil {
+		t.Fatalf("escrowKey: %v", err)
+	}
+	if engine != "sealed" {
+		t.Errorf("engine = %q, want the engine that declares KeyEscrow", engine)
+	}
+	if pw != "correct horse battery staple" {
+		t.Errorf("key = %q, want the sealed engine's password", pw)
+	}
+}
+
+// writeEnginePassword renders one engine's password the way the host-side script would,
+// with the trailing newline a shell writes — readEnginePassword's trim is what stops
+// that newline becoming part of the key.
+func writeEnginePassword(t *testing.T, cfg config.Config, engine, pw string) {
+	t.Helper()
+	dir := cfg.BackupEngineDir(engine)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "repository.password"), []byte(pw+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

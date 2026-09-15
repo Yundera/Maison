@@ -13,7 +13,6 @@ import (
 	"github.com/shirou/gopsutil/v4/disk"
 
 	"github.com/yundera/maison/internal/apps"
-	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
 )
@@ -116,7 +115,7 @@ type UserDataRestoreEngine interface {
 // UserDataExclusions is what the set leaves out, surfaced for the page that offers a
 // restore. It is the engine's list rather than a copy: a second list is a list that
 // disagrees with the policy actually applied.
-var UserDataExclusions = kopia.UserDataExclusions
+var UserDataExclusions = apps.UserDataExclusions
 
 // NewUserData builds the coordinator.
 func NewUserData(cfg config.Config, set *Set, store *backupconfig.Store) *UserData {

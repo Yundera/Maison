@@ -160,10 +160,19 @@ type Spec struct {
 	// see residentUsable.
 	Container string
 
-	// Entrypoint is the engine binary inside the image, e.g. "/bin/kopia".
+	// Entrypoint is the engine binary inside the image, e.g. "/bin/kopia" or an
+	// adapter's "/usr/local/bin/maison-engine".
 	//
-	// `docker run` applies the image's own ENTRYPOINT; `docker exec` does not, so in
-	// exec mode the binary has to be named. Required with Container, ignored without.
+	// `docker exec` does not apply the image's own ENTRYPOINT, so in exec mode the
+	// binary has to be named — it is required with Container.
+	//
+	// It is honoured on the one-shot path too, as `--entrypoint`. `docker run` would
+	// apply the image's default, and relying on that makes the spec mean different
+	// things in the two modes: an image whose ENTRYPOINT is the engine itself would run
+	// the right binary through exec and pass the binary's own PATH to the engine as an
+	// argument through run. Naming it in both is what makes them the same invocation.
+	// Empty keeps the image's default, which is what a spec built for an image that has
+	// only one useful binary wants.
 	Entrypoint string
 }
 
@@ -252,6 +261,9 @@ func Argv(s Spec) ([]string, error) {
 	}
 	if s.User != "" {
 		argv = append(argv, "--user", s.User)
+	}
+	if s.Entrypoint != "" {
+		argv = append(argv, "--entrypoint", s.Entrypoint)
 	}
 	// Capabilities are the only way to narrow a root engine, and no way at all to
 	// widen a non-root one: Docker has no --ambient-cap, so --cap-add under a non-zero

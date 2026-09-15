@@ -1,0 +1,17 @@
+<!-- icon.svg without the rounded-corner clip: a full-bleed square.
+     This is the apple-touch-icon source. iOS applies its own corner radius and
+     composites the result onto BLACK, so a transparent corner renders as a black
+     notch against the light tile. Keep this file opaque and square; the render
+     script strips the alpha channel entirely on the way out. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="192" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FDFCFC"/>
+      <stop offset="1" stop-color="#F5F1F0"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" fill="url(#bg)"/>
+  <circle cx="54.7" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+  <circle cx="96" cy="92.9" r="55.4" fill="#C23800" opacity=".95"/>
+  <circle cx="136.3" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+</svg>

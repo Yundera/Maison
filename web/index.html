@@ -2,8 +2,32 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets the app draw under the iOS status bar and home
+         indicator, which is what makes an installed Maison look like an app rather
+         than a letterboxed web page. It obliges the env(safe-area-inset-*) padding
+         in TopBar.svelte and App.svelte — without those, the status bar clock sits
+         on top of the top bar's buttons. The two go together; do not keep one. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Maison</title>
+
+    <!-- The manifest MUST be fetched with credentials. A browser fetches it with
+         credentials omitted by default, and Maison always sits behind an
+         authenticating gate that answers an uncredentialed request with a redirect
+         to a login page on another origin — so without this the manifest resolves
+         to HTML, fails to parse, and the app is silently not installable with
+         nothing logged anywhere. Same-origin, so this needs no CORS headers from
+         the Go side. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
+
+    <!-- Colours the Android status bar and the desktop PWA title bar, so it tracks
+         what is actually at the top of the viewport: TopBar.svelte's #fff. -->
+    <meta name="theme-color" content="#ffffff" />
+
+    <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Maison" />
   </head>
   <body>
     <div id="app"></div>

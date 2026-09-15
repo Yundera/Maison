@@ -59,7 +59,19 @@ func (p *LocalProvider) Caps() Caps {
 		// anyone who can read the disk, and the settings page has to say so — an
 		// encryption-key card above a list of these read as a promise that covered them.
 		Encrypted: false,
+		// Nothing to escrow: the archives are plain folders and there is no key.
+		KeyEscrow: false,
 	}
+}
+
+// Status is always configured and always connected: this engine *is* the data disk.
+//
+// It carries no Label on purpose. A label names a provisioned storage space, and this
+// engine points at the disk the box already has — so the UI describes the engine
+// rather than being handed a name that would imply a service behind it. Whatever can
+// go wrong here is disk, and disk has its own incidents.
+func (p *LocalProvider) Status(context.Context) EngineStatus {
+	return EngineStatus{Configured: true, Connected: true}
 }
 
 // stagingDir is where a backup accumulates before it is committed. The leading dot

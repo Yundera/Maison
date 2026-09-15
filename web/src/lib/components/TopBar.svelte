@@ -141,11 +141,18 @@
     top: 0;
     left: 0;
     right: 0;
-    height: 3.25rem;
+    /* Grows by the status-bar inset when installed on a notched phone, where
+       viewport-fit=cover (index.html) puts the page under it. Without the padding
+       the clock sits on top of these buttons. env() is 0px everywhere else, so a
+       browser and a desktop are unaffected — but App.svelte's .contents offset has
+       to move with this. */
+    height: calc(3.25rem + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
     z-index: 20;
     display: flex;
     align-items: center;
-    padding: 0 1rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
     background: #fff;
     border-bottom: 1px solid hsla(208, 16%, 90%, 1);
   }

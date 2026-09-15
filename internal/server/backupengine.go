@@ -9,6 +9,7 @@ import (
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
+	"github.com/yundera/maison/internal/backup/adapter"
 	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
@@ -37,13 +38,42 @@ import (
 // able to *list* what it wrote before, which is the rule that stops a user's history
 // disappearing when they switch away from it.
 func buildEngines(cfg config.Config, store *backupconfig.Store) *backup.Set {
-	set := backup.New(
-		apps.NewLocalProvider(cfg),
-		kopia.New(cfg),
-	)
+	// The local engine first, and therefore the default writer.
+	providers := []apps.Provider{apps.NewLocalProvider(cfg)}
+
+	// Then every engine the host side declared an adapter for. This is the whole of
+	// "which engines does this box have": an engine with no descriptor does not exist
+	// as far as Maison is concerned, which is what keeps the answer out of this build.
+	adapted := map[string]bool{}
+	for _, d := range adapter.Discover(cfg) {
+		providers = append(providers, adapter.New(cfg, d))
+		adapted[d.EngineID] = true
+	}
+
+	// The compiled kopia engine, unless an adapter has taken its place. This is the
+	// swap: a box with no descriptor behaves exactly as it always has, and writing the
+	// descriptor moves it onto the adapter without a Maison release. It goes away once
+	// every box carries one.
+	if !adapted[kopia.ID] {
+		providers = append(providers, kopia.New(cfg))
+	}
+
+	set := backup.New(providers...)
 	applyEngineSettings(set, store)
 	return set
 }
+
+// An adapter is a full engine: it satisfies the Provider interface and all three of the
+// narrow ones its consumers declare. Asserted here, at the composition root, because
+// this is the one package that already imports both sides — and because a missing
+// method would otherwise surface as a silently absent capability at runtime rather than
+// as a build failure.
+var (
+	_ apps.Provider                = (*adapter.Provider)(nil)
+	_ backup.UserDataEngine        = (*adapter.Provider)(nil)
+	_ backup.UserDataRestoreEngine = (*adapter.Provider)(nil)
+	_ backup.RetentionEngine       = (*adapter.Provider)(nil)
+)
 
 // applyEngineSettings points the set's write sets at whatever the configuration now
 // says, one set per trigger.
@@ -106,12 +136,19 @@ func legacyWriter(set *backup.Set, conf backupconfig.Config) string {
 		log.Printf("backup: unknown backup engine %q (falling back to the local engine)", chosen)
 		return apps.EngineLocal
 	}
-	// No override: prefer a remote engine that is actually connected. That inference
+	// No override: prefer an offsite engine that is actually connected. That inference
 	// *is* the provisioning signal — a repository the host-side script has connected —
 	// so there is no second file for the two sides to disagree about.
-	if k, ok := set.Get(kopia.ID); ok {
-		if p, isKopia := k.(*kopia.Provider); isKopia && p.Status(context.Background()).Connected {
-			return kopia.ID
+	//
+	// Asked of capabilities rather than of a named engine, in registration order, so a
+	// second offsite engine does not need a branch here.
+	for _, id := range set.IDs() {
+		p, ok := set.Get(id)
+		if !ok || !p.Caps().Offsite {
+			continue
+		}
+		if p.Status(context.Background()).Connected {
+			return id
 		}
 	}
 	return apps.EngineLocal
@@ -277,7 +314,7 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	if w := s.engines.Writers(apps.TriggerSchedule); len(w) > 0 {
 		out.Active = w[0].ID()
 	}
-	if _, err := readEnginePassword(s.cfg, kopia.ID); err == nil {
+	if _, _, err := s.escrowKey(); err == nil {
 		out.HasKey = true
 	}
 	if rec, sent := readKeySent(s.cfg); sent && !rec.SentAt.IsZero() {
@@ -286,12 +323,11 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	for _, id := range s.engines.IDs() {
 		p, _ := s.engines.Get(id)
 		info := engineInfo{ID: id, Offsite: p.Caps().Offsite}
-		// The local engine is always usable; a remote one has to be asked.
-		info.Connected = true
-		if k, ok := p.(*kopia.Provider); ok {
-			st := k.Status(r.Context())
-			info.Connected, info.Detail, info.Name = st.Connected, st.Detail, st.Label
-		}
+		// Every engine is asked the same question. The local engine answers that it is
+		// connected because it is the data disk, so it needs no special case — which is
+		// what stops a second engine having to be added to a branch here.
+		st := p.Status(r.Context())
+		info.Connected, info.Detail, info.Name = st.Connected, st.Detail, st.Label
 		// Resolved for this engine alone. Provisioned{} is empty because nothing
 		// renders that layer onto a box yet; when the host-side script does, this is
 		// the one call site that has to learn about it.

@@ -1,0 +1,31 @@
+<!-- Maison's mark, redrawn as vector from the 192px raster that ships as the app's
+     tile icon (template-root/root/stacks/maison/icon.png). The circle centres and
+     radii below were fitted to that file's silhouette; see README.md for the check
+     that keeps them honest.
+
+     Two things here look like mistakes and are not:
+
+     - The background is a gradient, not the flat #F8F6F5 a colour-picker reports.
+       #F8F6F5 is its midpoint.
+     - There are two brand colours, not four, drawn at 95% opacity. The #FEC054 /
+       #FBB749 / #C53F04 / #C5420C you can pick out of the original are composites
+       of these two over the background and over each other.
+
+     Z-order is load-bearing: the LEFT amber sits under the red, the RIGHT amber
+     over it. Swapping them produces a mark that looks right and is visibly wrong
+     in the overlaps. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="192" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FDFCFC"/>
+      <stop offset="1" stop-color="#F5F1F0"/>
+    </linearGradient>
+    <clipPath id="sq"><rect width="192" height="192" rx="36" ry="36"/></clipPath>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="192" height="192" fill="url(#bg)"/>
+    <circle cx="54.7" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+    <circle cx="96" cy="92.9" r="55.4" fill="#C23800" opacity=".95"/>
+    <circle cx="136.3" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+  </g>
+</svg>

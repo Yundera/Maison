@@ -44,6 +44,13 @@ type Fake struct {
 	// records the call.
 	MaterializeInto string
 
+	// Stat is what Status reports. The zero value is a configured, connected engine —
+	// what a test that does not care about reachability wants, so that adding this did
+	// not change the meaning of every existing fixture. Set it to exercise the
+	// unconfigured and unreachable states, which are deliberately different: see
+	// apps.EngineStatus.
+	Stat *apps.EngineStatus
+
 	mu    sync.Mutex
 	store map[string][]apps.Backup // app -> committed backups
 	// ListCalls counts per-app listings, and ListAllCalls bulk ones. They are counters
@@ -80,6 +87,14 @@ func NewLocalLike(id string) *Fake {
 
 func (f *Fake) ID() string      { return f.Name }
 func (f *Fake) Caps() apps.Caps { return f.Cap }
+
+// Status reports Stat, defaulting to configured and connected.
+func (f *Fake) Status(context.Context) apps.EngineStatus {
+	if f.Stat != nil {
+		return *f.Stat
+	}
+	return apps.EngineStatus{Configured: true, Connected: true}
+}
 
 // Seed adds an already-committed backup, for tests that need a starting state.
 func (f *Fake) Seed(app string, stamps ...string) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/notify"
 )
@@ -117,11 +117,11 @@ func keyMailBody(pw string) string {
 // address the mail actually went to. It used to be resolved here from the backup
 // configuration; the mail settings now live in usersettings, and every caller has to
 // resolve them the same way or the two paths could disagree about the recipient.
-func sendKeyMail(cfg config.Config, smtp notify.SMTP, pw string, auto bool) error {
+func sendKeyMail(cfg config.Config, smtp notify.SMTP, engine, pw string, auto bool) error {
 	if err := notify.Send(smtp, "Your backup encryption key", keyMailBody(pw)); err != nil {
 		return err
 	}
-	rec := keySentRecord{SentAt: time.Now(), To: smtp.To, Engine: kopia.ID, Auto: auto}
+	rec := keySentRecord{SentAt: time.Now(), To: smtp.To, Engine: engine, Auto: auto}
 	if err := writeKeySent(cfg, rec); err != nil {
 		log.Printf("backup: key mailed but the receipt could not be written: %v", err)
 	}
@@ -147,10 +147,11 @@ func (s *Server) EnsureKeyEmailed() {
 	if _, sent := readKeySent(s.cfg); sent {
 		return
 	}
-	pw, err := readEnginePassword(s.cfg, kopia.ID)
+	engine, pw, err := s.escrowKey()
 	if err != nil {
-		// No repository on this box: nothing to hand over, and nothing to record.
-		// A box provisioned later boots again before it has backups to lose.
+		// No engine on this box holds a key of its own: nothing to hand over, and
+		// nothing to record. A box provisioned later boots again before it has
+		// backups to lose.
 		return
 	}
 	const attempts, wait = 10, 30 * time.Second
@@ -167,7 +168,7 @@ func (s *Server) EnsureKeyEmailed() {
 		if _, sent := readKeySent(s.cfg); sent {
 			return
 		}
-		if err := sendKeyMail(s.cfg, smtp, pw, true); err != nil {
+		if err := sendKeyMail(s.cfg, smtp, engine, pw, true); err != nil {
 			log.Printf("backup: could not mail the encryption key: %v", err)
 			continue
 		}
@@ -196,12 +197,12 @@ func (s *Server) handleEmailKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no mail server configured"})
 		return
 	}
-	pw, err := readEnginePassword(s.cfg, kopia.ID)
+	engine, pw, err := s.escrowKey()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no repository password on this box"})
 		return
 	}
-	if err := sendKeyMail(s.cfg, smtp, pw, false); err != nil {
+	if err := sendKeyMail(s.cfg, smtp, engine, pw, false); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
@@ -218,13 +219,45 @@ func (s *Server) handleEmailKey(w http.ResponseWriter, r *http.Request) {
 // navigable URL is a secret in a history entry, a prefetch and a shared link. The
 // no-store header exists for the same reason.
 func (s *Server) handleShowKey(w http.ResponseWriter, r *http.Request) {
-	pw, err := readEnginePassword(s.cfg, kopia.ID)
+	_, pw, err := s.escrowKey()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no repository password on this box"})
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]string{"key": pw})
+}
+
+// escrowKey is the key that has to leave the box, and the engine it belongs to.
+//
+// Which engine that is comes from Caps.KeyEscrow, in registration order, rather than
+// from a named engine: an engine that encrypts with a key only this box holds is the
+// thing that needs escrowing, and saying so in capabilities means a second such engine
+// is covered without another call site learning its name.
+//
+// **It reads the key from disk and never asks the engine.** The moment this key matters
+// is the moment the box is broken, and an escrow that needed a working engine container
+// would fail exactly when it is needed.
+//
+// The error returned is the last read failure, or fs.ErrNotExist when no registered
+// engine escrows anything — both of which callers report as "no key on this box".
+func (s *Server) escrowKey() (engine, pw string, err error) {
+	err = fs.ErrNotExist
+	if s.engines == nil {
+		return "", "", err
+	}
+	for _, id := range s.engines.IDs() {
+		p, ok := s.engines.Get(id)
+		if !ok || !p.Caps().KeyEscrow {
+			continue
+		}
+		key, readErr := readEnginePassword(s.cfg, id)
+		if readErr == nil {
+			return id, key, nil
+		}
+		err = readErr
+	}
+	return "", "", err
 }
 
 func readEnginePassword(cfg config.Config, engine string) (string, error) {

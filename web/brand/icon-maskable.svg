@@ -1,0 +1,23 @@
+<!-- The `purpose: maskable` source. Full bleed and square-cornered: Android crops
+     it to whatever shape the launcher uses, so any corner radius drawn here would
+     be cropped again and read as a double border.
+
+     The mark is shrunk to clear the crop. Its own bounding circle is centred
+     (95.5, 107.7) with r 81.2; the region every Android mask is guaranteed to
+     leave visible is a centred circle of 80% diameter, r 76.8. The transform below
+     scales by 0.92 and recentres, landing the mark at r 74.7 about the canvas
+     centre — inside the safe zone with a little margin. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="192" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FDFCFC"/>
+      <stop offset="1" stop-color="#F5F1F0"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" fill="url(#bg)"/>
+  <g transform="translate(8.14 -3.08) scale(0.92)">
+    <circle cx="54.7" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+    <circle cx="96" cy="92.9" r="55.4" fill="#C23800" opacity=".95"/>
+    <circle cx="136.3" cy="107.7" r="40.4" fill="#FFBD4B" opacity=".95"/>
+  </g>
+</svg>

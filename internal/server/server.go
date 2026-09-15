@@ -36,8 +36,11 @@ import (
 
 // Server holds shared dependencies for the HTTP handlers.
 type Server struct {
-	cfg       config.Config
-	uiFS      fs.FS
+	cfg  config.Config
+	uiFS fs.FS
+	// uiVersion fingerprints uiFS, and names the service worker's cache so that it
+	// is dropped exactly when the files in it change. See pwa.go.
+	uiVersion string
 	collector *system.Collector
 	detailer  *system.Detailer
 	history   *metrics.Sampler
@@ -84,6 +87,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	s := &Server{
 		cfg:       cfg,
 		uiFS:      uiFS,
+		uiVersion: uiVersion(uiFS),
 		collector: collector,
 		detailer:  system.NewDetailer(cfg.DataRoot),
 		bench:     bench.New(cfg.StateDir()),
@@ -407,6 +411,25 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// through start/readiness instead of a browser error page. Registered before
 	// the SPA catch-all so it wins.
 	r.Get("/launch", s.handleLaunch)
+
+	// The PWA surface (see pwa.go). Registered ahead of the SPA catch-all for two
+	// reasons that are worth keeping separate, because each one alone justifies it:
+	//
+	//   - The catch-all has no 404. A missing /sw.js is answered with index.html and
+	//     a 200, which the browser rejects as a script with an HTML MIME type — and
+	//     because a 200 is not a 404, the worker it already has is NOT unregistered.
+	//     The failure mode is "the service worker silently froze at whatever version
+	//     it was", indefinitely.
+	//   - None of these is a navigation, so the onboarding gate passes them today —
+	//     but /offline.html is fetched and cached by the worker at install time, and
+	//     the Cache API ignores Cache-Control: no-store. Sitting outside the gate
+	//     needs to be a property of this table, not of isNavigation's definition.
+	r.Get("/sw.js", s.handleServiceWorker)
+	r.Get("/manifest.webmanifest", s.handleManifest)
+	r.Get("/offline.html", s.handleOffline)
+	// Content-hashed by Vite, so the filename is the version: cacheable forever, and
+	// a miss is a real 404 rather than a confusing HTML 200.
+	r.Handle("/assets/*", immutableAssets(uiFS))
 
 	// The SPA, behind the first-run setup gate: while the deployment still owes an
 	// onboarding step, a browser navigation gets the interstitial instead of the

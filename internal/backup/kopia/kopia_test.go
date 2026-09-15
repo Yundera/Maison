@@ -140,11 +140,11 @@ func TestStatusReadsTheIdentityFromTheRepositoryConfig(t *testing.T) {
 	if !st.Connected {
 		t.Fatalf("Status = %+v, want connected", st)
 	}
-	if st.Host != "pcs-test" || st.User != "maison" {
-		t.Errorf("identity = %s@%s, want maison@pcs-test", st.User, st.Host)
+	if st.Identity != "maison@pcs-test" {
+		t.Errorf("Identity = %q, want %q", st.Identity, "maison@pcs-test")
 	}
-	if st.Type != "filesystem" {
-		t.Errorf("Type = %q, want %q", st.Type, "filesystem")
+	if !st.Configured {
+		t.Error("a connected repository reported itself unconfigured")
 	}
 }
 
@@ -154,6 +154,11 @@ func TestStatusOnAnUnconfiguredBox(t *testing.T) {
 	st := New(cfg).Status(context.Background())
 	if st.Connected {
 		t.Fatal("an unconfigured box reported a connected repository")
+	}
+	// Not merely disconnected: "never set up" and "set up but unreachable" are
+	// different states, and only the second is a fault worth an incident.
+	if st.Configured {
+		t.Error("an unconfigured box reported itself configured")
 	}
 	if st.Detail == "" {
 		t.Error("Status gave no reason, so the UI has nothing to show")

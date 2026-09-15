@@ -58,13 +58,10 @@ const (
 	jsonTagPrefix = "tag:"
 )
 
-// userDataApp is the reserved tag value for the user-data set, which is not an app
-// and has no compose project.
-//
-// A leading underscore is unrepresentable in a real app name (projectRe requires an
-// alphanumeric first character), so this cannot collide with one — the guard makes
-// the reservation for us rather than us having to police it.
-const userDataApp = "_userdata"
+// userDataApp is the reserved tag value for the user-data set, which is not an app and
+// has no compose project. See apps.UserDataApp for why a leading underscore makes the
+// reservation safe.
+const userDataApp = apps.UserDataApp
 
 // Provider is the kopia engine.
 type Provider struct {
@@ -73,22 +70,8 @@ type Provider struct {
 	image  string
 
 	mu       sync.Mutex
-	cached   Status
+	cached   apps.EngineStatus
 	cachedAt time.Time
-}
-
-// Status is what Maison knows about the repository.
-type Status struct {
-	Connected bool   `json:"connected"`
-	Type      string `json:"type,omitempty"`   // "filesystem", "s3", "b2", …
-	Host      string `json:"host,omitempty"`   // the identity snapshots are filed under
-	User      string `json:"user,omitempty"`   // together with Host, what snapshots are keyed by
-	Detail    string `json:"detail,omitempty"` // why it is not connected, for the UI
-
-	// Label is what to call this repository on screen, from the host-written state
-	// file. Empty means nobody named it and the UI should fall back to describing the
-	// engine — see repoState.
-	Label string `json:"label,omitempty"`
 }
 
 // New builds the engine. It performs no I/O: a Provider is constructed on every
@@ -128,6 +111,9 @@ func (p *Provider) Caps() apps.Caps {
 		// The repository is encrypted with the password at repository.password, which
 		// is generated on the box and never leaves it except by the user mailing it.
 		Encrypted: true,
+		// And because it never leaves, it has to be escrowed: the box is the only copy,
+		// so losing the box loses every snapshot in the repository with it.
+		KeyEscrow: true,
 	}
 }
 
@@ -251,7 +237,7 @@ func (p *Provider) credentials() (map[string]string, error) {
 // Status reports whether the repository is usable, cached briefly because both the
 // settings page and every app's Backups tab ask, and answering costs a container
 // start.
-func (p *Provider) Status(ctx context.Context) Status {
+func (p *Provider) Status(ctx context.Context) apps.EngineStatus {
 	p.mu.Lock()
 	if time.Since(p.cachedAt) < 30*time.Second {
 		defer p.mu.Unlock()
@@ -267,7 +253,7 @@ func (p *Provider) Status(ctx context.Context) Status {
 	return st
 }
 
-func (p *Provider) probe(ctx context.Context) Status {
+func (p *Provider) probe(ctx context.Context) apps.EngineStatus {
 	// Read before the configuration check: a box that has been issued a space but has
 	// not connected yet should still be able to say whose space it is, so the settings
 	// page names it rather than falling back to "kopia" while it is being set up.
@@ -275,14 +261,17 @@ func (p *Provider) probe(ctx context.Context) Status {
 
 	rc, err := p.readConfig()
 	if err != nil {
-		return Status{Detail: notConfiguredDetail(err), Label: label}
+		// Not configured, which is a normal state and not a fault — the host side has
+		// not connected a repository on this box yet.
+		return apps.EngineStatus{Label: label, Detail: notConfiguredDetail(err)}
 	}
-	out, err := p.run(ctx, nil, 2*time.Minute, "repository", "status", "--json")
-	if err != nil {
-		return Status{Detail: err.Error(), Host: rc.Hostname, User: rc.Username, Type: rc.Storage.Type, Label: label}
+	identity := rc.Username + "@" + rc.Hostname
+	if _, err := p.run(ctx, nil, 2*time.Minute, "repository", "status", "--json"); err != nil {
+		// Configured but unreachable. This is the state that raises an incident, which
+		// is why it must not look the same as the one above.
+		return apps.EngineStatus{Configured: true, Label: label, Identity: identity, Detail: err.Error()}
 	}
-	_ = out
-	return Status{Connected: true, Type: rc.Storage.Type, Host: rc.Hostname, User: rc.Username, Label: label}
+	return apps.EngineStatus{Configured: true, Connected: true, Label: label, Identity: identity}
 }
 
 func notConfiguredDetail(err error) string {
@@ -489,8 +478,8 @@ func (p *Provider) EnsurePolicy(ctx context.Context, s Source, keep Retention) e
 	if !s.isUserData() {
 		return nil
 	}
-	// The exclusions themselves, and why each one is there, are on UserDataExclusions.
-	return p.EnsureIgnore(ctx, s, UserDataExclusions)
+	// The exclusions themselves, and why each one is there, are on apps.UserDataExclusions.
+	return p.EnsureIgnore(ctx, s, apps.UserDataExclusions)
 }
 
 // policyArgs is the `policy set` call for one source. Split out so that what the
@@ -567,24 +556,6 @@ func (p *Provider) EnsureIgnore(ctx context.Context, s Source, rules []string) e
 	_, err := p.run(ctx, nil, 5*time.Minute, args...)
 	return err
 }
-
-// UserDataExclusions is what the user-data set leaves out, and it is exported because
-// the page that offers a restore has to be able to say so: a restore that does not
-// bring something back is only diagnosable if the exclusions are visible. One list, so
-// what is shown can never drift from what is applied.
-//
-//   - The app tree has its own per-app sources; backing it up here too would store
-//     everything twice — and it is the reason an in-place restore is done entry by
-//     entry, since a delete-extra aimed at the data root would remove it.
-//   - Cache and logs are matched by pattern rather than by a fixed list, so the next
-//     engine someone adds does not silently ship its multi-gigabyte cache offsite every
-//     night for data that is rebuilt on demand.
-//
-// AppDataShared is deliberately *not* excluded: on a box running two engines each
-// engine's backup then carries the other's configuration, so recovering either returns
-// the rest. The password riding along is harmless — reading it requires the password
-// already — it is merely useless.
-var UserDataExclusions = []string{"/AppData/", "**/cache/", "**/logs/"}
 
 // Retention is the tiered (GFS) policy. Because each source accumulates snapshots
 // over time, this maps directly onto kopia's own policy engine instead of having to
@@ -687,7 +658,8 @@ func (p *Provider) ListUserData(ctx context.Context) ([]apps.Backup, error) {
 //     did not exist when the snapshot was taken, so a true restore would remove it —
 //     but silently deleting a whole tree the user made since is a worse surprise than
 //     leaving it, and nothing forces the choice to be made here.
-//   - AppDataShared/ is skipped in place, though it is in the snapshot. See inPlaceSkip.
+//   - AppDataShared/ is skipped in place, though it is in the snapshot. See
+//     apps.UserDataInPlaceSkip.
 func (p *Provider) RestoreUserData(ctx context.Context, stamp string, opts apps.UserDataRestoreOpts, emit func(apps.Event)) error {
 	id, err := p.snapshotID(ctx, userDataApp, stamp)
 	if err != nil {
@@ -720,8 +692,8 @@ func (p *Provider) RestoreUserData(ctx context.Context, stamp string, opts apps.
 	}
 
 	for _, e := range wanted {
-		if inPlaceSkip[e.name] {
-			// Skipped only when restoring over the live tree. See inPlaceSkip.
+		if apps.UserDataInPlaceSkip[e.name] {
+			// Skipped only when restoring over the live tree. See apps.UserDataInPlaceSkip.
 			if emit != nil {
 				emit(apps.Event{Message: "Leaving " + e.name + " as it is"})
 			}
@@ -744,21 +716,6 @@ func (p *Provider) RestoreUserData(ctx context.Context, stamp string, opts apps.
 	return nil
 }
 
-// inPlaceSkip is what an in-place restore leaves alone even though the snapshot holds
-// it.
-//
-// AppDataShared/ carries the backup engines' own configuration — endpoint, password,
-// cache — and it is in the set deliberately, so that recovering *any* engine's backup
-// returns the credentials for the others. That is exactly right for restoring onto a
-// fresh box, and exactly wrong for restoring over a live one: the files being replaced
-// are the ones the engine performing the restore is reading, and an older repository
-// config swapped in mid-restore points the engine at a repository that is not the one
-// it is currently reading from.
-//
-// It is not excluded from the *snapshot* — that would break disaster recovery, which is
-// the reason it is included — only from the in-place restore, which is the one case
-// where the live copy is more current than the backed-up one by definition.
-var inPlaceSkip = map[string]bool{"AppDataShared": true}
 
 // entry is one top-level member of a snapshot.
 type entry struct {

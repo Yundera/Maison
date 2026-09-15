@@ -117,12 +117,17 @@
 {/if}
 
 <style>
+  /* The safe-area terms are for an installed PWA on a notched phone, where
+     viewport-fit=cover (see index.html) lets the page draw under the status bar
+     and the home indicator. env() resolves to 0px anywhere there is no inset, so
+     these are inert in a browser and on a desktop. The top term must stay in step
+     with .topbar's height in TopBar.svelte, which grows by the same amount. */
   .contents {
     position: absolute;
     inset: 0;
-    top: 3.25rem;
+    top: calc(3.25rem + env(safe-area-inset-top, 0px));
     overflow-y: auto;
-    padding: 1.5rem 0 4rem;
+    padding: 1.5rem 0 calc(4rem + env(safe-area-inset-bottom, 0px));
   }
   /*
    * Bulma-parity centered container, matching casa-img's plain `.container`:

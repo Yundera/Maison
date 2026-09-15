@@ -33,6 +33,13 @@ func serveIndex(w http.ResponseWriter, uiFS fs.FS) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// index.html names the content-hashed bundle, so a browser holding yesterday's
+	// copy asks for asset URLs that no longer exist and renders a blank page. In
+	// practice nothing reaches the browser to cache on anyway — embed.FS reports a
+	// zero ModTime, so ServeContent emits neither an ETag nor a Last-Modified — but
+	// relying on heuristic freshness being defeated by a missing header is relying
+	// on a side effect. Say it.
+	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(b)
 }
 

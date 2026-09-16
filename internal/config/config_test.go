@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -21,6 +22,43 @@ func TestBackupsDirIsInsideMaisonsOwnAppFolder(t *testing.T) {
 	c := Config{DataRoot: "/DATA"}
 	if got, want := c.BackupsDir(), filepath.Join("/DATA", "AppData", "maison", ".backups"); got != want {
 		t.Errorf("BackupsDir() = %q, want %q", got, want)
+	}
+}
+
+// The engine directory is moving out of AppDataShared and into the engine's own app
+// folder, and the two halves of that move ship as separate releases — so this build
+// has to read either layout for as long as the host side takes to catch up.
+//
+// Resolved per call, not once: it is a host script that moves the files, under a
+// running Maison, and a box that had to be restarted to notice would be down for
+// backups until someone did.
+func TestBackupEngineDirPrefersTheAppFolderAndFallsBackToTheSharedOne(t *testing.T) {
+	root := t.TempDir()
+	c := Config{DataRoot: root}
+	current := filepath.Join(root, "AppData", "kopia", "engine")
+	legacy := filepath.Join(root, "AppDataShared", "backup", "kopia")
+
+	// Neither present is the ordinary "not configured" state, and it answers with the
+	// layout this build prefers rather than the one being retired.
+	if got := c.BackupEngineDir("kopia"); got != current {
+		t.Errorf("unprovisioned BackupEngineDir() = %q, want %q", got, current)
+	}
+
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.BackupEngineDir("kopia"); got != legacy {
+		t.Errorf("BackupEngineDir() = %q, want the legacy tree %q", got, legacy)
+	}
+
+	// Both present is a half-migrated box: the files have moved and a stale directory
+	// is still behind. The current layout has to win, or the providers would read the
+	// configuration the host side has stopped maintaining.
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.BackupEngineDir("kopia"); got != current {
+		t.Errorf("BackupEngineDir() = %q, want %q to win over the legacy tree", got, current)
 	}
 }
 

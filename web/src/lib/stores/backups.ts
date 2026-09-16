@@ -55,6 +55,12 @@ export interface Estimate {
    *  excludes nothing — the backup is a superset, never short — but the app is not
    *  getting what it asked for, and this is the only place that shows. */
   excludeErrors?: string[]
+
+  /** The app declared it has nothing worth backing up (x-compose-app `backup.skip`):
+   *  it is in neither the nightly run nor a backup taken by hand. Nothing else in
+   *  this object is meaningful when it is set — the size walk was not run, so
+   *  `enough` is false and the numbers are zero. */
+  skipped?: boolean
 }
 
 /** A restore of the user-data set, in flight or last attempted. */

@@ -92,7 +92,7 @@ x-compose-app:
 | **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
 | **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
-| **`backup`** | object | no | `{ exclude }` — directories of **derived** data to leave out of backups. See [Backup exclusions](#backup-exclusions). | — |
+| **`backup`** | object | no | `{ exclude, skip }` — directories of **derived** data to leave out of backups, or the whole app. See [Backup exclusions](#backup-exclusions) and [Skipping an app entirely](#skipping-an-app-entirely). | — |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
 `webui-host` (and no `x-casaos` fallback) is headless — its tile has no "open"
@@ -731,6 +731,60 @@ The local engine's **uninstall** archive keeps everything. Uninstalling with a b
 is a folder rename there — instant, and the exclusions would cost work to apply
 rather than save it — so that archive is a superset. A repository engine's uninstall
 snapshot honours the exclusions like any other.
+
+---
+
+## Skipping an app entirely
+
+`backup.skip` is the whole-app form of the same declaration: there is nothing in this
+folder worth keeping.
+
+```yaml
+x-compose-app:
+  schema_version: 2
+  backup:
+    skip: true
+    exclude:
+      - "**/cache/"
+```
+
+It is **not a bigger `exclude`**. An app that excluded everything would still be
+stopped, snapshotted and restarted every night to produce an empty backup; a skipped
+app is not a target at all:
+
+| | Skipped app |
+|---|---|
+| Nightly run | not a target — `Scheduler.skip` |
+| Back up now, in the Backups tab | refused, `403`; the tab says why |
+| Update rollback point | not taken; the update proceeds and says so in the log |
+| Restore | **works normally** |
+| Uninstall archive | still taken — see below |
+
+**Restore is deliberately untouched.** An app can be marked skipped while backups
+taken before the declaration still exist, and refusing to put those back would turn a
+tidying-up declaration into data the owner cannot reach.
+
+**The uninstall archive is still taken.** Uninstalling is the owner saying "remove
+this, but keep a copy in case"; that is their decision at that moment, not the app
+author's, and on the local engine it is a folder rename that costs nothing.
+
+### It is not `view: system`
+
+`view: system` also decides that the app tiles with the platform and that Maison
+refuses to stop or uninstall it. Before this field the only way to opt out of backups
+was to claim all three, so an ordinary app with nothing worth keeping had to pose as a
+platform component, and a platform component had no way to ask to *be* backed up.
+
+It is also not the per-app opt-out an owner gets in the UI. This is the author saying
+there is nothing here; that would be the owner saying they do not want it.
+
+### Why there is no way to say `skip: false`
+
+The field defaults to false and nothing can set it back to true-by-default, which is
+the same forward-compatibility argument the rest of this block rests on: a build that
+predates the field ignores it and backs the app up anyway — more data, never less. A
+default-on flag an older build could ignore into *not* taking a backup would fail in
+the other direction, which is not a trade this file makes anywhere.
 
 ---
 

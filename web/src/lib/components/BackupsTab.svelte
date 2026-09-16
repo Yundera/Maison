@@ -175,7 +175,14 @@
   </button>
 </div>
 
-{#if estimate}
+{#if estimate?.skipped}
+  <!-- The app declared it has nothing worth backing up (x-compose-app `backup.skip`),
+       so it is in neither the nightly run nor a backup taken by hand — the button
+       above is already disabled, since a skipped estimate is never `enough`. Said
+       here rather than left silent because the alternative is a dead button with a
+       space message reading "needs 0 B, 0 B available": the size walk never ran. -->
+  <p class="hint fine">{$t('backup_skipped')}</p>
+{:else if estimate}
   <p class="hint size" class:tight={!estimate.enough}>
     {#if estimate.free < 0}
       <!-- No usable reading: the guard is skipped rather than guessed at, so say

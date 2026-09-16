@@ -362,7 +362,7 @@ func (s *Scheduler) canBackUpUserData() bool { return s.userDataEngine() != nil 
 
 // skip reports whether an app directory must be left out of a scheduled run.
 //
-// Two exclusions, both because backing an app up *stops* it:
+// Three exclusions. The first two are because backing an app up *stops* it:
 //
 //   - Maison's own state directory. It sits at AppData/maison and therefore looks
 //     exactly like an app — deliberately, so the dashboard tiles itself. Stopping it
@@ -371,15 +371,23 @@ func (s *Scheduler) canBackUpUserData() bool { return s.userDataEngine() != nil 
 //     one folder a nightly run has least business copying.
 //   - System apps: the platform's own pieces, which is what `view: system` names.
 //     Taking the gateway or the dashboard down nightly is not a backup strategy.
+//   - Apps that declare x-compose-app `backup.skip` — the author saying there is
+//     nothing in the folder worth keeping.
 //
-// The cost is that platform state is not backed up by the schedule. That is a
-// deliberate gap, not an oversight: doing it properly means backing these up
+// The third is not a third way of saying the first two. `view: system` decides tile
+// grouping and refusal-to-stop as well, so before this field an ordinary app with
+// nothing worth backing up could only opt out by claiming to be a platform piece;
+// and the same conflation is why a skipped app still has to be refused on the manual
+// path, which never consulted Protected at all (apps.ErrBackupSkipped).
+//
+// The cost of the second is that platform state is not backed up by the schedule.
+// That is a deliberate gap, not an oversight: doing it properly means backing these up
 // *without* stopping them, which is a different shape than the app path has.
 func (s *Scheduler) skip(name string) bool {
 	if filepath.Clean(filepath.Join(s.cfg.AppsDir(), name)) == filepath.Clean(s.cfg.StateDir()) {
 		return true
 	}
-	return s.apps.Protected(name)
+	return s.apps.Protected(name) || s.apps.BackupSkipped(name)
 }
 
 // RunAll backs up every target, one at a time.

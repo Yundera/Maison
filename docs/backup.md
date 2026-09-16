@@ -59,6 +59,11 @@ this document follows from them being different.
 | Granularity | restore one app without touching others | one set, or named top-level folders |
 | Restore | rename / materialise / in place, per app | copy into a new folder, or in place entry by entry |
 
+An app that declares `backup.skip` is in **neither** set: it is not a target for the
+app set, and `AppData/` is excluded from the user-data one. That is what "not backed
+up" means here, and it is deliberate for the app it was written for — see
+[Skipping an app outright](#skipping-an-app-outright).
+
 **User data is the simpler path and the right thing to build first.** Nothing is
 stopped, no staging copy exists, and its source path never changes. Every piece of
 the provider layer can be exercised against it before app orchestration enters the
@@ -85,16 +90,34 @@ get the stop treatment and user data does not.
 ${DATA_ROOT}/
   AppData/
     <app>/                     an app — the backup source for the app set
-    maison/                    Maison's own state (Config.StateDir)
-      .backups/<app>/<stamp>/  local archives (Config.BackupsDir)
-  AppDataShared/
-    backup/<engine>/
+    <engine>/engine/           the engine's own state (Config.EngineDir)
       repository.config        endpoint, region, bucket, prefix
       repository.password      0600, generated on this PCS
-      cache/                   engine cache — excluded from backup
-      logs/                    excluded from backup
+      cache/                   engine cache — never backed up
+      logs/                    never backed up
+    maison/                    Maison's own state (Config.StateDir)
+      .backups/<app>/<stamp>/  local archives (Config.BackupsDir)
+  AppDataShared/               BEING RETIRED — the same tree, at backup/<engine>/
   Documents/ Downloads/ Media/ …   the user-data set
 ```
+
+> **The engine directory is mid-move.** It is going from
+> `AppDataShared/backup/<engine>/` into the engine's own app folder, so that the
+> engine is an app like any other and `AppDataShared` can be deleted outright. Maison
+> only ever *reads* that directory — the host-side `ensure-backup-config.sh` owns
+> writing it — so the two halves ship as separate releases and this build reads
+> **either** layout, preferring the app folder when both exist
+> (`Config.BackupEngineDir`, `adapter.Discover`). The resolution is done per call, not
+> once at start, so a box flips over the moment the host script moves the files.
+>
+> The engine's app folder is then kept out of the backup by its own `backup.skip`
+> declaration rather than by any of the machinery below — see
+> [Skipping an app outright](#skipping-an-app-outright). The property being given up
+> is the one the next paragraph describes, and it is smaller than it looks: reading
+> any backup at all requires the repository password, so a box that could use the
+> carried configuration has already recovered without it.
+
+Everything from here to the end of this section describes the layout being retired.
 
 `AppDataShared/` is **deliberately outside `AppData/`**, which means it falls inside
 the user-data set and therefore gets backed up. That is the point: on a box running
@@ -525,6 +548,35 @@ backup with nothing on the box to explain why.
 A user-level override is still worth having for apps whose authors have declared
 nothing. The merge already works — an override's `x-compose-app` block wins key by key
 — so what is missing is only an editing surface.
+
+### Skipping an app outright
+
+`backup.skip: true` is the whole-app form of the same declaration: there is nothing in
+this folder worth keeping. The app is not a target for the nightly run
+(`Scheduler.skip`), a backup of it by hand is refused (`apps.ErrBackupSkipped`, `403`),
+and the update rollback point is not taken — the update proceeds with no way back,
+which is the same state as a box whose local engine has no archive yet, and it says so
+in the log rather than raising the disk-space incident a genuine failure would.
+
+**Restore is deliberately not gated**, because a declaration is not retroactive: an
+app can be marked skipped while backups taken before it still exist, and those stay
+listable and restorable. Nor is the uninstall archive, which is the owner's decision
+at that moment rather than the author's.
+
+It is a separate declaration from `view: system` on purpose. That field decides
+skipped-by-backup *and* tile grouping *and* refusal-to-stop from one value
+(`internal/apps/apps.go`, "One derivation for all three"), so before `backup.skip` the
+only way for an ordinary app to opt out of backups was to claim to be a platform
+piece. And, more to the point here, `view: system` never reached the manual path at
+all: `Protected` is consulted by the scheduler, by stop and by uninstall, and by
+nothing behind `POST /api/apps/{id}/backup`. A system app could always be backed up by
+hand.
+
+That is not academic for the engine itself. **Backing up kopia means stopping the
+container taking the snapshot** — the app path is stop → snapshot → start, and
+`BackupTo` does its own stop regardless of who called it. The refusal therefore lives
+in `BackupTo`, before the per-app lock and before anything is stopped, that being the
+one place every caller funnels through.
 
 ### Identity is unchanged
 

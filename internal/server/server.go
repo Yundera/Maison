@@ -257,7 +257,19 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// rollback point cannot be expired out from under the update that took it.
 		local := apps.NewLocalProvider(cfg)
 		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string) (string, error) {
-			return s.apps.BackupWith(ctx, local, project, false, nil)
+			name, err := s.apps.BackupWith(ctx, local, project, false, nil)
+			// An app that declares backup.skip has no rollback point by design rather
+			// than by failure, so it is reported as "none taken" ("", nil) rather than as
+			// an error. The installer already treats an empty name as no way back; an
+			// error here would instead warn the owner on every update of such an app and
+			// raise an incident whose text blames a full disk. The translation lives here
+			// because this closure is the only thing that knows both packages — the
+			// installer holds a function field precisely so it need not import apps.
+			if errors.Is(err, apps.ErrBackupSkipped) {
+				log.Printf("update %s: no rollback point — the app declares backup.skip", project)
+				return "", nil
+			}
+			return name, err
 		}
 		s.installer.RollBack = func(ctx context.Context, project, name string) error {
 			if err := s.apps.Restore(ctx, project, "", name, nil); err != nil {

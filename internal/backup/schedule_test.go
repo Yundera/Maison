@@ -52,6 +52,18 @@ func seedSystemApp(t *testing.T, cfg config.Config, name string) {
 	}
 }
 
+// seedSkippedApp gives an app dir a compose declaring it has nothing worth backing
+// up. Deliberately NOT also a system app: the whole point of the field is that the
+// two are separate decisions, so a test that seeded both would pass on either guard.
+func seedSkippedApp(t *testing.T, cfg config.Config, name string) {
+	t.Helper()
+	body := "services: {}\nx-compose-app:\n  schema_version: 2\n  backup:\n    skip: true\n"
+	path := filepath.Join(cfg.AppsDir(), name, "docker-compose.yml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The run enumerates apps with the same guard the on-disk paths use, so the
 // backups directory and a crashed staging folder are excluded for free rather than
 // by a second filter that can drift from it.
@@ -81,6 +93,24 @@ func TestTargetsSkipNonProjects(t *testing.T) {
 func TestTargetsSkipSystemApps(t *testing.T) {
 	s, store := newScheduler(t, "jellyfin", "yundera")
 	seedSystemApp(t, s.cfg, "yundera")
+	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tg := range s.Targets() {
+		got = append(got, tg.ID())
+	}
+	if want := "app:jellyfin"; strings.Join(got, " ") != want {
+		t.Fatalf("Targets = %v, want %q", got, want)
+	}
+}
+
+// An app that declares backup.skip is left out of the nightly run without having to
+// claim to be a system app — which is the distinction the field exists to draw, since
+// `view: system` also decides tile grouping and refusal-to-stop.
+func TestTargetsSkipDeclaredSkippedApps(t *testing.T) {
+	s, store := newScheduler(t, "jellyfin", "kopia")
+	seedSkippedApp(t, s.cfg, "kopia")
 	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
 		t.Fatal(err)
 	}

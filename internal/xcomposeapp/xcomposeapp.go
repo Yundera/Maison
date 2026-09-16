@@ -117,7 +117,7 @@ type App struct {
 	Hooks   Hooks    `yaml:"hooks,omitempty"`
 
 	// Backup is what this app asks Maison to leave out of its backups — the
-	// directories it can rebuild on its own. See docs/backup.md.
+	// directories it can rebuild on its own, or the whole app. See docs/backup.md.
 	//
 	// Deliberately NOT raising SchemaVersion, and the argument is stronger here than
 	// it is for View or Routes: a build that predates this field ignores it and backs
@@ -125,6 +125,12 @@ type App struct {
 	// the version instead makes that build drop the entire x-compose-app block (see
 	// stackup.Load) and with it the app's folders, hooks, title and URL — a much
 	// worse trade than storing a cache directory it did not have to.
+	//
+	// That argument survives `skip` intact, and it is also what fixes the field's
+	// polarity: an older build ignoring `skip: true` backs the app up anyway, which
+	// is again a superset. The inverse spelling — a default-on flag an old build
+	// could ignore into NOT taking a backup — would not be safe, which is why this
+	// one defaults to false and there is no way to say "back this up" explicitly.
 	Backup BackupSpec `yaml:"backup,omitempty"`
 
 	// Secrets are values generated ONCE and ensured in the app's .env — a key
@@ -411,16 +417,35 @@ func NormalizeView(v string) string {
 // What is excluded is not restored either: a restore replaces the app folder, so a
 // declared directory comes back empty and the app refills it. That is the point of
 // declaring it, and it is why `folders:` and this list belong side by side.
+//
+// Skip is the whole-app form of the same declaration: there is nothing in this
+// folder worth keeping. It is not a bigger Exclude — it removes the app from the
+// nightly run and refuses a backup of it outright, rather than snapshotting an empty
+// tree. Restore is deliberately untouched: an app can be marked skipped while older
+// backups still exist, and those must stay restorable.
+//
+// It is separate from `view: system` on purpose. That field currently decides three
+// unrelated things at once (tile grouping, refusal to stop or uninstall, and
+// skipped-by-backup — see apps.Registry.Protected), so an ordinary app with nothing
+// worth backing up has no way to say so without claiming to be a platform piece, and
+// a platform piece has no way to ask to be backed up. This says one thing.
+//
+// It is also not the per-app opt-out the *user* gets in the UI. This is the author
+// saying there is nothing here; that would be the owner saying they do not want it.
 type BackupSpec struct {
 	Exclude []string `yaml:"exclude,omitempty"`
+	Skip    bool     `yaml:"skip,omitempty"`
 }
 
 // UnmarshalYAML decodes the entries through text, so a pattern YAML would otherwise
 // retype survives as written — the extension block round-trips through
 // map[string]any in internal/composefile before it ever reaches this package.
+// Skip is a plain bool rather than text: it is not a scalar YAML could retype into
+// something lossy, and the zero value is the right default on its own.
 func (b *BackupSpec) UnmarshalYAML(n *yaml.Node) error {
 	var raw struct {
 		Exclude []text `yaml:"exclude"`
+		Skip    bool   `yaml:"skip"`
 	}
 	if err := n.Decode(&raw); err != nil {
 		return err
@@ -429,6 +454,7 @@ func (b *BackupSpec) UnmarshalYAML(n *yaml.Node) error {
 	for _, e := range raw.Exclude {
 		b.Exclude = append(b.Exclude, string(e))
 	}
+	b.Skip = raw.Skip
 	return nil
 }
 

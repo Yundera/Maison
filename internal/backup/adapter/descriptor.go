@@ -101,42 +101,77 @@ func (d Descriptor) validate() error {
 	return nil
 }
 
-// Discover reads every adapter descriptor under the shared backup directory.
+// Discover reads every adapter descriptor on the box.
 //
 // A directory with no descriptor is skipped in silence: it is the ordinary state of a
 // box whose host side has not run, or of an engine Maison implements itself. A
 // descriptor that is present but unusable is logged and skipped — an engine that cannot
 // be constructed must not stop the others being registered, and must not stop Maison
 // booting.
+//
+// Two roots, for as long as the engine directory is moving out of AppDataShared and
+// into the engine's own app folder — see config.BackupEngineDir, which is the other
+// half of the same transition. The current layout is scanned first and an engine found
+// there wins, so a half-migrated box (files moved, a stale legacy directory left
+// behind) resolves the same way the provider will.
 func Discover(cfg config.Config) []Descriptor {
-	root := filepath.Join(cfg.SharedDir(), "backup")
+	var (
+		out  []Descriptor
+		seen = map[string]bool{}
+	)
+	// AppData/<engine>/engine/adapter.json. The app folder's name IS the engine id
+	// here, which is the same identity rule the legacy root enforces below.
+	for _, d := range readDirNames(cfg.AppsDir()) {
+		if desc, ok := readEngine(filepath.Join(cfg.AppsDir(), d, "engine"), d); ok && !seen[d] {
+			seen[d] = true
+			out = append(out, desc)
+		}
+	}
+	legacyRoot := filepath.Join(cfg.SharedDir(), "backup")
+	for _, d := range readDirNames(legacyRoot) {
+		if desc, ok := readEngine(filepath.Join(legacyRoot, d), d); ok && !seen[d] {
+			seen[d] = true
+			out = append(out, desc)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].EngineID < out[j].EngineID })
+	return out
+}
+
+// readDirNames lists the subdirectory names of root. An unreadable or absent root is
+// not an error: on most boxes one of Discover's two roots does not exist at all.
+func readDirNames(root string) []string {
 	dirs, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
-	var out []Descriptor
+	var out []string
 	for _, d := range dirs {
-		if !d.IsDir() {
-			continue
+		if d.IsDir() {
+			out = append(out, d.Name())
 		}
-		path := filepath.Join(root, d.Name(), DescriptorFile)
-		desc, err := ReadDescriptor(path)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				log.Printf("backup: ignoring %s: %v", path, err)
-			}
-			continue
-		}
-		// The directory is the engine's own, so a descriptor claiming a different id
-		// would be read out of one engine's configuration and write into another's.
-		if desc.EngineID != d.Name() {
-			log.Printf("backup: ignoring %s: it claims engine %q but sits in %q", path, desc.EngineID, d.Name())
-			continue
-		}
-		out = append(out, desc)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].EngineID < out[j].EngineID })
 	return out
+}
+
+// readEngine reads one candidate directory's descriptor, checking it against the id
+// the directory's own name claims.
+func readEngine(dir, id string) (Descriptor, bool) {
+	path := filepath.Join(dir, DescriptorFile)
+	desc, err := ReadDescriptor(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("backup: ignoring %s: %v", path, err)
+		}
+		return Descriptor{}, false
+	}
+	// The directory is the engine's own, so a descriptor claiming a different id
+	// would be read out of one engine's configuration and write into another's.
+	if desc.EngineID != id {
+		log.Printf("backup: ignoring %s: it claims engine %q but sits in %q", path, desc.EngineID, id)
+		return Descriptor{}, false
+	}
+	return desc, true
 }
 
 // ReadDescriptor reads one descriptor. os.IsNotExist is reported unwrapped so Discover

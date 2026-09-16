@@ -721,21 +721,39 @@ func TestTheEngineRunsAsRootWithNarrowedCapabilities(t *testing.T) {
 // and they outrank --cache-directory and --log-dir. Both are inside the container, so
 // under --rm every run would start from a cold cache and throw its log away. Both must
 // land beside the rest of the engine's state.
+//
+// Asserted against the resolved engine directory rather than a literal path, and in
+// both layouts, because that is the actual requirement: the scratch follows the state
+// wherever it is. While the engine directory is moving out of AppDataShared and into
+// the engine's own app folder, a literal here would pin this to whichever half of the
+// move had shipped.
 func TestEngineEnvOverridesTheImagesBakedInPaths(t *testing.T) {
-	cfg := config.Config{DataRoot: "/DATA"}
-	p := New(cfg)
-	env := p.engineEnv()
+	cfg := config.Config{DataRoot: t.TempDir()}
 
-	if got, want := env["KOPIA_CACHE_DIRECTORY"], "/DATA/AppDataShared/backup/kopia/cache"; got != want {
-		t.Errorf("KOPIA_CACHE_DIRECTORY = %q, want %q", got, want)
-	}
-	if got, want := env["KOPIA_LOG_DIR"], "/DATA/AppDataShared/backup/kopia/logs"; got != want {
-		t.Errorf("KOPIA_LOG_DIR = %q, want %q", got, want)
-	}
-	for k, v := range env {
-		if strings.HasPrefix(v, "/app") {
-			t.Errorf("%s still points inside the image at %q", k, v)
-		}
+	for _, layout := range []struct {
+		name string
+		dir  string
+	}{
+		{"shared directory", filepath.Join(cfg.SharedDir(), "backup", ID)},
+		{"the engine's own app folder", cfg.EngineDir(ID)},
+	} {
+		t.Run(layout.name, func(t *testing.T) {
+			if err := os.MkdirAll(layout.dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			env := New(cfg).engineEnv()
+			if got, want := env["KOPIA_CACHE_DIRECTORY"], filepath.Join(layout.dir, "cache"); got != want {
+				t.Errorf("KOPIA_CACHE_DIRECTORY = %q, want %q", got, want)
+			}
+			if got, want := env["KOPIA_LOG_DIR"], filepath.Join(layout.dir, "logs"); got != want {
+				t.Errorf("KOPIA_LOG_DIR = %q, want %q", got, want)
+			}
+			for k, v := range env {
+				if strings.HasPrefix(v, "/app") {
+					t.Errorf("%s still points inside the image at %q", k, v)
+				}
+			}
+		})
 	}
 }
 

@@ -183,6 +183,7 @@
   "backup_size": "约需复制 {size}。",
   "backup_space": "约需复制 {size}，需要 {needed} · 剩余 {free}",
   "backup_space_short": "空间不足：需要 {needed}，剩余 {free}。",
+  "backup_skipped": "此应用不会被备份：它声明没有需要保留的内容。",
   "backup_excluded": "应用已将其排除在备份之外：{list}（{size}）。",
   "backup_excluded_bad": "Maison 无法应用该应用的部分排除规则，因此这些路径仍会被备份：{list}",
   "backup_restore_excluded": "不在此备份中，因此不会恢复 — 应用会重建它们：{list}",

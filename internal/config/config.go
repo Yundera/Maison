@@ -258,7 +258,7 @@ func (c Config) SharedDir() string {
 }
 
 // BackupEngineDir is where one backup engine keeps its repository config, its
-// password, its cache and its logs: ${SharedDir}/backup/<engine>.
+// password, its cache and its logs.
 //
 // One directory per engine rather than one shared directory, because the engine is
 // a user-flippable choice and a box that has switched must still be able to read
@@ -268,8 +268,54 @@ func (c Config) SharedDir() string {
 // Maison does not create or write this directory: a self-check script on the host
 // renders the credentials into it, and Maison only reads. An absent directory is the
 // normal "not configured" state, not an error.
+//
+// IT IS THE ONE Config METHOD THAT TOUCHES THE DISK, and that is the whole point of
+// it. The engine directory is moving out of AppDataShared and into the engine's own
+// app folder (EngineDir), and the two halves of that move ship as separate releases:
+// this build can meet either layout, for as long as it takes the host side to catch
+// up. Resolving per call rather than once at load is what makes a box flip over the
+// moment the host script moves the files, with no Maison restart — and every caller
+// already goes through a per-call dir() method, so the stat costs one syscall per
+// engine command rather than one per request.
+//
+// Phase 3 deletes the legacy arm and this comment with it; see docs/backup.md.
 func (c Config) BackupEngineDir(engine string) string {
+	if dir := c.EngineDir(engine); dirExists(dir) {
+		return dir
+	}
+	if legacy := c.LegacyBackupEngineDir(engine); dirExists(legacy) {
+		return legacy
+	}
+	// Neither is present: the ordinary "not configured" state. Answer with the
+	// layout this build prefers, so a box that has never been provisioned reports
+	// the path the host side is going to create rather than the one being retired.
+	return c.EngineDir(engine)
+}
+
+// EngineDir is the current layout: the engine's state lives inside the engine's own
+// app folder, ${DataRoot}/AppData/<engine>/engine, like any other app's data.
+//
+// THE ENGINE ID IS THE APP ID. That was already half-true — adapter.Discover requires
+// a descriptor's engineId to match the directory it sits in — and this layout makes it
+// load-bearing: it is what keeps one engine's configuration from being read into
+// another engine's provider. An engine whose app folder is named something else is not
+// discoverable, by design.
+//
+// `engine` is dotless because Maison's dot-namespace inside an app folder is reserved
+// (.env, .seed/, .icon.*, .init/ — see docs/app-model.md).
+func (c Config) EngineDir(engine string) string {
+	return filepath.Join(c.AppsDir(), engine, "engine")
+}
+
+// LegacyBackupEngineDir is the layout being retired: ${SharedDir}/backup/<engine>.
+// Read-only, and read only when the current layout is absent.
+func (c Config) LegacyBackupEngineDir(engine string) string {
 	return filepath.Join(c.SharedDir(), "backup", engine)
+}
+
+func dirExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 // StateDir is where everything Maison owns lives: its settings, its store cache,

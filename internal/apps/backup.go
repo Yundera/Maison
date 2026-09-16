@@ -19,6 +19,19 @@ import (
 	"github.com/yundera/maison/internal/exclude"
 )
 
+// ErrBackupSkipped is returned when a backup targets an app whose compose declares
+// x-compose-app `backup.skip` — the author saying there is nothing in this folder
+// worth keeping (see Registry.BackupSkipped).
+//
+// A refusal rather than a silent success, because the two callers it reaches want
+// different things and both are better served by being told: the button in the
+// Backups tab should say why, and the update rollback point should record that it has
+// none rather than believe it took one.
+//
+// It does NOT block a restore. An app can be marked skipped while backups taken
+// before the declaration still exist, and those stay restorable.
+var ErrBackupSkipped = errors.New("this app declares it has nothing worth backing up")
+
 // Backup phases, in order. A folder backup skips `compress`.
 const (
 	PhaseCopy     = "copy"     // mirroring the app folder while the app is still up
@@ -124,6 +137,14 @@ type Estimate struct {
 	// but it means the app is not getting what it asked for, and the only way that
 	// ever gets fixed is by being visible here.
 	ExcludeErrors []string `json:"excludeErrors,omitempty"`
+
+	// Skipped is the app declaring it has nothing worth backing up
+	// (x-compose-app backup.skip). It is reported rather than returned as an error
+	// because the estimate is what the Backups tab opens with: a tab that says why
+	// there will never be a backup here is the point, and a button that 403s when
+	// pressed is a bug report. Nothing else in this struct is meaningful when it is
+	// set — the size walk is not run.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // exclusionsFor resolves what app `id` declared as derived data — the directories
@@ -168,6 +189,23 @@ func (r *Registry) exclusionsFor(id string) (*exclude.Set, []error) {
 	return exclude.Parse(patterns, appDir)
 }
 
+// BackupSkipped reports whether app `id` declared x-compose-app `backup.skip` — that
+// there is nothing in its folder worth backing up.
+//
+// Read from the compose on every call, for the same reason exclusionsFor is: the
+// declaration moves when a store update lands or an operator edits the override, and
+// every caller is a cold path (once per nightly run, once per backup, once per
+// estimate) rather than anything that would want a cache.
+//
+// Deliberately NOT routed through viewOf's remembered-view cache. That cache exists to
+// keep answering for a stopped *unmanaged* stack, whose compose is only reachable
+// through the working directory Docker reports; a skipped app is by definition one
+// with a folder under AppsDir, which metaFor reads directly.
+func (r *Registry) BackupSkipped(id string) bool {
+	_, ca := r.metaFor(id, "")
+	return ca != nil && ca.Backup.Skip
+}
+
 // ownsBackupsDir reports whether app `id`'s folder CONTAINS the local archive tree,
 // and where that tree is.
 //
@@ -209,6 +247,12 @@ func (r *Registry) EstimateBackup(id, engine string, zip bool) (Estimate, error)
 	appDir := filepath.Join(r.cfg.AppsDir(), id)
 	if _, err := os.Stat(appDir); err != nil {
 		return Estimate{}, fmt.Errorf("%s has no folder to back up", id)
+	}
+	// Answered before the size walk, and as a value rather than an error: the tab
+	// opens on this call, and it has to be able to explain itself. Enough is left
+	// false, so nothing offers a backup on the strength of this estimate.
+	if r.BackupSkipped(id) {
+		return Estimate{Skipped: true, Zip: zip}, nil
 	}
 	// What the app declared as derived is not copied, so it must not be reserved for
 	// either: sizing the whole folder would refuse a backup that fits comfortably.
@@ -295,6 +339,12 @@ func (r *Registry) StartBackup(id, engine string, zip bool) error {
 	est, err := r.EstimateBackup(id, engine, zip)
 	if err != nil {
 		return err
+	}
+	// Ahead of the space check, which a skipped estimate would otherwise fail with a
+	// nonsense "needs 0 B, 0 B available" — the size walk it reports on was not run.
+	// BackupTo refuses this again; the point of refusing here too is the message.
+	if est.Skipped {
+		return fmt.Errorf("%s: %w", id, ErrBackupSkipped)
 	}
 	if !est.Enough {
 		return fmt.Errorf("not enough free space: %s needs %s, %s available",
@@ -592,6 +642,18 @@ func (r *Registry) BackupTo(ctx context.Context, ps []Provider, id string, zip b
 	appDir := filepath.Join(r.cfg.AppsDir(), id)
 	if _, err := os.Stat(appDir); err != nil {
 		return nil, fmt.Errorf("%s has no folder to back up", id)
+	}
+	// THE ONE GATE FOR THE WHOLE MANUAL SIDE, and it is here rather than at the HTTP
+	// handler because this is where every caller funnels: StartBackup for the button,
+	// and BackupWith for the update rollback point — which reaches an app the
+	// scheduler would never touch, since installer.StopBeforeUpdate skips the stop for
+	// a system app while this function takes its own stop/start regardless.
+	//
+	// Refused before r.enter and before anything is stopped. That ordering is the
+	// point of the field for the engine that declares it: backing up the backup engine
+	// means stopping the container running the snapshot.
+	if r.BackupSkipped(id) {
+		return nil, fmt.Errorf("%s: %w", id, ErrBackupSkipped)
 	}
 	// Validated before anything is touched, and certainly before the app is stopped: a
 	// nil engine discovered mid-loop would panic with the app already down.

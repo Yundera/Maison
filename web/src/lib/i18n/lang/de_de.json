@@ -183,6 +183,7 @@
   "backup_size": "Etwa {size} zu kopieren.",
   "backup_space": "Etwa {size} zu kopieren, {needed} nötig · {free} frei",
   "backup_space_short": "Zu wenig Speicher: {needed} nötig, {free} frei.",
+  "backup_skipped": "Diese App wird nicht gesichert: Sie gibt an, nichts Erhaltenswertes zu enthalten.",
   "backup_excluded": "Von der App aus Sicherungen ausgeschlossen: {list} ({size}).",
   "backup_excluded_bad": "Maison konnte einige Ausschlüsse dieser App nicht anwenden; diese Pfade werden daher gesichert: {list}",
   "backup_restore_excluded": "Nicht in dieser Sicherung und daher nicht wiederhergestellt — die App baut sie neu auf: {list}",

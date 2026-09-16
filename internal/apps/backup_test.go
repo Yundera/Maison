@@ -589,6 +589,78 @@ func TestBackupOfTheAppHoldingTheArchivesExcludesThem(t *testing.T) {
 	}
 }
 
+// seedSkipped writes an app whose compose declares it has nothing worth backing up.
+func seedSkipped(t *testing.T, appsDir, id string) string {
+	t.Helper()
+	dir := filepath.Join(appsDir, id)
+	seedApp(t, dir)
+	compose := "services: {}\nx-compose-app:\n  schema_version: 2\n  backup:\n    skip: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// An app that declares backup.skip is refused a backup outright rather than given an
+// empty one, and the refusal lands before anything is stopped — which is the whole
+// value of the declaration for the app it was written for, since backing up the
+// backup engine means stopping the container taking the snapshot.
+//
+// BackupTo is the gate rather than the HTTP handler because it is where every caller
+// funnels, including the update rollback point, which reaches apps the scheduler
+// never touches.
+func TestBackupRefusesAnAppThatDeclaresItIsSkipped(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	seedSkipped(t, appsDir, "kopia")
+
+	_, err := r.BackupTo(context.Background(), []Provider{NewLocalProvider(r.cfg)}, "kopia", false, nil)
+	if !errors.Is(err, ErrBackupSkipped) {
+		t.Fatalf("BackupTo err = %v, want ErrBackupSkipped", err)
+	}
+	if err := r.StartBackup("kopia", "", false); !errors.Is(err, ErrBackupSkipped) {
+		t.Fatalf("StartBackup err = %v, want ErrBackupSkipped", err)
+	}
+
+	// An ordinary app is untouched by the guard: the refusal belongs to the
+	// declaration, not to the backup path.
+	seedApp(t, filepath.Join(appsDir, "jellyfin"))
+	if _, err := r.BackupTo(context.Background(), []Provider{NewLocalProvider(r.cfg)}, "jellyfin", false, nil); errors.Is(err, ErrBackupSkipped) {
+		t.Fatal("an app declaring nothing was refused as skipped")
+	}
+}
+
+// The estimate reports the skip as a value instead of failing, because the Backups
+// tab opens on it and has to be able to explain itself. Enough stays false, so
+// nothing offers a backup on the strength of it.
+func TestEstimateReportsSkippedWithoutFailing(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	seedSkipped(t, appsDir, "kopia")
+
+	est, err := r.EstimateBackup("kopia", "", false)
+	if err != nil {
+		t.Fatalf("EstimateBackup: %v", err)
+	}
+	if !est.Skipped {
+		t.Error("Skipped = false, want true")
+	}
+	if est.Enough {
+		t.Error("Enough = true on a skipped app, which would offer a backup that is then refused")
+	}
+}
+
+// Restore is deliberately NOT gated. An app can be marked skipped while backups taken
+// before the declaration still exist, and refusing to put those back would turn a
+// tidying-up declaration into data the owner cannot reach.
+func TestRestoreIsNotRefusedForASkippedApp(t *testing.T) {
+	r, appsDir, _ := newTestRegistry(t)
+	seedSkipped(t, appsDir, "kopia")
+
+	err := r.Restore(context.Background(), "kopia", "", "2026-07-10_153045", nil)
+	if errors.Is(err, ErrBackupSkipped) {
+		t.Fatalf("restore refused as skipped: %v", err)
+	}
+}
+
 // A restore or an uninstall of that same app is refused up front. Both would rename
 // the folder into a directory inside itself, and an in-place restore would delete the
 // archive tree outright — see ErrHoldsBackups.

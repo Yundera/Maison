@@ -79,6 +79,49 @@ func TestDiscoverSkipsUnusableDescriptors(t *testing.T) {
 	}
 }
 
+// Discovery reads both layouts for as long as the engine directory is moving out of
+// AppDataShared and into the engine's own app folder — the host side moves the files
+// in a release of its own, so a box can be in either state, or briefly in both.
+//
+// The app folder wins when both hold a descriptor, matching config.BackupEngineDir.
+// If the two disagreed, an engine would be constructed from one directory and then
+// read its repository configuration out of the other.
+func TestDiscoverReadsBothLayoutsAndPrefersTheAppFolder(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+
+	writeDescriptorAt(t, filepath.Join(cfg.SharedDir(), "backup", "restic"),
+		map[string]any{"engineId": "restic", "image": "restic:legacy"})
+	if got := Discover(cfg); len(got) != 1 || got[0].Image != "restic:legacy" {
+		t.Fatalf("Discover = %+v, want the engine still in the shared directory", got)
+	}
+
+	writeDescriptorAt(t, cfg.EngineDir("restic"),
+		map[string]any{"engineId": "restic", "image": "restic:moved"})
+	got := Discover(cfg)
+	if len(got) != 1 {
+		t.Fatalf("Discover = %+v, want one engine and not the same one twice", got)
+	}
+	if got[0].Image != "restic:moved" {
+		t.Errorf("Discover found %q, want the app folder to win over the shared directory", got[0].Image)
+	}
+}
+
+// writeDescriptorAt renders an adapter.json into a named directory, for the tests that
+// have to be explicit about which of the two layouts they are writing.
+func writeDescriptorAt(t *testing.T, dir string, d map[string]any) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, DescriptorFile), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The entrypoint has to be named: `docker exec` does not apply the image's own.
 func TestDescriptorDefaults(t *testing.T) {
 	d := Descriptor{EngineID: "kopia", Image: "img:1"}

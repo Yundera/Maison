@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -84,6 +85,13 @@ func (s *Server) handleStartBackup(w http.ResponseWriter, r *http.Request) {
 	// change where their app stops being backed up to.
 	engine := r.URL.Query().Get("engine")
 	if err := s.apps.StartBackup(chi.URLParam(r, "id"), engine, zip); err != nil {
+		// A refusal, not a failure — the app declared it has nothing worth backing up.
+		// Same shape as the ErrProtected mapping on the actions route: the UI withholds
+		// the button, and the API says why for anything that asks anyway.
+		if errors.Is(err, apps.ErrBackupSkipped) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

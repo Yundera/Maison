@@ -1,6 +1,9 @@
 package xcomposeapp
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestWebURL(t *testing.T) {
 	cases := []struct {
@@ -171,5 +174,51 @@ func TestParseWithoutBackupBlock(t *testing.T) {
 	}
 	if a.Backup.Exclude != nil {
 		t.Fatalf("exclude = %v, want nil", a.Backup.Exclude)
+	}
+	if a.Backup.Skip {
+		t.Fatal("skip is set on an app that declared no backup block")
+	}
+}
+
+// `skip` has to survive the same map[string]any round trip `exclude` does, and the
+// two have to coexist: an app that is skipped entirely still declares what it would
+// have left out, because the declaration is also documentation and because a skip can
+// be lifted without the exclusions having to be rediscovered.
+//
+// The false case is asserted from an app that declares `skip: false` explicitly, not
+// only from the absent one. The polarity is what makes the field safe on a build that
+// predates it (see the Backup field comment), so there must be no path on which an
+// unset or ignored `skip` reads as true.
+func TestParseBackupSkip(t *testing.T) {
+	a, err := Parse(map[string]any{
+		"schema_version": 2,
+		"title":          "Kopia",
+		"backup": map[string]any{
+			"skip":    true,
+			"exclude": []any{"**/cache/", "**/logs/"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !a.Backup.Skip {
+		t.Fatal("skip = false, want true")
+	}
+	if want := "**/cache/ **/logs/"; strings.Join(a.Backup.Exclude, " ") != want {
+		t.Fatalf("exclude = %v, want %q", a.Backup.Exclude, want)
+	}
+	if a.Title.Value() != "Kopia" {
+		t.Fatalf("the rest of the block was lost: title = %q", a.Title.Value())
+	}
+
+	off, err := Parse(map[string]any{
+		"schema_version": 2,
+		"backup":         map[string]any{"skip": false, "exclude": []any{"cache/"}},
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if off.Backup.Skip {
+		t.Fatal("skip = true on an app that declared skip: false")
 	}
 }

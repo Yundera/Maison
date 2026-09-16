@@ -183,6 +183,7 @@
   "backup_size": "About {size} to copy.",
   "backup_space": "About {size} to copy, {needed} needed · {free} free",
   "backup_space_short": "Not enough space: {needed} needed, {free} free.",
+  "backup_skipped": "This app is not backed up: it declares it has nothing worth keeping.",
   "backup_excluded": "Excluded from backups by the app: {list} ({size}).",
   "backup_excluded_bad": "Maison could not use some of this app’s backup exclusions, so those paths are backed up: {list}",
   "backup_restore_excluded": "Not in this backup, and so not restored — the app rebuilds them: {list}",

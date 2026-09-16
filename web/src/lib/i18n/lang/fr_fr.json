@@ -183,6 +183,7 @@
   "backup_size": "Environ {size} à copier.",
   "backup_space": "Environ {size} à copier, {needed} nécessaires · {free} libres",
   "backup_space_short": "Espace insuffisant : {needed} nécessaires, {free} libres.",
+  "backup_skipped": "Cette application n’est pas sauvegardée : elle déclare n’avoir rien à conserver.",
   "backup_excluded": "Exclu des sauvegardes par l’application : {list} ({size}).",
   "backup_excluded_bad": "Maison n’a pas pu appliquer certaines exclusions de cette application ; ces chemins sont donc sauvegardés : {list}",
   "backup_restore_excluded": "Absent de cette sauvegarde, donc non restauré — l’application le reconstruit : {list}",

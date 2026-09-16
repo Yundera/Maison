@@ -9,15 +9,21 @@
 > The user-data set is listable and restorable from the Backups page — both modes, with
 > the guards described in [Restore](#the-user-data-set).
 >
-> **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)), and
-> the adapter boundary ([The engine adapter](#the-engine-adapter)) — kopia is still compiled
-> into Maison as `internal/backup/kopia`, and Maison still falls back to a one-shot
-> container when the resident engine is unreachable instead of reporting it.
+> The adapter boundary ([The engine adapter](#the-engine-adapter)) is built and is how
+> every engine but the local one now arrives. **Maison no longer contains an engine.**
+> `internal/backup/kopia` is gone, and with it the last line of this binary that knew what
+> kopia is: a box's engines are exactly the adapter descriptors the host side wrote, and an
+> engine the configuration names and the box does not have is reported as
+> `backup.missing:<id>` rather than quietly demoted (`server.checkBackupDestinations`).
 > The host-side pair that provisions a repository — `ensure-backup-credentials.sh` and
-> `ensure-backup-config.sh` in `template-root` — now exists and is described under
+> `ensure-backup-config.sh` in `template-root` — is described under
 > [What Maison consumes from the PCS](#what-maison-consumes-from-the-pcs); a
 > hand-connected repository against MinIO or a filesystem path remains how this is
 > developed and tested.
+>
+> **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)). Maison
+> also still falls back to a one-shot container when the resident engine is unreachable,
+> instead of reporting it.
 >
 > Two things changed during implementation and are corrected in place below: there is
 > **no local staging copy** on the remote path (§[Why there is no local staging
@@ -223,8 +229,9 @@ engine-specific (the next engine's would have different semantics and different
 smoothing, so the number under the bar would mean something different depending on
 where the backup was going) and it is not available uniformly (kopia reports none
 while estimating; the local engine reports none ever), so the fallback has to exist
-regardless. Parsing one engine's output stops at `internal/backup/kopia/progress.go`;
-nothing downstream of `apps.Event` knows which engine it is talking to.
+regardless. Parsing an engine's output stops at the adapter that ships with it — nothing
+downstream of `apps.Event`, and nothing in Maison at all, knows which engine it is talking
+to.
 
 Three rules the tracker exists to enforce, all of them about not lying:
 
@@ -322,15 +329,24 @@ exactly the user who then deletes it. See [Uninstalling an app](#uninstalling-an
 
 ## The engine adapter
 
-The seam above is a Go interface, and for the first engine that was enough: `kopia.Provider`
-translates `Provider` calls into kopia's argv and parses its JSON back. It works, and it is
-also the reason adding restic means editing Maison, releasing Maison, and shipping a new
-Maison image to every box — for a change that touches no Maison behaviour at all.
+The seam above is a Go interface, and for the first engine that was enough: a
+`kopia.Provider` inside Maison translated `Provider` calls into kopia's argv and parsed its
+JSON back. It worked, and it was also the reason adding restic meant editing Maison,
+releasing Maison, and shipping a new Maison image to every box — for a change that touched
+no Maison behaviour at all.
 
-So the *interface* stays where it is and the *implementation* moves out of the binary. An
+So the *interface* stayed where it is and the *implementation* moved out of the binary. An
 engine is delivered as an **adapter image**: the engine's own binary plus a small
 `maison-engine` CLI that speaks a fixed protocol. Maison ships one generic provider that
 speaks that protocol and knows nothing about any engine.
+
+The compiled kopia provider survived one release beyond that as a fallback, registered
+whenever no descriptor had claimed the name, so that a box whose host side had not caught
+up kept backing up. It has been removed. What replaced it is not another fallback but an
+alarm: Maison cannot invent an engine — naming the image to run is the deployment's
+decision, which is the whole reason an adapter is not a remote-execution surface — so a box
+configured for an engine it does not have raises `backup.missing:<id>` and says what is
+wrong, while the nightly run lands on the local disk or fails outright.
 
 The protocol is specified in its own repository, alongside the first adapter —
 `maison-kopia-engine`, `docs/protocol.md`. This section is the part that belongs here: why

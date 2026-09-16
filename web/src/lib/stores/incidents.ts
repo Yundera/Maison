@@ -108,6 +108,7 @@ export const KNOWN_KINDS = [
   'backup.failed',
   'backup.stale',
   'backup.engine',
+  'backup.missing',
   'disk.full',
   'app.unhealthy',
   'app.partial',

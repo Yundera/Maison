@@ -67,6 +67,11 @@ const (
 	KindBackupFailed = "backup.failed"
 	KindBackupStale  = "backup.stale"
 	KindBackupEngine = "backup.engine"
+	// KindBackupMissing is a destination the configuration names and the box does not
+	// have — distinct from KindBackupEngine, which is a destination that IS declared
+	// and cannot be reached today. Two different repairs: this one is fixed by the
+	// deployment declaring the engine again, that one by the storage coming back.
+	KindBackupMissing = "backup.missing"
 	KindDiskFull     = "disk.full"
 	KindDiskUnseen   = "disk.unseen"
 	KindAppUnhealthy = "app.unhealthy"

@@ -35,13 +35,14 @@ import (
 //
 // It has no compose project, no containers, no tile, and its name (`_userdata`) is
 // deliberately not a valid project name, so it cannot be pushed through the guards
-// written for app paths. See kopia.Source.
+// written for app paths. See apps.UserDataApp, and the engine-side source id the
+// adapter derives from it.
 //
 // ## What a restore does and does not touch
 //
 // AppData/ is excluded from the snapshot, and the engine restores the set entry by
 // entry rather than aiming at the data root, so an in-place restore cannot reach an
-// app's data — see kopia.Provider.RestoreUserData for why that is load-bearing rather
+// app's data — see adapter.Provider.RestoreUserData for why that is load-bearing rather
 // than incidental. That is also why this does **not** stop every app first: a restore
 // replaces Documents, Downloads, Media and whatever else sits at the data root, none
 // of which holds app state. An app with an open handle on a media file being replaced

@@ -8,26 +8,45 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backup/backuptest"
-	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
 )
 
+// escrowEngine is the engine these fixtures provision. Any name will do, and that is
+// the point: Maison no longer ships an engine, so there is no longer a real one to
+// reach for here. A box's engines come from the adapter descriptors the host side
+// wrote, none of which exists under t.TempDir(), so the set a real Server builds in a
+// test holds the local engine alone — and the local engine escrows nothing.
+const escrowEngine = "sealed"
+
+// sealedServer is a box provisioned with one encrypting engine.
+//
+// It builds the Server directly rather than through New() because what these tests are
+// about is what escrowKey finds in the SET, and a Server built by New() under a temp
+// root discovers no engines at all. The fake stands in for the adapter a provisioned
+// box would have registered; what it has to get right is the one thing escrowKey asks
+// of an engine, which is Caps.KeyEscrow.
+func sealedServer(t *testing.T, cfg config.Config) *Server {
+	t.Helper()
+	return &Server{
+		cfg:        cfg,
+		engines:    backup.New(apps.NewLocalProvider(cfg), backuptest.NewFake(escrowEngine, apps.Caps{Encrypted: true, KeyEscrow: true, Offsite: true})),
+		backupConf: backupconfig.New(filepath.Join(cfg.StateDir(), "backup.json")),
+	}
+}
+
 // writePassword renders the repository password the host-side script would have put
 // there — the only thing that makes a box "provisioned" as far as this code is
-// concerned.
+// concerned. Which engine the escrow *chooses* is a capability question, asserted
+// separately in TestEscrowKeyPicksTheEngineByCapability.
 func writePassword(t *testing.T, cfg config.Config, pw string) {
 	t.Helper()
-	// kopia by name, because these tests drive a whole Server and kopia is the engine
-	// its set actually registers. Which engine the escrow *chooses* is a capability
-	// question, asserted separately in TestEscrowKeyPicksTheEngineByCapability.
-	writeEnginePassword(t, cfg, kopia.ID, pw)
+	writeEnginePassword(t, cfg, escrowEngine, pw)
 }
 
 // The key has to be reachable from the dashboard, because showing it there is the copy
@@ -37,9 +56,9 @@ func TestShowKeyReturnsTheRepositoryPassword(t *testing.T) {
 	cfg := config.Config{DataRoot: root}
 	writePassword(t, cfg, "correct horse battery staple")
 
-	h := New(cfg, fstest.MapFS{})
+	srv := sealedServer(t, cfg)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/backup/key", nil))
+	srv.handleShowKey(rec, httptest.NewRequest("POST", "/api/backup/key", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
@@ -67,9 +86,8 @@ func TestStatusReportsWhetherAKeyExistsAndHasBeenMailed(t *testing.T) {
 	cfg := config.Config{DataRoot: root}
 
 	get := func() string {
-		h := New(cfg, fstest.MapFS{})
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/backup/status", nil))
+		sealedServer(t, cfg).handleBackupStatus(rec, httptest.NewRequest("GET", "/api/backup/status", nil))
 		return rec.Body.String()
 	}
 

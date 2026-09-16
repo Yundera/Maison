@@ -10,7 +10,6 @@ import (
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backup/adapter"
-	"github.com/yundera/maison/internal/backup/kopia"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/notify"
@@ -44,18 +43,22 @@ func buildEngines(cfg config.Config, store *backupconfig.Store) *backup.Set {
 	// Then every engine the host side declared an adapter for. This is the whole of
 	// "which engines does this box have": an engine with no descriptor does not exist
 	// as far as Maison is concerned, which is what keeps the answer out of this build.
-	adapted := map[string]bool{}
+	//
+	// THERE IS NO COMPILED ENGINE ANY MORE. A kopia provider used to be registered here
+	// whenever no descriptor had claimed the name, so that a box whose host side had not
+	// caught up kept backing up through the engine baked into this binary. That crutch is
+	// gone, and with it the last line of Maison that knew what kopia is: every engine
+	// now arrives as an adapter image the deployment names in adapter.json.
+	//
+	// What made the removal safe is an ordering the host already guarantees —
+	// ensure-backup-config.sh writes the descriptor, and ensure-maison-stack.sh deploys
+	// this binary, in that order in scripts-config.txt, with the Maison pin living inside
+	// the same template — so a box cannot reach this code without having been handed a
+	// descriptor first. What makes it honest when that ordering is nonetheless broken is
+	// checkBackup: an engine the configuration names and this set does not have is
+	// reported, not quietly dropped. See detect.go.
 	for _, d := range adapter.Discover(cfg) {
 		providers = append(providers, adapter.New(cfg, d))
-		adapted[d.EngineID] = true
-	}
-
-	// The compiled kopia engine, unless an adapter has taken its place. This is the
-	// swap: a box with no descriptor behaves exactly as it always has, and writing the
-	// descriptor moves it onto the adapter without a Maison release. It goes away once
-	// every box carries one.
-	if !adapted[kopia.ID] {
-		providers = append(providers, kopia.New(cfg))
 	}
 
 	set := backup.New(providers...)
@@ -133,7 +136,14 @@ func legacyWriter(set *backup.Set, conf backupconfig.Config) string {
 		if _, ok := set.Get(chosen); ok {
 			return chosen
 		}
-		log.Printf("backup: unknown backup engine %q (falling back to the local engine)", chosen)
+		// Not a typo — PUT /api/backup/config refuses an engine the box does not have,
+		// so the only way to get here is an engine that has DISAPPEARED: a descriptor
+		// the host side stopped writing, or an engine app that was uninstalled. Backups
+		// keep being taken, locally, because a copy on the wrong disk still beats no
+		// copy — but the box must not be left believing they are going offsite, so
+		// checkBackup raises backup.missing for exactly this. The log line is the
+		// operator's copy of it.
+		log.Printf("backup: %q is not declared on this box any more — backups are landing on the local disk instead", chosen)
 		return apps.EngineLocal
 	}
 	// No override: prefer an offsite engine that is actually connected. That inference

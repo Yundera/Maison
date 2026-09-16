@@ -75,7 +75,8 @@ func (m Mode) set() bool { return m.Valid() && m != ModeInherit }
 // Latest is 2 rather than 1 because a backup writes two snapshots against one source
 // and deletes the first only once the second succeeds; keeping fewer than two would
 // let retention evict the consistent snapshot in favour of the torn one it was about
-// to replace. See kopia.EnsureRetention, which enforces the same floor independently.
+// to replace. See adapter.Provider.EnsureRetention, which enforces the same floor
+// independently, inside the engine.
 func SmartKeep() Keep { return Keep{Latest: 2, Daily: 7, Weekly: 4, Monthly: 12} }
 
 // KeepAll is the tier value that means "do not expire". No engine has an unlimited

@@ -1,11 +1,17 @@
 package server
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/backup"
+	"github.com/yundera/maison/internal/backup/backuptest"
+	"github.com/yundera/maison/internal/backupconfig"
+	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/system"
 )
@@ -194,6 +200,7 @@ func TestHumanBytesReadsLikeSomethingAPersonWouldSay(t *testing.T) {
 func TestEveryKindTheServerRaisesIsKnown(t *testing.T) {
 	known := []string{
 		incident.KindBackupFailed, incident.KindBackupStale, incident.KindBackupEngine,
+		incident.KindBackupMissing,
 		incident.KindDiskFull, incident.KindAppUnhealthy, incident.KindAppPartial,
 		incident.KindAppCrashLoop, incident.KindAppInstall, incident.KindAppUpdate,
 		incident.KindAppStackup, incident.KindStoreSource, incident.KindTest,
@@ -203,5 +210,116 @@ func TestEveryKindTheServerRaisesIsKnown(t *testing.T) {
 		if !slices.Contains(known, r.Kind) {
 			t.Errorf("diskReports raised an unknown kind %q", r.Kind)
 		}
+	}
+}
+
+// Which engines the box is ASKING to back up to, which is not the same question as
+// which ones it has settings for.
+//
+// The distinction is what keeps the missing-destination alert quiet on a box that
+// switched engines: the old engine's settings stay behind on purpose, so that switching
+// back restores them, and an alert that read those as a live destination would mail
+// somebody about a repository they retired themselves.
+func TestConfiguredEnginesNamesOnlyWhatSomethingIsActuallyWrittenTo(t *testing.T) {
+	on, off := true, false
+	for _, c := range []struct {
+		name string
+		conf backupconfig.Config
+		want []string
+	}{
+		{name: "a box nobody has configured", conf: backupconfig.Config{}},
+		{name: "the legacy single override",
+			conf: backupconfig.Config{Engine: "kopia"},
+			want: []string{"kopia"}},
+		{name: "a ticked trigger is a destination",
+			conf: backupconfig.Config{Engines: map[string]backupconfig.EngineSettings{
+				"kopia": {Schedule: &on},
+			}},
+			want: []string{"kopia"}},
+		{name: "an uninstall archive alone is still a destination",
+			conf: backupconfig.Config{Engines: map[string]backupconfig.EngineSettings{
+				"kopia": {Uninstall: &on},
+			}},
+			want: []string{"kopia"}},
+		{name: "an engine switched away from is not",
+			conf: backupconfig.Config{Engines: map[string]backupconfig.EngineSettings{
+				"restic": {Schedule: &off, Uninstall: &off},
+			}}},
+		{name: "retention settings alone are not a destination",
+			conf: backupconfig.Config{Engines: map[string]backupconfig.EngineSettings{
+				"restic": {Mode: backupconfig.ModeCount, Count: 3},
+			}}},
+		{name: "the override and the ticks are one set, sorted",
+			conf: backupconfig.Config{Engine: "kopia", Engines: map[string]backupconfig.EngineSettings{
+				"kopia":  {Schedule: &on},
+				"borg":   {Uninstall: &on},
+				"restic": {Schedule: &off},
+			}},
+			want: []string{"borg", "kopia"}},
+	} {
+		if got := configuredEngines(c.conf); !slices.Equal(got, c.want) {
+			t.Errorf("%s: configuredEngines = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A destination the configuration names and the box does not have.
+//
+// This is the state the compiled-in kopia engine used to make unreachable, and the
+// reason it needed an alert of its own when that engine was removed: nothing else on
+// the box notices. The nightly run either succeeds against the local disk (legacyWriter)
+// or finds no writer at all, and neither says the thing that is actually wrong, which is
+// that the destination the owner chose is not installed.
+func TestAMissingBackupDestinationIsReportedUntilItComesBack(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	s := &Server{
+		cfg:       cfg,
+		incidents: incident.New(filepath.Join(cfg.StateDir(), "incidents.json")),
+		engines:   backup.New(backuptest.NewLocalLike(apps.EngineLocal)),
+	}
+	conf := backupconfig.Config{Engine: "kopia"}
+
+	s.checkBackupDestinations(conf)
+	if !s.incidents.IsOpen("backup.missing:kopia") {
+		t.Fatal("a box set to back up to an engine it does not have raised nothing")
+	}
+
+	// Reported even though backups are switched off: uninstall archives are not
+	// scheduled and still route to it, and an engine that is absent cannot list or
+	// restore what it already holds either.
+	if conf.Enabled {
+		t.Fatal("fixture drifted: this case is meant to be a box with the schedule off")
+	}
+
+	// The engine arrives — the host side caught up and wrote its descriptor.
+	s.engines = backup.New(backuptest.NewLocalLike(apps.EngineLocal), backuptest.NewRemote("kopia"))
+	s.checkBackupDestinations(conf)
+	if s.incidents.IsOpen("backup.missing:kopia") {
+		t.Error("the incident survived the engine coming back")
+	}
+}
+
+// The other way it ends: the engine never comes back and the owner stops asking for it.
+//
+// Resolving from the OPEN set rather than from the configuration is what makes this
+// work — by the time the settings are gone there is nothing left to iterate that would
+// name the engine, so a loop over the current configuration would leave the incident
+// open forever.
+func TestAMissingDestinationClearsWhenNobodyAsksForItAnyMore(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	s := &Server{
+		cfg:       cfg,
+		incidents: incident.New(filepath.Join(cfg.StateDir(), "incidents.json")),
+		engines:   backup.New(backuptest.NewLocalLike(apps.EngineLocal)),
+	}
+
+	s.checkBackupDestinations(backupconfig.Config{Engine: "kopia"})
+	if !s.incidents.IsOpen("backup.missing:kopia") {
+		t.Fatal("setup: the incident was never raised")
+	}
+
+	s.checkBackupDestinations(backupconfig.Config{})
+	if s.incidents.IsOpen("backup.missing:kopia") {
+		t.Error("the incident outlived the setting that caused it")
 	}
 }

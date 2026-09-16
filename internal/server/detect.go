@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
+	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/system"
@@ -188,14 +190,15 @@ func humanBytes(b uint64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-// checkBackup watches the two things a per-run alert structurally cannot see: a
-// schedule that has stopped firing at all, and a repository that has become
-// unreachable between runs.
+// checkBackup watches the three things a per-run alert structurally cannot see: a
+// schedule that has stopped firing at all, a repository that has become unreachable
+// between runs, and a destination that is no longer installed on the box.
 func (s *Server) checkBackup(ctx context.Context) {
 	if s.backupSched == nil || s.backupConf == nil {
 		return
 	}
-	enabled := s.backupConf.Get().Enabled
+	conf := s.backupConf.Get()
+	enabled := conf.Enabled
 	at, _, ok := s.backupSched.LastRun()
 
 	if backupIsStale(at, ok, enabled, time.Now()) {
@@ -266,9 +269,92 @@ func (s *Server) checkBackup(ctx context.Context) {
 			s.incidents.Resolve(incidentID)
 		}
 	}
+
+	s.checkBackupDestinations(conf)
+
 	// The bare ID one boxes carried before this became per-engine. Resolved once so an
 	// upgrade does not leave an incident nothing will ever clear.
 	s.incidents.Resolve("backup.engine")
+}
+
+// checkBackupDestinations reports a destination the configuration names and this box
+// does not have.
+//
+// It is the state the compiled-in kopia engine used to make unreachable. Maison shipped
+// one engine inside the binary, so an engine named in the configuration was always
+// registered and this could not happen; engines arrive as adapter images now
+// (buildEngines), so a descriptor the host side never wrote — an old template, a failed
+// sync, an engine app someone uninstalled — leaves a box configured to back up somewhere
+// that does not exist.
+//
+// REPORTED, NEVER REPAIRED. Maison cannot repair it: naming the image to run is the
+// deployment's decision and nothing else's, which is the line that keeps an adapter from
+// being a remote-execution surface, so inferring an engine here would put back the
+// coupling this removal took out. What Maison can do is refuse to let the box look
+// healthy while the backups it believes are going offsite land on the local disk
+// (legacyWriter) or nowhere at all (applyEngineSettings can only name engines the set
+// has, so a trigger whose only destination is missing ends up with no writer).
+//
+// NOT GATED ON conf.Enabled, unlike everything above it. The schedule being off does not
+// make this harmless: uninstall archives are not scheduled and still route here, and an
+// engine that is absent cannot list or restore what it already holds either. A box with
+// backups switched off and no engine named raises nothing, because nothing names one.
+func (s *Server) checkBackupDestinations(conf backupconfig.Config) {
+	missing := map[string]bool{}
+	for _, id := range configuredEngines(conf) {
+		if _, ok := engineByID(s.engines, id); ok {
+			continue
+		}
+		missing[id] = true
+		s.incidents.Report(incident.Report{
+			ID: "backup.missing:" + id, Kind: incident.KindBackupMissing, Severity: incident.Critical,
+			Title: "A backup destination is missing",
+			Detail: fmt.Sprintf("This box is set to back up to %q, but no backup engine by that name is installed on it.\n\n"+
+				"Nothing is reaching that destination, and whatever is already stored there cannot be listed or restored "+
+				"until it is back. This usually means a system update has not finished — leave it a day, and if it is "+
+				"still here open Settings → Backups.", id),
+			Args: map[string]string{"engine": id},
+		})
+	}
+
+	// Resolve from what is OPEN rather than from what is configured, because the two
+	// ways this ends are different and only one of them is still in the configuration:
+	// the engine comes back, or the user stops asking for it. Reading the open set
+	// closes both, and closes an incident for an engine whose settings were deleted
+	// outright — which no loop over the current configuration can reach.
+	for _, inc := range s.incidents.Snapshot().Open {
+		if inc.Kind != incident.KindBackupMissing {
+			continue
+		}
+		if !missing[strings.TrimPrefix(inc.ID, "backup.missing:")] {
+			s.incidents.Resolve(inc.ID)
+		}
+	}
+}
+
+// configuredEngines is every engine this box is asking to back up to, by name.
+//
+// Both places the configuration can name one: the legacy single override, and a
+// per-engine entry with a trigger switched on. An entry with both triggers off is
+// deliberately NOT here — that is an engine the user switched away from, whose settings
+// are kept only so switching back restores them (see backupconfig.Config.Engines), and
+// alerting on those would mail somebody about a destination they retired on purpose.
+func configuredEngines(conf backupconfig.Config) []string {
+	want := map[string]bool{}
+	if conf.Engine != "" {
+		want[conf.Engine] = true
+	}
+	for id, es := range conf.Engines {
+		if (es.Schedule != nil && *es.Schedule) || (es.Uninstall != nil && *es.Uninstall) {
+			want[id] = true
+		}
+	}
+	out := make([]string, 0, len(want))
+	for id := range want {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func engineIDs(set *backup.Set) []string {

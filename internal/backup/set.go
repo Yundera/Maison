@@ -48,7 +48,7 @@ type Set struct {
 
 // listingTTL is how long the install picker reuses an engine's listing.
 //
-// It matches the TTL kopia's Provider.Status already keeps for the same reason and
+// It matches the TTL adapter.Provider.Status already keeps for the same reason and
 // on the same click path, so the two reads the picker makes — what an engine holds,
 // and what to call it on screen — go stale together rather than one of them
 // re-entering the repository on its own.

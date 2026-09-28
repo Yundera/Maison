@@ -40,8 +40,9 @@
   import { t } from '../../i18n'
   import Sparkline from '../Sparkline.svelte'
   import AppUsageRows from '../AppUsageRows.svelte'
+  import StorageTab from './StorageTab.svelte'
 
-  type Tab = 'cpu' | 'network' | 'disk' | 'apps'
+  type Tab = 'cpu' | 'network' | 'disk' | 'storage' | 'apps'
   type Range = 'live' | '1h' | '24h' | '7d' | '30d'
 
   const RANGES: { key: Range; ms: number }[] = [
@@ -268,17 +269,19 @@
       <h3>{$t('resources')}</h3>
       <p class="hint">{$t('resources_hint')}</p>
     </div>
-    <div class="ranges">
-      {#each RANGES as r (r.key)}
-        <button class="range" class:active={range === r.key} onclick={() => (range = r.key)}>
-          {$t(`resources_range_${r.key}`)}
-        </button>
-      {/each}
-    </div>
+    {#if tab !== 'storage'}
+      <div class="ranges">
+        {#each RANGES as r (r.key)}
+          <button class="range" class:active={range === r.key} onclick={() => (range = r.key)}>
+            {$t(`resources_range_${r.key}`)}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </header>
 
   <nav class="tabs">
-    {#each ['cpu', 'network', 'disk', 'apps'] as const as key (key)}
+    {#each ['cpu', 'network', 'disk', 'storage', 'apps'] as const as key (key)}
       <button class="tab" class:active={tab === key} onclick={() => (tab = key)}>
         {$t(`resources_tab_${key}`)}
       </button>
@@ -289,7 +292,10 @@
     <p class="error">{histError}</p>
   {/if}
 
-  {#if !d}
+  {#if tab === 'storage'}
+    <!-- Not the live channel's: its own endpoints, its own polling. -->
+    <StorageTab />
+  {:else if !d}
     <p class="hint pad">{$t('loading')}</p>
   {:else if tab === 'cpu'}
     <div class="cards">

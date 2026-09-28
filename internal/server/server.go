@@ -68,6 +68,10 @@ type Server struct {
 
 	// updates is the Settings → Updates report and its "update all" run (updates.go).
 	updates updatesState
+
+	// storage is Settings › Resources › Storage: the data-root scan and the Docker
+	// cleanup (storage.go).
+	storage *storageState
 }
 
 // New builds the root HTTP handler. A nil-Docker environment still serves the
@@ -95,6 +99,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		collector: collector,
 		detailer:  system.NewDetailer(cfg.DataRoot),
 		bench:     bench.New(cfg.StateDir()),
+		storage:   newStorageState(cfg.DataRoot, cfg.StateDir()),
 		hub:       live.NewHub(collector),
 		settings:  settings,
 		incidents: incidents,
@@ -352,6 +357,11 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/system/bench", s.handleBenchState)
 		r.Post("/system/bench/disk", s.handleDiskBench)
 		r.Post("/system/bench/network", s.handleNetworkBench)
+		r.Get("/system/storage", s.handleStorage)
+		r.Post("/system/storage/scan", s.handleStorageScan)
+		r.Get("/system/cleanup", s.handleGetCleanup)
+		r.Post("/system/cleanup", s.handleRunCleanup)
+		r.Post("/system/cleanup/orphans", s.handleRemoveOrphans)
 		r.Get("/apps", s.handleListApps)
 		r.Get("/apps/{id}/config", s.handleGetConfig)
 		r.Put("/apps/{id}/config", s.handlePutConfig)

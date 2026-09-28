@@ -191,6 +191,7 @@
   "backup_restore_excluded": "Not in this backup, and so not restored — the app rebuilds them: {list}",
   "backup_restore_confirm": "Replace this app with the backup? The current state is archived first.",
   "backup_delete_confirm": "Delete this backup? It cannot be undone.",
+  "backup_deleting": "Deleting",
   "restore": "Restore",
   "restoring": "Restoring",
   "copying": "Copying",

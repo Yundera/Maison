@@ -260,6 +260,9 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// own retention like any other — and retention.Plan never drops the newest, so a
 		// rollback point cannot be expired out from under the update that took it.
 		local := apps.NewLocalProvider(cfg)
+		// A delete renames the archive into the trash and removes it in the background;
+		// a restart mid-removal leaves the rest behind, invisible but holding disk.
+		apps.SweepBackupTrash(cfg.BackupsDir())
 		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string) (string, error) {
 			name, err := s.apps.BackupWith(ctx, local, project, false, nil)
 			// An app that declares backup.skip has no rollback point by design rather

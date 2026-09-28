@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yundera/maison/internal/config"
@@ -236,6 +237,46 @@ func TestDeleteBackupOnlyReachesArchives(t *testing.T) {
 	}
 	if len(ListBackups(backupsDir, "jellyfin")) != 0 {
 		t.Error("archive still listed after delete")
+	}
+}
+
+// The delete is a rename into the trash; the bytes go afterwards. The archive must be
+// unlisted the moment the call returns, even while its removal has not run.
+func TestDeleteBackupUnlistsAtOnceAndRemovesLater(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	backupsDir := cfg.BackupsDir()
+	seedBackupDirs(t, backupsDir, "jellyfin", "2026-07-10_153045")
+
+	var pending []string
+	orig := removeTrash
+	removeTrash = func(p string) { pending = append(pending, p) }
+	t.Cleanup(func() { removeTrash = orig })
+
+	if err := DeleteBackup(backupsDir, "jellyfin", "2026-07-10_153045"); err != nil {
+		t.Fatalf("DeleteBackup: %v", err)
+	}
+	if len(ListBackups(backupsDir, "jellyfin")) != 0 {
+		t.Error("archive still listed while its removal is pending")
+	}
+	if err := DeleteBackup(backupsDir, "jellyfin", "2026-07-10_153045"); err == nil {
+		t.Error("a second delete of the same archive should fail: it is already gone")
+	}
+	if len(pending) != 1 || !strings.HasPrefix(filepath.Base(pending[0]), trashPrefix) {
+		t.Fatalf("expected one trashed path, got %v", pending)
+	}
+
+	// A restart before the removal ran: the boot sweep finds the leftover.
+	pending = nil
+	SweepBackupTrash(backupsDir)
+	if len(pending) != 1 {
+		t.Fatalf("sweep should find the leftover trash, got %v", pending)
+	}
+	if err := os.RemoveAll(pending[0]); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(AppBackupDir(backupsDir, "jellyfin"))
+	if len(entries) != 0 {
+		t.Errorf("backup dir not empty after removal: %v", entries)
 	}
 }
 

@@ -191,6 +191,7 @@
   "backup_restore_excluded": "Absent de cette sauvegarde, donc non restauré — l’application le reconstruit : {list}",
   "backup_restore_confirm": "Remplacer cette app par la sauvegarde ? L'état actuel est archivé d'abord.",
   "backup_delete_confirm": "Supprimer cette sauvegarde ? C'est irréversible.",
+  "backup_deleting": "Suppression",
   "restore": "Restaurer",
   "restoring": "Restauration",
   "copying": "Copie",

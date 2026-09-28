@@ -38,8 +38,12 @@
      *  these paths do not come back, and the app rebuilds them. Empty where the caller
      *  has no app in hand — the global page lists many apps at once. */
     excluded?: string[]
-    onrestore: (b: Backup) => void
-    ondelete: (b: Backup) => void
+    /** Both may return a promise, and the row shows the action as in flight until it
+     *  settles. A rejection is shown on the row it came from, beside the button that
+     *  caused it: an error printed elsewhere on the page, or cleared by the list reload
+     *  that follows every action, reads as a click that did nothing. */
+    onrestore: (b: Backup) => void | Promise<unknown>
+    ondelete: (b: Backup) => void | Promise<unknown>
   } = $props()
 
   /** Which row is asking for confirmation, and for what. Keyed by engine AND name,
@@ -51,15 +55,30 @@
    *  a duplicate key is both a Svelte error and the wrong backup being acted on. */
   const rowKey = (b: Backup) => `${b.engine ?? ''}:${b.name}`
 
+  /** The confirmed action still running, and the last one that failed — each on one
+   *  row, keyed like `pending`. */
+  let acting = $state<{ key: string; action: 'restore' | 'delete' } | null>(null)
+  let failed = $state<{ key: string; message: string } | null>(null)
+
   function ask(b: Backup, action: 'restore' | 'delete') {
     pending = { key: rowKey(b), action }
+    failed = null
   }
 
-  function confirm(b: Backup) {
+  async function confirm(b: Backup) {
     const action = pending?.action
     pending = null
-    if (action === 'restore') onrestore(b)
-    else if (action === 'delete') ondelete(b)
+    if (!action) return
+    const key = rowKey(b)
+    acting = { key, action }
+    failed = null
+    try {
+      await (action === 'restore' ? onrestore(b) : ondelete(b))
+    } catch (e) {
+      failed = { key, message: e instanceof Error ? e.message : String(e) }
+    } finally {
+      acting = null
+    }
   }
 
   /** Grouped by engine, in the order the server listed them — registration order,
@@ -101,7 +120,11 @@
     {/if}
     <ul class="rows">
       {#each g.rows as b (b.engine + ':' + b.name)}
-        <li class="row" class:asking={pending?.key === b.engine + ':' + b.name}>
+        <li
+          class="row"
+          class:asking={pending?.key === rowKey(b)}
+          class:working={acting?.key === rowKey(b)}
+        >
           <span class="when">{renderStamp(b.stamp)}</span>
           <!-- Both surfaces that use this component fetch measured lists, so the size
                is always real — including 0 B, which is itself worth showing. -->
@@ -109,7 +132,12 @@
             {b.zip ? $t('backup_zip') : $t('backup_folder')} · {renderSize(b.size)}
           </span>
 
-          {#if pending?.key === b.engine + ':' + b.name}
+          {#if acting?.key === rowKey(b)}
+            <span class="status" role="status">
+              {acting.action === 'delete' ? $t('backup_deleting') : $t('restoring')}…
+            </span>
+            <span class="bar" aria-hidden="true"><span></span></span>
+          {:else if pending?.key === rowKey(b)}
             <span class="warn">
               {pending.action === 'delete' ? $t('backup_delete_confirm') : $t('backup_restore_confirm')}
               {#if pending.action === 'restore' && excluded.length}
@@ -127,6 +155,9 @@
             <button class="btn danger" disabled={busy} onclick={() => ask(b, 'delete')}>
               {$t('delete')}
             </button>
+          {/if}
+          {#if failed?.key === rowKey(b)}
+            <span class="warn" role="alert">{failed.message}</span>
           {/if}
         </li>
       {/each}
@@ -173,6 +204,34 @@
   .row.asking {
     border-color: var(--red);
     background: hsla(0, 80%, 97%, 1);
+  }
+  .status {
+    color: var(--text-muted);
+  }
+  /* Indeterminate: the server does not report how far a delete or the reload after it
+     has got, so the bar says "working" rather than inventing a percentage. */
+  .bar {
+    flex-basis: 100%;
+    order: 10;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  .bar span {
+    display: block;
+    width: 30%;
+    height: 100%;
+    background: var(--primary);
+    animation: slide 1.1s ease-in-out infinite;
+  }
+  @keyframes slide {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
   }
   .when {
     font-variant-numeric: tabular-nums;

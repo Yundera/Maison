@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -224,12 +225,64 @@ func resolveBackup(backupsDir, project, name string) (Backup, string, error) {
 // Maison, and it is deliberately narrow: the name must parse as an archive stamp,
 // so nothing else under the backups directory — least of all a live app folder,
 // which is not even in this tree — can be reached through it.
+//
+// The archive is renamed into the trash and the bytes are removed in the background.
+// A folder archive is a whole app's data tree, and unlinking it file by file can run
+// for minutes — long enough for the proxy in front of Maison to cut the request while
+// the removal carries on unseen. The rename is instant and is the commit point: once it
+// returns, the archive is gone from every listing and cannot be restored, which is
+// what the user asked for. Only the disk space comes back later.
 func DeleteBackup(backupsDir, project, name string) error {
 	_, path, err := resolveBackup(backupsDir, project, name)
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(path)
+	trash := filepath.Join(filepath.Dir(path), fmt.Sprintf("%s%s-%d", trashPrefix, name, time.Now().UnixNano()))
+	if err := os.Rename(path, trash); err != nil {
+		return fmt.Errorf("delete backup: %w", err)
+	}
+	removeTrash(trash)
+	return nil
+}
+
+// trashPrefix marks an archive that has been deleted but whose bytes are still being
+// removed. The leading dot is load-bearing, as for the staging directory: stampRe
+// rejects the name, so a trashed archive is never listed or offered for restore.
+const trashPrefix = ".trash-"
+
+// removeTrash removes a trashed archive. A variable so tests can make it synchronous
+// and assert on the disk afterwards.
+var removeTrash = func(path string) {
+	go func() {
+		if err := os.RemoveAll(path); err != nil {
+			log.Printf("backup: removing deleted archive %s: %v", path, err)
+		}
+	}()
+}
+
+// SweepBackupTrash removes what a previous run trashed but did not finish removing —
+// the process stopped mid-removal. Called once at boot; the entries it finds are
+// already invisible, so this only gives the disk space back.
+func SweepBackupTrash(backupsDir string) {
+	apps, err := os.ReadDir(backupsDir)
+	if err != nil {
+		return
+	}
+	for _, a := range apps {
+		if !a.IsDir() || !ValidProjectName(a.Name()) {
+			continue
+		}
+		dir := AppBackupDir(backupsDir, a.Name())
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), trashPrefix) {
+				removeTrash(filepath.Join(dir, e.Name()))
+			}
+		}
+	}
 }
 
 // RestoreBackup puts an archive back as the app's live folder, so a normal install

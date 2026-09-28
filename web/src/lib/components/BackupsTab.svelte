@@ -128,8 +128,21 @@
   const backup = () => run(() => startBackup(id, zip, target))
   // The engine travels with the row: two engines can hold the same stamp, and each
   // copy is restored and deleted on its own.
-  const restore = (b: Backup) => run(() => restoreBackup(id, b.name, b.engine))
-  const remove = (b: Backup) => run(() => deleteBackup(id, b.name, b.engine ?? ''))
+  //
+  // Unlike `run`, a row action rethrows: BackupRows shows the failure on the row that
+  // was clicked, next to its button, rather than above the list.
+  async function act(fn: () => Promise<void>) {
+    busy = true
+    error = ''
+    try {
+      await fn()
+    } finally {
+      busy = false
+      await load()
+    }
+  }
+  const restore = (b: Backup) => act(() => restoreBackup(id, b.name, b.engine))
+  const remove = (b: Backup) => act(() => deleteBackup(id, b.name, b.engine ?? ''))
 </script>
 
 <p class="hint">{$t('backup_hint')}</p>

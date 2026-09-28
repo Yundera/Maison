@@ -476,17 +476,18 @@
   }
 
   // --- archive actions ----------------------------------------------------------
+  // A failure is rethrown rather than stored here: BackupRows shows it on the row that
+  // was clicked. It used to go into listError, which the reload below clears on
+  // success — so a failed delete flashed nothing and looked like a click that did
+  // nothing — and which sits at the top of the page, far above the button anyway.
   async function run(fn: () => Promise<void>) {
     busy = true
-    listError = ''
     try {
       await fn()
-    } catch (e) {
-      listError = e instanceof Error ? e.message : String(e)
     } finally {
       busy = false
+      await loadArchives()
     }
-    await loadArchives()
   }
 
   // The engine travels with the row: two engines can hold the same stamp, and each

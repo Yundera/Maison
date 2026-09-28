@@ -116,6 +116,8 @@ func (s *Server) handleSetUpdateRef(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// The app moved to another group on the Updates page (untracked → tracked).
+	go s.refreshUpdateRow(context.Background(), chi.URLParam(r, "id"))
 	writeJSON(w, http.StatusOK, st)
 }
 
@@ -141,6 +143,9 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		return e
 	})
 	updated := res.Applied
+	// Either way the Updates page's row is stale: applied, or failed and now carrying
+	// the incident.
+	go s.refreshUpdateRow(context.Background(), id)
 	if err != nil {
 		// A failed update that was rolled back leaves the app exactly as it was, so
 		// the tile has to be rebroadcast either way — the restore changed it back.

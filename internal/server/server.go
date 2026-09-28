@@ -65,6 +65,9 @@ type Server struct {
 	backupConf  *backupconfig.Store
 	backupSched *backup.Scheduler
 	userData    *backup.UserData
+
+	// updates is the Settings → Updates report and its "update all" run (updates.go).
+	updates updatesState
 }
 
 // New builds the root HTTP handler. A nil-Docker environment still serves the
@@ -320,6 +323,12 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// Rebroadcast the app list as install progress advances so the tile's
 	// Download/Start bars move live. Pull events are frequent, so throttle.
 	s.installer.OnUpdate = throttle(300*time.Millisecond, s.broadcastApps)
+	// Checked, never applied: after the store's 03:00 refresh, so it reads a fresh
+	// catalog. See updates.go.
+	s.hub.UpdatesSnapshot = s.updatesSnapshot
+	if s.apps != nil {
+		s.startDailyUpdateCheck(context.Background())
+	}
 
 	// Last, because a pass reads the app registry, the engine set and the schedule.
 	// See detect.go for what it looks at and why the list is as short as it is.
@@ -383,6 +392,12 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// encryption key, and a GET would park it in history and prefetches. See
 		// handleShowKey.
 		r.Post("/backup/key", s.handleShowKey)
+
+		// Settings → Updates. Top-level, clear of the /apps/{id}/{action} catch-all.
+		r.Get("/updates", s.handleGetUpdates)
+		r.Post("/updates/check", s.handleCheckUpdates)
+		r.Get("/updates/preflight", s.handleUpdatesPreflight)
+		r.Post("/updates/run", s.handleRunUpdates)
 
 		r.Get("/backups", s.handleGlobalBackups)
 		// Static beats {app} in chi, which is what keeps this from being read as a

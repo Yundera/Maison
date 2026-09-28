@@ -117,6 +117,12 @@ app's `docker-compose.yml` with whatever the new reference names, so pointing an
 rollback point first (see [`lifecycle.md`](./lifecycle.md)), which bounds the damage but
 does not undo the choice.
 
+Settings → Updates lists the apps with no reference together, and offers each the store
+app it most plausibly came from — by the project name an install of it would have
+created and by its main service's image. It is a suggestion and nothing more: the operator
+confirms it per app, it goes through the same `PUT`, and there is deliberately no way to
+link them all at once. See [`lifecycle.md`](./lifecycle.md) § *Update all*.
+
 ### Editing the override — form and YAML
 
 The settings window splits the two compose files by what you can *do* to them:

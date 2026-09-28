@@ -33,6 +33,7 @@ export const SETTINGS_SECTIONS = [
   'domain',
   'env',
   'store',
+  'updates',
   'backups',
   'resources',
   'notifications',

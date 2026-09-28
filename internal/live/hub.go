@@ -58,6 +58,10 @@ const (
 	// cost more than everything it reports about. The top bar also holds it for the
 	// whole session, which none of the sampled channels could survive.
 	ChannelIncidents = "incidents"
+	// ChannelUpdates carries the Settings → Updates report and its "update all" run.
+	// Event-driven like incidents: it changes when a check or a run step finishes, a
+	// handful of times a day, so the settings rail can hold it for its badge.
+	ChannelUpdates = "updates"
 )
 
 const sampleInterval = 2 * time.Second
@@ -99,6 +103,9 @@ type Hub struct {
 	// IncidentsSnapshot, if set, returns the open incidents for the "incidents"
 	// channel.
 	IncidentsSnapshot func() any
+
+	// UpdatesSnapshot, if set, returns the update report for the "updates" channel.
+	UpdatesSnapshot func() any
 }
 
 // NewHub creates a hub sampling utilization via the given collector.
@@ -317,6 +324,14 @@ func (c *client) snapshot(h *Hub, channel string) {
 		if h.IncidentsSnapshot != nil {
 			if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
 				Data: mustJSON(h.IncidentsSnapshot())}); err == nil {
+				c.trySend(raw)
+			}
+		}
+	case ChannelUpdates:
+		// Inline: a copy of the last report, already in memory.
+		if h.UpdatesSnapshot != nil {
+			if raw, err := json.Marshal(Envelope{Type: channel, Channel: channel,
+				Data: mustJSON(h.UpdatesSnapshot())}); err == nil {
 				c.trySend(raw)
 			}
 		}

@@ -375,6 +375,33 @@ func (m *Manager) AppSyncedFrom(ctx context.Context, ref Ref) (*CatalogApp, []by
 	return m.appIn(root, ref)
 }
 
+// Sync brings one store's extracted copy up to date, so that GetFrom on any ref into
+// it reads what the origin serves now. It is what a caller checking many apps at
+// once uses instead of AppSyncedFrom per app: every app of one store shares one
+// download, and an unchanged store costs one conditional GET.
+//
+// A merged-catalog ref has no store of its own to sync (the daily Refresh keeps
+// it), so it is a no-op. An unreachable origin is an error even when a
+// cached copy exists, for the reason AppComposeFrom gives.
+func (m *Manager) Sync(ctx context.Context, ref Ref) error {
+	if ref.Merged() {
+		return nil
+	}
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+	_, err := m.syncStore(ctx, ref.URL, ref.Apps())
+	return err
+}
+
+// Compose reads a catalog app's docker-compose.yml, under the same lock every other
+// reader of the extracted trees takes. For a caller walking the catalog (CatalogAll)
+// that needs more than the metadata the listing carries.
+func (m *Manager) Compose(a *CatalogApp) ([]byte, error) {
+	m.filesMu.RLock()
+	defer m.filesMu.RUnlock()
+	return os.ReadFile(a.composePath)
+}
+
 // appIn finds app id in an extracted store root and reads its compose file. It
 // walks the tree on disk, so it runs under filesMu like any other reader.
 func (m *Manager) appIn(root string, ref Ref) (*CatalogApp, []byte, error) {

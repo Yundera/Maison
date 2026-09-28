@@ -18,10 +18,18 @@
   import DomainSection from './DomainSection.svelte'
   import AppEnvSection from './AppEnvSection.svelte'
   import StoreSection from './StoreSection.svelte'
+  import UpdatesSection from './UpdatesSection.svelte'
   import BackupsSection from './BackupsSection.svelte'
   import ResourcesSection from './ResourcesSection.svelte'
   import NotificationsSection from './NotificationsSection.svelte'
   import DeviceSection from './DeviceSection.svelte'
+  import { subscribeUpdates, updateCount } from '../../stores/updates'
+
+  // The rail's badge follows the update report for as long as the page is open. The
+  // channel is event-driven, so holding it costs nothing between checks — and the
+  // subscription's first frame is the last report, so opening the page never starts
+  // a check of its own.
+  $effect(() => subscribeUpdates())
 
   // route.ts guarantees the store holds a real section (it normalises the URL), so
   // this cast only re-states what the router already checked.
@@ -41,6 +49,10 @@
     store: {
       label: 'app_stores',
       icon: 'M4 9h16M9 9v10M4 9l2-4h12l2 4',
+    },
+    updates: {
+      label: 'updates',
+      icon: 'M16 9a5 5 0 1 0 1 4M16 5v4h-4',
     },
     backups: {
       label: 'backups',
@@ -90,6 +102,9 @@
             </svg>
           </span>
           <span>{$t(SECTIONS[s].label)}</span>
+          {#if s === 'updates' && $updateCount > 0}
+            <span class="badge">{$updateCount}</span>
+          {/if}
         </button>
       {/each}
     </nav>
@@ -101,6 +116,8 @@
         <AppEnvSection />
       {:else if current === 'store'}
         <StoreSection />
+      {:else if current === 'updates'}
+        <UpdatesSection />
       {:else if current === 'backups'}
         <BackupsSection />
       {:else if current === 'resources'}
@@ -197,6 +214,18 @@
   }
   .item.active .ico {
     color: var(--primary);
+  }
+  .badge {
+    margin-left: auto;
+    min-width: 1.25rem;
+    padding: 0 0.35rem;
+    border-radius: 999px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.25rem;
+    text-align: center;
   }
 
   .panel {

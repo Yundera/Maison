@@ -214,6 +214,40 @@ The override and `.env` are never touched — that is the entire point of keepin
 base byte-identical to the store. `pre_install` / `post_install` do **not** re-run;
 `pre_up` / `post_up` do, because an update is an up.
 
+### Update all
+
+Settings → Updates lists every app by what can be done about it: an update available, a
+failed check or a failed update (its `app.update:<app>` incident), no store reference
+(*untracked*), or not Maison's at all (*unmanaged* — a stack it only discovered). The
+check behind it is `Installer.CheckAll`: the same byte comparison as the Update tab, but
+each store is synced **once** however many apps follow it, and a store that cannot be
+reached marks its apps as failed, never as up to date. A check runs ten minutes after
+boot and daily at 04:00, after the store's own refresh. **It only ever checks** —
+nothing is updated without somebody pressing a button.
+
+**Update all** (`POST /api/updates/run`) queues every app with an update available and
+runs the queue on a background context (`server/updates.go`), so closing the page does
+not stop it. Each app goes through exactly the sequence above, under the tile's busy
+overlay. Three rules:
+
+- **Strictly sequential**, like the nightly backup: every update takes a local rollback
+  point, a full copy of the app, and several at once is how a data disk fills. The
+  confirmation dialog asks `GET /api/updates/preflight` first, which names the apps whose
+  rollback point will not fit counting the ones taken before them — and they are still
+  updated, for the reason given above.
+- **A failure does not stop the run.** The failed app has already been put back and has
+  raised its incident; the next app's update has nothing to do with it.
+- **System apps are left out.** Updating the dashboard, or the gateway in front of it,
+  can take down the process running the queue. A system app is updated on its own, by
+  naming it alone; a run naming it among others is refused.
+
+An untracked app is offered a **suggestion**, from two kinds of evidence: the project
+name an install of a store app would have created, and the image of the app's main
+service (never a sidecar — store apps share those). Both together wins, then the image
+alone, then the name alone, and nothing when that still leaves a choice. Accepting it is an ordinary `PUT /api/apps/{id}/update/ref`
+behind a confirmation, one app at a time: linking an app to the wrong store app replaces
+it in place on the next update (see `app-model.md`).
+
 ---
 
 ## Save config / Save web UI

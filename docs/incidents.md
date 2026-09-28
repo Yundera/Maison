@@ -112,6 +112,7 @@ what nobody is present for.
 |---|---|---|
 | `backup.run` | `backup.failed` | `backup.Scheduler.reportOutcome`, every run |
 | `app.install:<app>` | `app.install` | `installer.StartInstall`, cleared by a later success |
+| `app.uninstall:<app>` | `app.uninstall` | `apps.Registry.StartUninstall`, cleared by a later success |
 | `app.hook:<app>` | `app.stackup` | `stackup.Up` (`.env` sync, `RunInit`, `post_up`) and `installer` (`post_install`) |
 | `app.update:<app>` | `app.update` | `installer.ApplyUpdate` — warning for "no rollback point" and for "failed and rolled back" (the old version is running); **critical** for "the rollback failed too", "rolled back but not running" (`installer.Steady`) and "failed with no rollback point to undo it". Cleared by a later successful update |
 | `store.source` | `store.source` | `appstore.StartDailyRefresh`, after two consecutive failures |
@@ -208,6 +209,13 @@ something would report "sent" when the relay had refused.
 Settings → Notifications, three cards: what is wrong now, where to send it, what not
 to send. Plus a bell in the top bar, rendered **only when something is open** — an
 always-present bell that is usually empty trains people not to look at it.
+
+A failed install or uninstall also shows on the app's tile: a red status dot top-left
+and a red burger, whose menu opens with the error in full and a **Dismiss** button.
+The explanation lives in the menu rather than a tooltip because touch screens — the
+PWA — never show tooltips. Dismiss clears the tile and **acks** the `app.install` /
+`app.uninstall` incident; it never resolves it, so the register keeps the record until
+a later success clears it.
 
 The section is also the first UI the SMTP configuration has ever had. Before it, mail
 was `SMTP_HOST` in the environment or a hand-edited `settings.json`.

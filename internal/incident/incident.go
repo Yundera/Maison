@@ -78,6 +78,7 @@ const (
 	KindAppPartial   = "app.partial"
 	KindAppCrashLoop = "app.crashloop"
 	KindAppInstall   = "app.install"
+	KindAppUninstall = "app.uninstall"
 	KindAppUpdate    = "app.update"
 	KindAppStackup   = "app.stackup"
 	KindStoreSource  = "store.source"

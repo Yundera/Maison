@@ -94,6 +94,11 @@ type Config struct {
 	// nothing is ever reported.
 	Report func(r incident.Report)
 
+	// Resolve clears an entry Report raised, for the reporters that assert a failure
+	// on this same Config and so must be able to take it back on a later success.
+	// nil means unwired, exactly as for Report.
+	Resolve func(id string)
+
 	// SMTP is the mail transport the deployment provides, read from SMTP_* at boot.
 	// It is the layer *below* whatever the box itself has configured — see
 	// usersettings.Settings.EffectiveSMTP — and reaches Maison already resolved
@@ -108,6 +113,13 @@ type Config struct {
 func (c Config) ReportIncident(r incident.Report) {
 	if c.Report != nil {
 		c.Report(r)
+	}
+}
+
+// ResolveIncident is Resolve, tolerating a Config that never wired it.
+func (c Config) ResolveIncident(id string) {
+	if c.Resolve != nil {
+		c.Resolve(id)
 	}
 }
 

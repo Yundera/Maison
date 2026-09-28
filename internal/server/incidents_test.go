@@ -1,14 +1,20 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/incident"
 )
 
 // bareBox builds the whole router on a scratch tree, with no Docker and no apps —
@@ -150,5 +156,35 @@ func TestAMuteIsVisibleInTheSnapshot(t *testing.T) {
 	}
 	if code, _ := call(t, h, http.MethodPut, "/api/incidents/mute", `{"muted":true}`); code != http.StatusBadRequest {
 		t.Errorf("muting nothing in particular should be a 400, got %d", code)
+	}
+}
+
+// Dismissing a failed tile says "I have seen it", not "it is fixed": the incident
+// leaves the badge but stays open until a later success resolves it.
+func TestDismissingAFailedAppAcksItsIncidentsWithoutResolvingThem(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	s := &Server{
+		cfg:       cfg,
+		apps:      apps.New(cfg, nil),
+		incidents: incident.New(filepath.Join(t.TempDir(), "incidents.json")),
+	}
+	s.incidents.Report(incident.Report{ID: "app.uninstall:jellyfin", Kind: incident.KindAppUninstall, Severity: incident.Warning, Title: "jellyfin could not be uninstalled"})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/apps/jellyfin/dismiss", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "jellyfin")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	s.handleDismissApp(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dismiss = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	open := s.incidents.Snapshot().Open
+	if len(open) != 1 || open[0].ID != "app.uninstall:jellyfin" {
+		t.Fatalf("open = %+v; dismissing must not resolve the incident", open)
+	}
+	if !open[0].Acked {
+		t.Errorf("incident not acked after dismiss")
 	}
 }

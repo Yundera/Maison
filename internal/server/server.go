@@ -83,6 +83,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// the same way the two accessors above reach it: through the Config every one of
 	// them already takes.
 	cfg.Report = incidents.Report
+	cfg.Resolve = incidents.Resolve
 
 	s := &Server{
 		cfg:       cfg,

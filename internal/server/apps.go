@@ -190,7 +190,11 @@ func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDismissApp clears a failed install/uninstall/backup overlay for an app, so
-// the operator can get rid of the red "!" without retrying the operation.
+// the operator can clear the tile's failure marker without retrying the operation.
+//
+// The matching incidents are acked, not resolved: dismissing says "I have seen it",
+// not "it is fixed". The record stays in the register, off the badge, until a later
+// successful install or uninstall clears it.
 func (s *Server) handleDismissApp(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return
@@ -201,6 +205,9 @@ func (s *Server) handleDismissApp(w http.ResponseWriter, r *http.Request) {
 	}
 	s.apps.ClearUninstall(id)
 	s.apps.ClearBackup(id)
+	// Not open is the common case — nothing failed, or it was already acked.
+	_ = s.incidents.Ack("app.install:" + id)
+	_ = s.incidents.Ack("app.uninstall:" + id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

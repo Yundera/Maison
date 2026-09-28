@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/yundera/maison/internal/incident"
 )
 
 // ErrProtected is returned when a stop or an uninstall targets a system app —
@@ -123,6 +125,18 @@ func (r *Registry) StartUninstall(id string, zip bool) error {
 			delete(r.uninstalls, id)
 		}
 		r.mu.Unlock()
+		// And in the register, which outlives the tile, exactly as a failed install
+		// does: dismissing the tile acks the incident rather than erasing why.
+		if err != nil {
+			r.cfg.ReportIncident(incident.Report{
+				ID: "app.uninstall:" + id, Kind: incident.KindAppUninstall, Severity: incident.Warning,
+				Title:  id + " could not be uninstalled",
+				Detail: err.Error() + "\n\nA failure before the backup is saved leaves the app installed with its data; one after it can leave the app partly removed. Either way, uninstalling it again from its tile menu is the next step.",
+				Args:   map[string]string{"app": id},
+			})
+		} else {
+			r.cfg.ResolveIncident("app.uninstall:" + id)
+		}
 		r.changed()
 	}()
 	return nil

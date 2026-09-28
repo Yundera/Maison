@@ -114,6 +114,7 @@ export const KNOWN_KINDS = [
   'app.partial',
   'app.crashloop',
   'app.install',
+  'app.uninstall',
   'app.update',
   'app.stackup',
   'store.source',

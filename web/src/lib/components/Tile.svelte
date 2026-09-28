@@ -72,6 +72,11 @@
   const failure = $derived(
     tile.kind === 'app' ? (tile.app.install_error ?? '') || (tile.app.uninstall_error ?? '') : '',
   )
+  // Which operation failed, for the menu's heading. Install wins for the same reason
+  // it wins in `failure` above: the two are never set together in practice.
+  const failureLabel = $derived(
+    tile.kind === 'app' && tile.app.install_error ? 'install_failed' : 'uninstall_failed',
+  )
   // While installing or uninstalling the tile is not clickable.
   const locked = $derived(busy || progressing)
   // An app is openable only when we can build a click URL for it. Apps without a
@@ -119,6 +124,7 @@
   {#if tile.kind !== 'system' && !locked}
     <button
       class="burger"
+      class:alert={!!failure}
       aria-label="Menu"
       onclick={(e) => {
         e.stopPropagation()
@@ -133,20 +139,24 @@
     <span class="spinner" title="Working…">…</span>
   {/if}
 
-  {#if failure}
-    <button
-      class="failed"
-      title={`${failure}\n\n${$t('dismiss')}`}
-      aria-label={$t('dismiss')}
-      onclick={(e) => {
-        e.stopPropagation()
-        if (tile.kind === 'app') dismissAppError(tile.app.id)
-      }}>!</button
-    >
-  {/if}
-
   {#if menuOpen && !locked}
     <div class="menu" use:clickOutside={() => (menuOpen = false)}>
+      <!-- A failed install or uninstall is explained here, not in a tooltip: a touch
+           screen never shows a tooltip, and the PWA is mostly touch. It sits in the
+           menu rather than on the tile so the tile's corners stay free for the burger.
+           Dismiss acks the matching incident — the register keeps the record. -->
+      {#if failure}
+        <div class="failure">
+          <strong>{$t(failureLabel)}</strong>
+          <p>{failure}</p>
+          <button
+            onclick={() => {
+              menuOpen = false
+              if (tile.kind === 'app') dismissAppError(tile.app.id)
+            }}>{$t('dismiss')}</button
+          >
+        </div>
+      {/if}
       <button disabled={!openable} onclick={() => { menuOpen = false; open() }}>{$t('open')}</button>
       {#if tile.kind === 'app'}
         <button
@@ -243,11 +253,14 @@
   {#if tile.kind === 'app' && !tile.app.managed && !progressing}
     <span class="badge">{$t('unmanaged')}</span>
   {/if}
-  {#if tile.kind === 'app' && tile.app.health}
+  <!-- The one status marker a tile has, top-left, clear of the burger: red when an
+       install or uninstall failed (the burger's menu carries why), otherwise health. -->
+  {#if tile.kind === 'app' && (failure || tile.app.health)}
     <span
       class="dot"
-      class:unhealthy={tile.app.health !== 'healthy'}
-      title={tile.app.health}
+      class:unhealthy={!failure && tile.app.health !== 'healthy'}
+      class:failed={!!failure}
+      title={failure || tile.app.health}
     ></span>
   {/if}
 </div>
@@ -378,24 +391,6 @@
   .pfill.backup {
     background: var(--progress-backup);
   }
-  .failed {
-    position: absolute;
-    top: 0.5rem;
-    right: 0.5rem;
-    z-index: 4;
-    width: 1.3rem;
-    height: 1.3rem;
-    display: grid;
-    place-items: center;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: var(--red);
-    color: #fff;
-    font-size: 0.85rem;
-    font-weight: 700;
-    cursor: pointer;
-  }
   .unavailable .icon img,
   .unavailable .icon {
     filter: grayscale(1);
@@ -444,6 +439,13 @@
     opacity: 0;
     transition: opacity 0.15s;
   }
+  /* A failed operation paints the burger itself, because that is where the
+     explanation is: the thing to tap and the thing that is red are the same. Always
+     shown, not hover-revealed — a touch screen has no hover. */
+  .burger.alert {
+    background: var(--red);
+    opacity: 1;
+  }
   .tile:hover .burger {
     opacity: 1;
   }
@@ -478,6 +480,32 @@
   }
   .menu button.danger:hover {
     background: hsla(18, 98%, 94%, 1);
+  }
+  /* The failure block heads the menu, so the menu widens to hold a sentence. */
+  .failure {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    width: 14rem;
+    margin-bottom: 4px;
+    padding: 0.5rem 0.6rem 0.25rem;
+    border-bottom: 1px solid hsla(208, 16%, 90%, 1);
+    font-size: 0.8rem;
+  }
+  .failure strong {
+    color: var(--red);
+  }
+  .failure p {
+    margin: 0;
+    max-height: 7rem;
+    overflow-y: auto;
+    color: var(--grey-800);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .failure button {
+    align-self: flex-end;
+    height: 1.75rem;
   }
   /* Bottom-right: the only free corner — the health dot is top-left, the burger
      top-right and the "unmanaged" badge bottom-left. */
@@ -558,5 +586,11 @@
   }
   .dot.unhealthy {
     background: var(--yellow);
+  }
+  .dot.failed {
+    width: 10px;
+    height: 10px;
+    background: var(--red);
+    box-shadow: 0 0 0 2px #fff;
   }
 </style>

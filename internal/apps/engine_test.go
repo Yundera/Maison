@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backup/backuptest"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/incident"
 )
 
 // newRegistry builds a Registry over a temp DATA_ROOT with no Docker client, so the
@@ -728,4 +730,64 @@ func TestUninstallRefusesTwoConsumingEngines(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin")); statErr != nil {
 		t.Errorf("the app folder was touched by a refused uninstall: %v", statErr)
 	}
+}
+
+// A failed uninstall is an incident, not just a tile overlay: the overlay is gone the
+// moment someone dismisses it, and the owner who was not watching never saw it at all.
+// A later successful uninstall of the same app takes it back.
+func TestStartUninstallReportsAFailureAndResolvesItOnSuccess(t *testing.T) {
+	_, seeded := newRegistry(t)
+	var (
+		mu       sync.Mutex
+		reported []incident.Report
+		resolved []string
+	)
+	cfg := seeded
+	cfg.Report = func(r incident.Report) { mu.Lock(); reported = append(reported, r); mu.Unlock() }
+	cfg.Resolve = func(id string) { mu.Lock(); resolved = append(resolved, id); mu.Unlock() }
+	r := apps.New(cfg, nil)
+	fake := backuptest.NewRemote("kopia")
+	fake.SnapshotErr = errors.New("repository unreachable")
+	r.Engines = backup.New(fake)
+
+	if err := r.StartUninstall("jellyfin", false); err != nil {
+		t.Fatalf("StartUninstall: %v", err)
+	}
+	waitUntil(t, "the failure to be reported", func() bool { mu.Lock(); defer mu.Unlock(); return len(reported) == 1 })
+	mu.Lock()
+	got := reported[0]
+	mu.Unlock()
+	if got.ID != "app.uninstall:jellyfin" || got.Kind != incident.KindAppUninstall {
+		t.Errorf("reported %+v; want app.uninstall:jellyfin", got)
+	}
+	if !strings.Contains(got.Detail, "repository unreachable") {
+		t.Errorf("detail %q does not carry the cause", got.Detail)
+	}
+
+	fake.SnapshotErr = nil
+	if err := r.StartUninstall("jellyfin", false); err != nil {
+		t.Fatalf("retry StartUninstall: %v", err)
+	}
+	waitUntil(t, "the incident to be resolved", func() bool { mu.Lock(); defer mu.Unlock(); return len(resolved) == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if resolved[0] != "app.uninstall:jellyfin" {
+		t.Errorf("resolved %q; want app.uninstall:jellyfin", resolved[0])
+	}
+	if len(reported) != 1 {
+		t.Errorf("reported %d times; the successful retry must not report", len(reported))
+	}
+}
+
+// waitUntil polls cond for up to two seconds: StartUninstall is detached.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

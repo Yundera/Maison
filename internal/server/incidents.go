@@ -140,6 +140,28 @@ func (s *Server) handleMuteKind(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.incidents.Snapshot())
 }
 
+// handleAnnounceKind switches one kind of activity notice — an app installed or
+// uninstalled — on or off. Off is the default; see incident.Store.Announce.
+func (s *Server) handleAnnounceKind(w http.ResponseWriter, r *http.Request) {
+	if s.incidents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "incidents unavailable"})
+		return
+	}
+	var in struct {
+		Kind string `json:"kind"`
+		On   bool   `json:"on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if err := s.incidents.AnnounceKind(in.Kind, in.On); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.incidents.Snapshot())
+}
+
 // handleTestNotification proves the relay end to end.
 //
 // It sends a real alert through the real composer rather than dialling the server and

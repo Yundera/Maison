@@ -175,6 +175,38 @@ between two passes, and an app the owner switched off has a counter that stands 
 Closing the gap properly means persisting desired state on `Start`/`Stop`. Worth
 doing; a separate change.
 
+## Activity notices
+
+Some owners want to hear about things that are not problems — typically a household
+where one person runs the box and wants to know when someone else installs or removes
+an app. Those are **events**, and the register is built around states, so they are not
+incidents:
+
+| Kind | Where |
+|---|---|
+| `app.installed` | `installer.StartInstall`, on success (worded as a restore when it came from a backup) |
+| `app.uninstalled` | `apps.Registry.StartUninstall`, on success (names the backup the data went to) |
+
+`Store.Announce(Report)` puts one straight into the outbox and touches nothing else:
+
+- **Opt-in, per kind.** `document.Announced` is the inverse of `Muted` — absent means
+  off. A kind nobody switched on is dropped at `Announce` and never written to disk,
+  and one switched off while queued is dropped at delivery.
+- **Never in the register.** No badge, no open list, no history — an activity has
+  nothing to resolve, and a log of routine changes would bury the answer to "has this
+  broken before?".
+- **Never cancelled or deduped.** Install, uninstall, install again inside one window
+  is three things that happened; `partition` passes activity through untouched.
+- **Same digest, same relay, same retries.** A problem in the window keeps the subject
+  line; the activity rides along under "Also on …". A digest of activity alone says
+  "Jellyfin was installed on …" or "3 changes on …", and its footer says where to
+  switch it off.
+
+`PUT /api/incidents/announce {kind, on}` is the switch; the snapshot carries
+`announced`. The settings page renders it as a fourth card, **Activity**, which warns
+when no relay is configured — unlike an incident, an activity notice has no other
+surface, so without mail it goes nowhere.
+
 ## The inbound API
 
 ```
@@ -183,6 +215,7 @@ POST   /api/incidents                 assert one   {id, kind, severity, title, d
 DELETE /api/incidents/{id}            clear one
 POST   /api/incidents/{id}/ack        hide the badge without resolving
 PUT    /api/incidents/mute            {kind, muted}
+PUT    /api/incidents/announce        {kind, on}   activity notices, opt-in
 POST   /api/notifications/test        send a real alert, synchronously
 ```
 

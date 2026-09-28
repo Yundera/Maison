@@ -99,6 +99,11 @@ type Config struct {
 	// nil means unwired, exactly as for Report.
 	Resolve func(id string)
 
+	// Announce queues an activity notice — something that happened, like an app being
+	// uninstalled — for the owners who asked to hear about it. See
+	// incident.Store.Announce. nil means unwired, exactly as for Report.
+	Announce func(r incident.Report)
+
 	// SMTP is the mail transport the deployment provides, read from SMTP_* at boot.
 	// It is the layer *below* whatever the box itself has configured — see
 	// usersettings.Settings.EffectiveSMTP — and reaches Maison already resolved
@@ -113,6 +118,13 @@ type Config struct {
 func (c Config) ReportIncident(r incident.Report) {
 	if c.Report != nil {
 		c.Report(r)
+	}
+}
+
+// AnnounceActivity is Announce, tolerating a Config that never wired it.
+func (c Config) AnnounceActivity(r incident.Report) {
+	if c.Announce != nil {
+		c.Announce(r)
 	}
 }
 

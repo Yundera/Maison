@@ -2,8 +2,8 @@
   /**
    * Settings › Notifications — what is wrong with the box, and where it gets sent.
    *
-   * Three cards, in the order the questions are asked: what is wrong now, where
-   * should I be told, and what should I not be told about.
+   * Four cards, in the order the questions are asked: what is wrong now, where
+   * should I be told, what should I not be told about, and what else I want to hear.
    *
    * The incident list comes first deliberately. Mail is secondary here and always
    * will be: a PCS relays through whatever the deployment gave it, into a consumer
@@ -19,8 +19,10 @@
     ackIncident,
     resolveIncident,
     muteKind,
+    announceKind,
     sendTestNotification,
     KNOWN_KINDS,
+    ACTIVITY_KINDS,
     type Incident,
   } from '../../stores/incidents'
 
@@ -75,6 +77,12 @@
   function when(iso: string): string {
     const d = new Date(iso)
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
+  }
+
+  const kindName = (kind: string) => {
+    const key = `incident_${kind}_name`
+    const out = $t(key)
+    return out === key ? kind : out
   }
 
   const open = $derived($incidents.open)
@@ -224,7 +232,28 @@
           disabled={busy}
           onchange={(e) => act(() => muteKind(kind, !e.currentTarget.checked))}
         />
-        {$t(`incident_${kind}_name`) === `incident_${kind}_name` ? kind : $t(`incident_${kind}_name`)}
+        {kindName(kind)}
+      </label>
+    {/each}
+  </div>
+</section>
+
+<section class="card">
+  <h4>{$t('notifications_activity')}</h4>
+  <p class="hint">{$t('notifications_activity_hint')}</p>
+  {#if !$incidents.mail_configured}
+    <p class="warn">{$t('notifications_activity_no_mail')}</p>
+  {/if}
+  <div class="kinds">
+    {#each ACTIVITY_KINDS as kind (kind)}
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={!!$incidents.announced?.[kind]}
+          disabled={busy}
+          onchange={(e) => act(() => announceKind(kind, e.currentTarget.checked))}
+        />
+        {kindName(kind)}
       </label>
     {/each}
   </div>

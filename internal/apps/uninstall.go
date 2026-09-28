@@ -100,9 +100,15 @@ func (r *Registry) StartUninstall(id string, zip bool) error {
 	r.changed()
 
 	go func() {
+		// The display name, read while the app still exists: once the uninstall has
+		// run there is no tile left to ask. Only the activity notice needs it.
+		name := id
+		if a, ok := r.Get(context.Background(), id); ok && a.Name != "" {
+			name = a.Name
+		}
 		// Deliberately not a request context: the uninstall must outlive the
 		// request that asked for it.
-		_, err := r.Uninstall(context.Background(), id, zip, func(ev UninstallEvent) {
+		archive, err := r.Uninstall(context.Background(), id, zip, func(ev UninstallEvent) {
 			r.mu.Lock()
 			if st := r.uninstalls[id]; st != nil {
 				st.Phase, st.Message = ev.Phase, ev.Message
@@ -136,6 +142,7 @@ func (r *Registry) StartUninstall(id string, zip bool) error {
 			})
 		} else {
 			r.cfg.ResolveIncident("app.uninstall:" + id)
+			r.cfg.AnnounceActivity(uninstalledNotice(id, name, archive))
 		}
 		r.changed()
 	}()
@@ -161,6 +168,22 @@ func (r *Registry) ClearUninstall(id string) {
 	r.mu.Unlock()
 	if existed {
 		r.changed()
+	}
+}
+
+// uninstalledNotice words the activity notice for a finished uninstall. It names the
+// backup when there is one, because that is where the data went — the first thing
+// anyone reading "X was uninstalled" wants to know.
+func uninstalledNotice(id, name, archive string) incident.Report {
+	detail := "It had no data on this server, so nothing was backed up."
+	if archive != "" {
+		detail = "Its data was kept in the backup " + archive + ". Reinstalling it from that backup brings it back as it was."
+	}
+	return incident.Report{
+		ID: "app.uninstalled:" + id, Kind: incident.KindAppUninstalled,
+		Title:  name + " was uninstalled",
+		Detail: detail,
+		Args:   map[string]string{"app": name},
 	}
 }
 

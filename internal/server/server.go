@@ -91,6 +91,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// them already takes.
 	cfg.Report = incidents.Report
 	cfg.Resolve = incidents.Resolve
+	cfg.Announce = incidents.Announce
 
 	s := &Server{
 		cfg:       cfg,
@@ -253,6 +254,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	s.installer = installer.New(cfg, s.store, s.dx)
 	s.installer.Report = s.incidents.Report
 	s.installer.Resolve = s.incidents.Resolve
+	s.installer.Announce = s.incidents.Announce
 	if s.apps != nil {
 		// An update rewrites the app's compose and brings the stack back up — the one
 		// destructive change Maison makes on the user's behalf — so it takes a rollback
@@ -435,6 +437,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/incidents", s.handleGetIncidents)
 		r.Post("/incidents", s.handleReportIncident)
 		r.Put("/incidents/mute", s.handleMuteKind)
+		r.Put("/incidents/announce", s.handleAnnounceKind)
 		r.Post("/incidents/{id}/ack", s.handleAckIncident)
 		r.Delete("/incidents/{id}", s.handleResolveIncident)
 		r.Post("/notifications/test", s.handleTestNotification)

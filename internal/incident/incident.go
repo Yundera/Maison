@@ -85,6 +85,24 @@ const (
 	KindTest         = "test.notification"
 )
 
+// Activity kinds. These are NOT incidents, and the difference is the whole of how they
+// are handled: an incident is a state that opens and clears, an activity is a thing
+// that happened and is over. Nothing about an installed app needs clearing, so these
+// never enter the register, never light the badge, and are never listed as history —
+// they only ride the outbox into the next digest (see Announce).
+//
+// They are opt-in, where incidents are opt-out. Hearing that the box is broken is the
+// default because silence there is the failure; hearing that an app you just installed
+// is installed is noise unless someone asked for it — typically a household where one
+// person runs the box and wants to know what the others do with it.
+//
+// Wire format, like the incident kinds: the dashboard keys its switch and its label
+// on these strings.
+const (
+	KindAppInstalled   = "app.installed"
+	KindAppUninstalled = "app.uninstalled"
+)
+
 // IDs that more than one package has to name. Most IDs are built by the reporter that
 // owns them; these two are shared — the schedule asserts the first, and the detectors
 // and the upgrade adoption in server.New both have to refer to it.
@@ -165,6 +183,10 @@ type pending struct {
 	// Opened distinguishes the two transitions worth mailing. There are only two.
 	Opened bool `json:"opened"`
 
+	// Event marks an activity notice (see Announce) rather than a transition. It is
+	// never cancelled out against anything and Opened is meaningless on it.
+	Event bool `json:"event,omitempty"`
+
 	// Tries counts delivery attempts, so a relay that is down for an hour does not
 	// mean the announcement is lost, and a relay that is misconfigured forever does
 	// not mean the queue grows forever. See Deliver.
@@ -175,6 +197,10 @@ type pending struct {
 type document struct {
 	Incidents []Incident      `json:"incidents"`
 	Muted     map[string]bool `json:"muted,omitempty"`
+
+	// Announced is the set of activity kinds the owner has asked to be told about.
+	// The inverse of Muted, because activity is opt-in: absent means off.
+	Announced map[string]bool `json:"announced,omitempty"`
 
 	// Pending is on disk, not in memory, because the window between a transition and
 	// its delivery pass is a window a restart can land in — and an alert lost to a
@@ -381,6 +407,55 @@ func (s *Store) Resolve(id string) {
 	s.changed()
 }
 
+// Announce queues an activity notice — something that happened, not something that is
+// wrong — for the next digest, if the owner has switched its kind on.
+//
+// It deliberately touches nothing but the outbox. An activity is not a condition, so
+// there is nothing to open, dedup or later resolve, and recording it in the register
+// would bury the answer to "has this broken before?" under a log of routine changes.
+// It returns nothing for the reason Report returns nothing: an install that worked must
+// not be able to fail because the relay did not.
+//
+// Gated here, at the source, rather than only at delivery: a kind nobody asked for is
+// not written to disk at all.
+func (s *Store) Announce(r Report) {
+	r = saneReport(r)
+	if r.Kind == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.cur.Announced[r.Kind] {
+		return
+	}
+	now := s.now()
+	s.cur.Pending = append(s.cur.Pending, pending{
+		Snapshot: Incident{Report: r, Since: now, Updated: now, Count: 1},
+		Event:    true,
+	})
+	s.persistLocked(now)
+}
+
+// AnnounceKind switches one activity kind's notices on or off.
+func (s *Store) AnnounceKind(kind string, on bool) error {
+	if kind == "" {
+		return errors.New("no kind given")
+	}
+	s.mu.Lock()
+	if s.cur.Announced == nil {
+		s.cur.Announced = map[string]bool{}
+	}
+	if on {
+		s.cur.Announced[kind] = true
+	} else {
+		delete(s.cur.Announced, kind)
+	}
+	err := s.persistLocked(s.now())
+	s.mu.Unlock()
+	s.changed()
+	return err
+}
+
 // IsOpen reports whether id is currently open. Detectors use it to implement
 // hysteresis — open at 90% but do not clear until 85% — without keeping their own
 // copy of state that a restart would lose.
@@ -437,6 +512,9 @@ type Snapshot struct {
 	Recent []Incident      `json:"recent"`
 	Muted  map[string]bool `json:"muted"`
 
+	// Announced is the set of activity kinds switched on. See Announce.
+	Announced map[string]bool `json:"announced"`
+
 	// MailConfigured tells the dashboard whether anything would actually have been
 	// sent. The incident register works on a box with no relay — it is the badge that
 	// matters most — but the settings page has to be able to say so.
@@ -451,9 +529,12 @@ func (s *Store) Snapshot() Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out := Snapshot{Muted: map[string]bool{}, Open: []Incident{}, Recent: []Incident{}}
+	out := Snapshot{Muted: map[string]bool{}, Announced: map[string]bool{}, Open: []Incident{}, Recent: []Incident{}}
 	for k, v := range s.cur.Muted {
 		out.Muted[k] = v
+	}
+	for k, v := range s.cur.Announced {
+		out.Announced[k] = v
 	}
 	for _, inc := range s.cur.Incidents {
 		if inc.Open() {
@@ -492,18 +573,24 @@ func (s *Store) Deliver() {
 	for k, v := range s.cur.Muted {
 		muted[k] = v
 	}
+	// An activity switched off after it was queued is not sent: the switch is the
+	// owner's current answer, not the one they gave two minutes ago.
+	announced := make(map[string]bool, len(s.cur.Announced))
+	for k, v := range s.cur.Announced {
+		announced[k] = v
+	}
 	s.cur.Pending = nil
 	now := s.now()
 	s.persistLocked(now)
 	s.mu.Unlock()
 
 	where := s.where()
-	opened, resolved := partition(pend, muted)
-	if len(opened) == 0 && len(resolved) == 0 {
+	opened, resolved, events := partition(pend, muted, announced)
+	if len(opened) == 0 && len(resolved) == 0 && len(events) == 0 {
 		return // everything in this batch was muted, or cancelled itself out
 	}
 
-	subject, body := digestMail(where, opened, resolved, now)
+	subject, body := digestMail(where, opened, resolved, events, now)
 	if err := s.send(subject, body); err != nil {
 		log.Printf("incident: sending the notification: %v", err)
 		s.requeue(pend)
@@ -530,7 +617,7 @@ func (s *Store) Test() error {
 		},
 		Since: now, Updated: now, Count: 1,
 	}
-	subject, body := digestMail(s.where(), []Incident{inc}, nil, now)
+	subject, body := digestMail(s.where(), []Incident{inc}, nil, nil, now)
 	return s.send(subject, body)
 }
 
@@ -540,9 +627,15 @@ func (s *Store) Test() error {
 // A condition that healed itself before anyone could have read about it is not news.
 // Saying "X broke" and "X is fine" in one message trains the reader to skip the next
 // one, which is the same slow failure as mailing every night.
-func partition(pend []pending, muted map[string]bool) (opened, resolved []Incident) {
+//
+// Activity notices pass through untouched unless their kind has since been switched
+// off: they are not states, so there is nothing for them to cancel against.
+func partition(pend []pending, muted, announced map[string]bool) (opened, resolved, events []Incident) {
 	seen := map[string]int{}
 	for _, p := range pend {
+		if p.Event {
+			continue
+		}
 		if p.Opened {
 			seen[p.Snapshot.ID]++
 		} else {
@@ -550,6 +643,12 @@ func partition(pend []pending, muted map[string]bool) (opened, resolved []Incide
 		}
 	}
 	for _, p := range pend {
+		if p.Event {
+			if announced[p.Snapshot.Kind] {
+				events = append(events, p.Snapshot)
+			}
+			continue
+		}
 		if muted[p.Snapshot.Kind] || seen[p.Snapshot.ID] == 0 {
 			continue
 		}
@@ -559,7 +658,7 @@ func partition(pend []pending, muted map[string]bool) (opened, resolved []Incide
 			resolved = append(resolved, p.Snapshot)
 		}
 	}
-	return opened, resolved
+	return opened, resolved, events
 }
 
 // requeue puts a failed batch back for the next pass, giving up on anything that has
@@ -665,6 +764,9 @@ func sane(d document, now time.Time) document {
 	if len(d.Muted) == 0 {
 		d.Muted = nil
 	}
+	if len(d.Announced) == 0 {
+		d.Announced = nil
+	}
 	return d
 }
 
@@ -691,10 +793,17 @@ func truncate(s string, n int) string {
 
 // digestMail writes the message. Pure, so what it says can be tested without an SMTP
 // server anywhere — the same split internal/notify makes between Compose and Send.
-func digestMail(where string, opened, resolved []Incident, now time.Time) (subject, body string) {
+//
+// Problems lead and set the subject whenever there are any; activity notices only get
+// the subject line to themselves in a digest that has nothing wrong in it.
+func digestMail(where string, opened, resolved, events []Incident, now time.Time) (subject, body string) {
 	var b strings.Builder
 
 	switch {
+	case len(opened) == 0 && len(resolved) == 0 && len(events) == 1:
+		subject = events[0].Title + " on " + where
+	case len(opened) == 0 && len(resolved) == 0:
+		subject = fmt.Sprintf("%d changes on %s", len(events), where)
 	case len(opened) == 1 && len(resolved) == 0:
 		subject = opened[0].Title + " on " + where
 	case len(opened) == 0 && len(resolved) == 1:
@@ -729,9 +838,33 @@ func digestMail(where string, opened, resolved []Incident, now time.Time) (subje
 		}
 	}
 
-	b.WriteString("\nOpen the dashboard and go to Settings → Notifications to see the full list.\n")
-	b.WriteString("You are told once when something starts going wrong and once when it clears,\n")
-	b.WriteString("never on a schedule.\n")
+	if len(events) > 0 {
+		if len(opened) > 0 || len(resolved) > 0 {
+			b.WriteString("\nAlso on " + where + ":\n\n")
+		} else {
+			b.WriteString("Here is what changed on " + where + ".\n\n")
+		}
+		for _, ev := range events {
+			fmt.Fprintf(&b, "  %s\n", ev.Title)
+			for _, line := range strings.Split(ev.Detail, "\n") {
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				fmt.Fprintf(&b, "    %s\n", line)
+			}
+			fmt.Fprintf(&b, "    %s\n\n", ev.Since.Local().Format("Mon 2 Jan 15:04"))
+		}
+	}
+
+	if len(opened) > 0 || len(resolved) > 0 {
+		b.WriteString("\nOpen the dashboard and go to Settings → Notifications to see the full list.\n")
+		b.WriteString("You are told once when something starts going wrong and once when it clears,\n")
+		b.WriteString("never on a schedule.\n")
+	}
+	if len(events) > 0 {
+		b.WriteString("\nYou receive activity notices because they are switched on in\n")
+		b.WriteString("Settings → Notifications. Untick them there to stop.\n")
+	}
 	return subject, b.String()
 }
 

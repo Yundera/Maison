@@ -79,6 +79,10 @@ type Installer struct {
 	Report  func(r incident.Report)
 	Resolve func(id string)
 
+	// Announce queues an activity notice for a successful install, which the register
+	// only mails when the owner has switched that kind on. Nil means nobody is listening.
+	Announce func(r incident.Report)
+
 	// OnUpdate, if set, is called whenever a tracked install's progress changes
 	// so the server can rebroadcast the app list (making the tile's progress bars
 	// advance live). The server is expected to throttle it. Optional.
@@ -236,6 +240,7 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from Ba
 			// Success: drop the overlay so the real, Docker-backed tile takes over.
 			delete(in.installs, project)
 			in.resolve("app.install:" + project)
+			in.announce(installedNotice(project, name, from))
 		}
 		in.mu.Unlock()
 		in.notify()
@@ -276,6 +281,27 @@ func (in *Installer) report(r incident.Report) {
 func (in *Installer) resolve(id string) {
 	if in.Resolve != nil {
 		in.Resolve(id)
+	}
+}
+
+func (in *Installer) announce(r incident.Report) {
+	if in.Announce != nil {
+		in.Announce(r)
+	}
+}
+
+// installedNotice words the activity notice for a finished install. A restore is said
+// as one, because "installed" alone would hide that it came back with old data.
+func installedNotice(project, name string, from BackupRef) incident.Report {
+	detail := "Installed from the app store."
+	if from.Name != "" {
+		detail = "Restored from the backup " + from.Name + "."
+	}
+	return incident.Report{
+		ID: "app.installed:" + project, Kind: incident.KindAppInstalled,
+		Title:  name + " was installed",
+		Detail: detail,
+		Args:   map[string]string{"app": name},
 	}
 }
 

@@ -381,7 +381,7 @@ func TestDigestMailNamesWhatBrokeAndWhatCleared(t *testing.T) {
 		Resolved: &now,
 	}}
 
-	subject, body := digestMail("john.nsl.sh", opened, resolved, now)
+	subject, body := digestMail("john.nsl.sh", opened, resolved, nil, now)
 	if !strings.Contains(subject, "john.nsl.sh") {
 		t.Errorf("the subject should name the box, got %q", subject)
 	}
@@ -392,7 +392,7 @@ func TestDigestMailNamesWhatBrokeAndWhatCleared(t *testing.T) {
 	}
 
 	// A box with no domain still has to produce a sentence.
-	subject, _ = digestMail("your server", opened, nil, now)
+	subject, _ = digestMail("your server", opened, nil, nil, now)
 	if !strings.Contains(subject, "your server") {
 		t.Errorf("an unnamed box should degrade gracefully, got %q", subject)
 	}
@@ -444,5 +444,114 @@ func TestIsOpenLetsADetectorImplementHysteresis(t *testing.T) {
 	s.Resolve("disk.full:sda1")
 	if s.IsOpen("disk.full:sda1") {
 		t.Error("a resolved incident should not read as open")
+	}
+}
+
+func installed(app string) Report {
+	return Report{ID: "app.installed:" + app, Kind: KindAppInstalled,
+		Title: app + " was installed", Args: map[string]string{"app": app}}
+}
+
+// Activity is opt-in. A box whose owner never asked must not grow a mail per install,
+// nor even an outbox entry for one.
+func TestAnActivityNobodyAskedForIsDropped(t *testing.T) {
+	s, mb, _ := newStore(t)
+	s.Announce(installed("Jellyfin"))
+	s.Deliver()
+	if len(mb.sent) != 0 {
+		t.Errorf("an activity kind that is off was mailed: %v", mb.sent)
+	}
+	if len(s.cur.Pending) != 0 {
+		t.Errorf("an activity kind that is off was queued: %d pending", len(s.cur.Pending))
+	}
+}
+
+// Switched on, it is mailed — and it stays out of the register: no badge, no history.
+func TestAnActivityIsMailedButNeverRecorded(t *testing.T) {
+	s, mb, _ := newStore(t)
+	if err := s.AnnounceKind(KindAppInstalled, true); err != nil {
+		t.Fatal(err)
+	}
+	s.Announce(installed("Jellyfin"))
+	s.Deliver()
+	if len(mb.sent) != 1 || !strings.Contains(mb.sent[0], "Jellyfin was installed") {
+		t.Fatalf("expected one mail about the install, got %v", mb.sent)
+	}
+	if !strings.Contains(mb.body[0], "Settings → Notifications") {
+		t.Errorf("the mail should say how to switch it off:\n%s", mb.body[0])
+	}
+	snap := s.Snapshot()
+	if len(snap.Open) != 0 || len(snap.Recent) != 0 {
+		t.Errorf("an activity leaked into the register: %d open, %d recent", len(snap.Open), len(snap.Recent))
+	}
+	if !snap.Announced[KindAppInstalled] {
+		t.Errorf("the switch is not reported in the snapshot: %v", snap.Announced)
+	}
+}
+
+// Two activities about the same app are two things that happened, not a state that
+// opened and closed, so neither cancels nor dedups the other.
+func TestActivitiesAreNotCoalescedAway(t *testing.T) {
+	s, mb, _ := newStore(t)
+	s.AnnounceKind(KindAppInstalled, true)
+	s.AnnounceKind(KindAppUninstalled, true)
+	s.Announce(installed("Jellyfin"))
+	s.Announce(Report{ID: "app.uninstalled:jellyfin", Kind: KindAppUninstalled, Title: "Jellyfin was uninstalled"})
+	s.Announce(installed("Jellyfin"))
+	s.Deliver()
+	if len(mb.sent) != 1 {
+		t.Fatalf("expected one digest, got %d", len(mb.sent))
+	}
+	if !strings.Contains(mb.sent[0], "3 changes") {
+		t.Errorf("subject should count the changes, got %q", mb.sent[0])
+	}
+	if n := strings.Count(mb.body[0], "Jellyfin was installed"); n != 2 {
+		t.Errorf("both installs should be listed, found %d:\n%s", n, mb.body[0])
+	}
+}
+
+// A problem in the same window owns the subject line; the activity rides along.
+func TestAProblemLeadsADigestThatAlsoCarriesActivity(t *testing.T) {
+	s, mb, _ := newStore(t)
+	s.AnnounceKind(KindAppInstalled, true)
+	s.Announce(installed("Jellyfin"))
+	s.Report(failing("backup.run"))
+	s.Deliver()
+	if len(mb.sent) != 1 || !strings.HasPrefix(mb.sent[0], "Backups are failing") {
+		t.Fatalf("the problem should lead the subject, got %v", mb.sent)
+	}
+	if !strings.Contains(mb.body[0], "Jellyfin was installed") {
+		t.Errorf("the activity should still be in the body:\n%s", mb.body[0])
+	}
+}
+
+// Switching a kind off stops what is already queued: the switch is the owner's current
+// answer.
+func TestSwitchingOffDropsQueuedActivity(t *testing.T) {
+	s, mb, _ := newStore(t)
+	s.AnnounceKind(KindAppInstalled, true)
+	s.Announce(installed("Jellyfin"))
+	s.AnnounceKind(KindAppInstalled, false)
+	s.Deliver()
+	if len(mb.sent) != 0 {
+		t.Errorf("a queued activity was sent after its kind was switched off: %v", mb.sent)
+	}
+}
+
+// The switch and the queue both survive a restart.
+func TestActivitySurvivesARestart(t *testing.T) {
+	s, _, _ := newStore(t)
+	s.AnnounceKind(KindAppInstalled, true)
+	s.Announce(installed("Jellyfin"))
+
+	mb := &mailbox{}
+	again := New(s.path)
+	again.Notify = mb.notify
+	again.Deliver()
+	if len(mb.sent) != 1 {
+		t.Fatalf("the queued activity was lost across a restart: %v", mb.sent)
+	}
+	if !again.Snapshot().Announced[KindAppInstalled] {
+		t.Error("the switch was lost across a restart")
 	}
 }

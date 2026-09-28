@@ -38,6 +38,8 @@ export interface IncidentSnapshot {
   open: Incident[]
   recent: Incident[]
   muted: Record<string, boolean>
+  /** Activity kinds switched on — see ACTIVITY_KINDS. Absent means off. */
+  announced: Record<string, boolean>
   /** Whether a relay is configured at all. The register works without one — the
    *  badge is the primary surface — but the page has to be able to say so. */
   mail_configured: boolean
@@ -49,6 +51,7 @@ const EMPTY: IncidentSnapshot = {
   open: [],
   recent: [],
   muted: {},
+  announced: {},
   mail_configured: false,
   critical: 0,
   warnings: 0,
@@ -94,6 +97,10 @@ export const resolveIncident = (id: string) =>
 export const muteKind = (kind: string, muted: boolean) =>
   apply(api.put('/api/incidents/mute', { kind, muted }))
 
+/** Switch one kind of activity notice on or off. */
+export const announceKind = (kind: string, on: boolean) =>
+  apply(api.put('/api/incidents/announce', { kind, on }))
+
 /** Send a real alert through the real relay and wait for the answer, so a broken
  *  SMTP configuration reports its own error rather than a cheerful "sent". */
 export const sendTestNotification = () => api.post('/api/notifications/test')
@@ -119,3 +126,8 @@ export const KNOWN_KINDS = [
   'app.stackup',
   'store.source',
 ] as const
+
+/** Things that happened rather than things that are wrong. Opt-in, where incidents are
+ *  opt-out: they are mailed in the same digest when switched on, and never enter the
+ *  register, so they never light the badge or show in the list above. */
+export const ACTIVITY_KINDS = ['app.installed', 'app.uninstalled'] as const

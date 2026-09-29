@@ -693,8 +693,16 @@ func (a *App) WebURL(domain string) string {
 	return scheme + "://" + host + port + path
 }
 
+// domainTokens are the webui-host spellings of the deployment domain. ${domain} is
+// the store's webui-host convention; ${APP_DOMAIN} is the variable every other part
+// of an app's compose (caddy labels, REDIRECT_HOST_SUFFIXES) uses, so a webui-host
+// copied from its caddy_0 label must resolve too — it used to fall through as
+// "unknown placeholder" and leave the tile unclickable (the template-root Terminal
+// system app, 2026-09-29). All three are the same value: .env.app's APP_DOMAIN.
+var domainTokens = []string{"${domain}", "${DOMAIN}", "${APP_DOMAIN}"}
+
 // resolveHost substitutes deployment placeholders in a webui-host template.
-// ${domain}/${DOMAIN} → domain. If the template references a domain that isn't
+// Any of domainTokens → domain. If the template references a domain that isn't
 // configured, or any placeholder is left unresolved, it returns "" so the URL is
 // reported as unreachable rather than built broken.
 func resolveHost(host, domain string) string {
@@ -702,12 +710,14 @@ func resolveHost(host, domain string) string {
 	if h == "" {
 		return ""
 	}
-	if strings.Contains(h, "${domain}") || strings.Contains(h, "${DOMAIN}") {
+	for _, tok := range domainTokens {
+		if !strings.Contains(h, tok) {
+			continue
+		}
 		if domain == "" {
 			return ""
 		}
-		h = strings.ReplaceAll(h, "${domain}", domain)
-		h = strings.ReplaceAll(h, "${DOMAIN}", domain)
+		h = strings.ReplaceAll(h, tok, domain)
 	}
 	if strings.Contains(h, "${") {
 		return "" // an unresolved placeholder we don't understand

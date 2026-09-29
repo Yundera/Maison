@@ -15,6 +15,8 @@ func TestWebURL(t *testing.T) {
 		{"gateway default scheme+path", App{WebUIHost: "jellyfin-${domain}"}, "app.localhost", "https://jellyfin-app.localhost/"},
 		{"gateway with path", App{WebUIHost: "jellyfin-${domain}", WebUIPath: "/web/"}, "app.localhost", "https://jellyfin-app.localhost/web/"},
 		{"uppercase placeholder (caddy-label style)", App{WebUIHost: "nc-${DOMAIN}"}, "example.com", "https://nc-example.com/"},
+		{"APP_DOMAIN placeholder (caddy_0 spelling)", App{WebUIHost: "terminal-${APP_DOMAIN}"}, "watch.nsl.sh", "https://terminal-watch.nsl.sh/"},
+		{"APP_DOMAIN placeholder but no domain -> unreachable", App{WebUIHost: "terminal-${APP_DOMAIN}"}, "", ""},
 		{"direct host+port+scheme", App{WebUIHost: "nas.example.com", WebUIScheme: "http", WebUIPort: "8096"}, "", "http://nas.example.com:8096/"},
 		{"literal host no placeholder, empty domain ok", App{WebUIHost: "nas.local"}, "", "https://nas.local/"},
 		{"path missing leading slash", App{WebUIHost: "a-${domain}", WebUIPath: "app"}, "d", "https://a-d/app"},

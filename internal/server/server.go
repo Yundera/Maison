@@ -5,7 +5,6 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -314,8 +313,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 				// than refusing on a guess. Skipped: no rollback point by design.
 				return nil
 			}
-			return fmt.Errorf("not enough free disk for a rollback copy of %s: it needs %s, %s is free",
-				project, humanBytes(uint64(est.Needed)), humanBytes(uint64(est.Free)))
+			return &installer.RoomError{Needed: est.Needed, Free: est.Free}
 		}
 		s.installer.RollBack = func(ctx context.Context, project, name string) error {
 			if err := s.apps.Restore(ctx, project, "", name, nil); err != nil {

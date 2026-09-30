@@ -169,6 +169,10 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, installer.ErrNoRollback) {
 			// Refused, nothing changed: the UI offers "Update without backup".
 			out["no_rollback"] = true
+			var nr *installer.NoRollbackError
+			if errors.As(err, &nr) {
+				out["reason"], out["needed"], out["free"] = nr.Reason, nr.Needed, nr.Free
+			}
 			status = http.StatusConflict
 		}
 		writeJSON(w, status, out)

@@ -3,6 +3,7 @@ package installer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,5 +249,40 @@ func TestApplyUpdateReportsEachStep(t *testing.T) {
 	}
 	if left := in.Updates(); len(left) != 0 {
 		t.Errorf("progress left behind after the update ended: %+v", left)
+	}
+}
+
+// The refusal says why, so the Updates page can phrase it: room (with the numbers),
+// a timeout, or any other failure — and every kind still is ErrNoRollback.
+func TestApplyUpdateRefusalCarriesItsReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		room   error
+		backup error
+		want   string
+	}{
+		{"no room", &RoomError{Needed: 110 << 30, Free: 98 << 30}, nil, NoRollbackNoRoom},
+		{"timeout", nil, fmt.Errorf("the app's downtime budget was used up: %w", context.DeadlineExceeded), NoRollbackTimeout},
+		{"other", nil, errors.New("permission denied"), NoRollbackFailed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in, _, _, _ := updateFixture(t)
+			in.RollbackRoom = func(context.Context, string) error { return c.room }
+			if c.backup != nil {
+				in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, error) { return "", c.backup }
+			}
+			_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
+			if !errors.Is(err, ErrNoRollback) {
+				t.Fatalf("err = %v, want ErrNoRollback", err)
+			}
+			var nr *NoRollbackError
+			if !errors.As(err, &nr) || nr.Reason != c.want {
+				t.Fatalf("reason = %+v, want %s", nr, c.want)
+			}
+			if c.want == NoRollbackNoRoom && (nr.Needed != 110<<30 || nr.Free != 98<<30) {
+				t.Errorf("needed/free = %d/%d", nr.Needed, nr.Free)
+			}
+		})
 	}
 }

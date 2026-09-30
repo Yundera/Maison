@@ -256,6 +256,13 @@ overlay. Three rules:
   confirmation dialog asks `GET /api/updates/preflight` first, which names the apps whose
   rollback point will not fit counting the ones taken before them — those will be
   refused, untouched, and can then be updated one at a time without a backup.
+- **Refusals say why.** A refused app carries a reason — `no_room` (with the bytes
+  needed and free), `backup_timeout` or `backup_failed` — on its run item, on the 409
+  of the per-app endpoint and in its `app.update` incident's args; rollback incidents
+  carry `rolled_back`, `not_running`, `rollback_failed` or `broken`. Settings → Updates
+  turns the code into a sentence and keeps the raw error behind *Details*. Every app
+  appears in exactly one row; confirmations open in the row that asked, and a plain
+  single-app update asks nothing (it is backed up and rolled back on failure).
 - **A failure does not stop the run.** The failed app has already been put back and has
   raised its incident; the next app's update has nothing to do with it.
 - **System apps are left out.** Updating the dashboard, or the gateway in front of it,

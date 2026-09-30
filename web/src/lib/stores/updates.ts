@@ -55,6 +55,11 @@ export interface RunItem {
   /** Refused: no rollback point could be taken. Nothing changed; the app can be
    *  updated on its own without a backup. */
   no_rollback?: boolean
+  /** Why it was refused — no_room | backup_timeout | backup_failed — and, for
+   *  no_room, the bytes the rollback copy needed and what was free. */
+  reason?: string
+  needed?: number
+  free?: number
 }
 
 export interface UpdateRun {

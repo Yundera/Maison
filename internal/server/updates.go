@@ -61,6 +61,11 @@ type UpdateRunItem struct {
 	// taken (installer.ErrNoRollback). Nothing was changed; the row offers
 	// "Update without backup" for that app alone.
 	NoRollback bool `json:"no_rollback,omitempty"`
+	// Reason says why (installer.NoRollback*), and for no_room how far off it was, so
+	// the row can explain it in plain words rather than relaying the engine's error.
+	Reason string `json:"reason,omitempty"`
+	Needed int64  `json:"needed,omitempty"`
+	Free   int64  `json:"free,omitempty"`
 }
 
 // UpdateRun is the current run, or the last one once it has finished. A run's
@@ -93,7 +98,7 @@ var (
 	// Skipping the rollback point is an owner's decision about one app, made after
 	// seeing that app refused — never something "update all" does wholesale.
 	errNoBackupNeedsOneApp = errors.New("an update without a backup is chosen for one app at a time")
-	errNothingToRun  = errors.New("nothing to update")
+	errNothingToRun        = errors.New("nothing to update")
 )
 
 func (s *Server) updatesSnapshot() any {
@@ -295,6 +300,10 @@ func (s *Server) runUpdates(q []string, opts installer.UpdateOptions) {
 			if err != nil {
 				it.Status, it.Error = runFailed, err.Error()
 				it.NoRollback = errors.Is(err, installer.ErrNoRollback)
+				var nr *installer.NoRollbackError
+				if errors.As(err, &nr) {
+					it.Reason, it.Needed, it.Free = nr.Reason, nr.Needed, nr.Free
+				}
 				return
 			}
 			it.Status = runDone

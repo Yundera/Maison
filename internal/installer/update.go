@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -249,7 +250,7 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
 			Title:  project + " is broken after a failed update",
 			Detail: "The update failed and there was no rollback point to put the old version back from:\n" + cause.Error() + "\n\nThe new version is in place and did not come up. Its logs, from the tile's menu, will say why.",
-			Args:   map[string]string{"app": project},
+			Args:   map[string]string{"app": project, "reason": "broken"},
 		})
 		return res, fmt.Errorf("update failed and could not be undone: %w", cause)
 	}
@@ -265,7 +266,7 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
 			Title:  project + " is broken after a failed update",
 			Detail: "The update failed and putting the old version back failed too:\n" + err.Error() + "\n\nThe app is in neither state and needs attention. Its previous version is in the backup named " + res.Backup + ".",
-			Args:   map[string]string{"app": project},
+			Args:   map[string]string{"app": project, "reason": "rollback_failed"},
 		})
 		return res, fmt.Errorf("update failed and the rollback failed too (%v): %w", err, cause)
 	}
@@ -281,7 +282,7 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 				ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
 				Title:  project + " is down after a failed update",
 				Detail: "The update failed:\n" + cause.Error() + "\n\nThe previous version was put back from the backup named " + res.Backup + ", but it is not running: " + err.Error() + "\n\nIts logs, from the tile's menu, will say why. What the failed update left behind was archived with the app's other backups.",
-				Args:   map[string]string{"app": project},
+				Args:   map[string]string{"app": project, "reason": "not_running"},
 			})
 			return res, fmt.Errorf("update failed and was rolled back, but %s is not running (%v): %w", project, err, cause)
 		}
@@ -292,7 +293,7 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 		ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
 		Title:  project + " could not be updated",
 		Detail: "The update failed and the previous version was put back; it is running.\n\n" + cause.Error() + "\n\nThe store will keep offering this update. If it fails the same way again, the store's version of the app needs a fix.",
-		Args:   map[string]string{"app": project},
+		Args:   map[string]string{"app": project, "reason": "rolled_back"},
 	})
 	return res, fmt.Errorf("update failed and was rolled back: %w", cause)
 }
@@ -410,19 +411,111 @@ func (in *Installer) SetUpdateRef(ctx context.Context, project, refStr string) (
 	return st, nil
 }
 
+// Why an update was refused for want of a rollback point. Carried on the error, the
+// run item and the incident's args, so the Updates page can say it in plain words
+// instead of relaying an engine's error string.
+const (
+	// NoRollbackNoRoom: the rollback copy would not fit on the disk (Needed > Free).
+	NoRollbackNoRoom = "no_room"
+	// NoRollbackTimeout: the copy ran out of time — in practice the stopped pass of
+	// an app with a very large number of files outrunning its downtime budget.
+	NoRollbackTimeout = "backup_timeout"
+	// NoRollbackFailed: the copy failed for any other reason.
+	NoRollbackFailed = "backup_failed"
+)
+
+// RoomError is what a RollbackRoom check returns when the copy would not fit: the
+// numbers are what let the owner see how far off it is.
+type RoomError struct {
+	Needed, Free int64
+}
+
+func (e *RoomError) Error() string {
+	return fmt.Sprintf("the rollback copy needs %s of free disk, %s is free", humanBytes(e.Needed), humanBytes(e.Free))
+}
+
+// NoRollbackError is an update refused because its rollback point could not be
+// taken. errors.Is(err, ErrNoRollback) holds for it.
+type NoRollbackError struct {
+	Reason       string // NoRollbackNoRoom | NoRollbackTimeout | NoRollbackFailed
+	Needed, Free int64  // NoRollbackNoRoom only
+	Cause        error
+}
+
+func (e *NoRollbackError) Error() string {
+	var why string
+	switch e.Reason {
+	case NoRollbackNoRoom:
+		why = "not enough free disk for the safety backup (" + e.Cause.Error() + ")"
+	case NoRollbackTimeout:
+		why = "the safety backup took too long"
+	default:
+		why = "the safety backup failed: " + e.Cause.Error()
+	}
+	return "not updated, nothing was changed: " + why
+}
+
+func (e *NoRollbackError) Is(target error) bool { return target == ErrNoRollback }
+func (e *NoRollbackError) Unwrap() error        { return e.Cause }
+
+// classifyNoRollback turns the error from RollbackRoom or BackupBeforeUpdate into
+// a NoRollbackError with its reason.
+func classifyNoRollback(cause error) *NoRollbackError {
+	e := &NoRollbackError{Reason: NoRollbackFailed, Cause: cause}
+	var room *RoomError
+	switch {
+	case errors.As(cause, &room):
+		e.Reason, e.Needed, e.Free = NoRollbackNoRoom, room.Needed, room.Free
+	case errors.Is(cause, context.DeadlineExceeded):
+		e.Reason = NoRollbackTimeout
+	}
+	return e
+}
+
 // refuseNoRollback reports an update refused for want of a rollback point. The app is
-// untouched, so it is a warning, and the incident says how to go ahead anyway: an
-// error that leaves the owner no next step is a design bug.
+// untouched, so it is a warning, and the incident says how to go ahead anyway — with
+// advice that fits the cause: an error that leaves the owner no next step, or the
+// wrong one, is a design bug.
 func (in *Installer) refuseNoRollback(project string, cause error) error {
-	err := fmt.Errorf("%w: %v", ErrNoRollback, cause)
-	log.Printf("update %s: refused: %v", project, err)
+	err := classifyNoRollback(cause)
+	log.Printf("update %s: refused (%s): %v", project, err.Reason, cause)
+	var advice string
+	switch err.Reason {
+	case NoRollbackNoRoom:
+		advice = "Free some disk and retry"
+	case NoRollbackTimeout:
+		advice = "The backup ran out of time — typically an app with a very large number of files. Retry, or"
+	default:
+		advice = "Retry, or"
+	}
+	if err.Reason == NoRollbackNoRoom {
+		advice += ", or"
+	}
+	args := map[string]string{"app": project, "reason": err.Reason}
+	if err.Reason == NoRollbackNoRoom {
+		args["needed"] = strconv.FormatInt(err.Needed, 10)
+		args["free"] = strconv.FormatInt(err.Free, 10)
+	}
 	in.report(incident.Report{
 		ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
 		Title: project + " was not updated: no rollback point could be taken",
 		Detail: cause.Error() + "\n\nNothing was changed; the app is still running its current version. " +
-			"Free some disk and retry, or update this app on its own with \"Update without backup\" — " +
-			"a failed update then cannot be undone.",
-		Args: map[string]string{"app": project},
+			advice + " update this app on its own with \"Update without backup\" — a failed update then cannot be undone.",
+		Args: args,
 	})
 	return err
+}
+
+// humanBytes renders a byte count the way the dashboard does (binary units).
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

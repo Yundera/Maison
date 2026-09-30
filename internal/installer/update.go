@@ -3,6 +3,7 @@ package installer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -75,10 +76,25 @@ type UpdateResult struct {
 	Backup string `json:"backup,omitempty"`
 	// RolledBack is true when the update failed and the app was put back.
 	RolledBack bool `json:"rolled_back,omitempty"`
-	// Warning explains a rollback point that could not be taken, or a rollback that
-	// itself failed. It is not an error — the update still happened — but it is the
-	// thing the operator most needs to see.
+	// Warning explains an update applied without a rollback point (NoBackup), or a
+	// rollback that itself failed. It is not an error — the update still happened —
+	// but it is the thing the operator most needs to see.
 	Warning string `json:"warning,omitempty"`
+}
+
+// ErrNoRollback marks an update refused because its rollback point could not be
+// taken — not enough free disk for a second copy of the app, or the copy itself
+// failing. Nothing was changed. The caller may retry that one app with
+// UpdateOptions.NoBackup, which is an owner's explicit choice and never what
+// "update all" does.
+var ErrNoRollback = errors.New("no rollback point")
+
+// UpdateOptions are the choices an owner makes for one update.
+type UpdateOptions struct {
+	// NoBackup applies the update without taking a rollback point, so a failed
+	// update cannot be undone. Offered after an update was refused with
+	// ErrNoRollback, for one app at a time.
+	NoBackup bool
 }
 
 // ApplyUpdate pulls the store's current docker-compose.yml, and — if it differs
@@ -89,7 +105,7 @@ type UpdateResult struct {
 // An update is the most common way an app breaks, and it is the one destructive
 // change Maison makes on the user's behalf, so it takes a backup first and puts the
 // app back if bringing it up fails.
-func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateResult, error) {
+func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts UpdateOptions) (UpdateResult, error) {
 	var res UpdateResult
 	dir := filepath.Join(in.cfg.AppsDir(), project)
 	composePath := filepath.Join(dir, "docker-compose.yml")
@@ -111,6 +127,14 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 		return res, nil // already up to date — nothing to do
 	}
 
+	// Refused before the image pull, so an app whose rollback point cannot fit costs
+	// a size walk, not a download followed by a refusal. The walk is stat-only.
+	if !opts.NoBackup && in.RollbackRoom != nil {
+		if err := in.RollbackRoom(ctx, project); err != nil {
+			return res, in.refuseNoRollback(project, err)
+		}
+	}
+
 	// The new version's images, pulled while the old version is still serving: the stop
 	// below would otherwise cost the whole download, not just the swap. Not fatal —
 	// `compose up` pulls whatever is still missing, and fails loudly if it cannot.
@@ -124,28 +148,22 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string) (UpdateRes
 	// rollback has to be fast, and restoring from a repository is a download. The
 	// server wires this to the local engine specifically, so putting the app back is
 	// a rename.
-	if in.BackupBeforeUpdate != nil {
+	//
+	// A rollback point that cannot be taken REFUSES the update: nothing has been
+	// stopped or written yet, so refusing costs nothing, and going ahead would make
+	// the one destructive change Maison makes irreversible without anyone having
+	// chosen that. The owner can choose it — UpdateOptions.NoBackup, per app — which
+	// is what keeps a too-large app from being pinned on an old version.
+	switch {
+	case opts.NoBackup:
+		res.Warning = "updated without a rollback point, as requested: a failed update cannot be undone"
+		log.Printf("update %s: %s", project, res.Warning)
+	case in.BackupBeforeUpdate != nil:
 		name, err := in.BackupBeforeUpdate(ctx, project)
-		switch {
-		case err != nil:
-			// Not fatal. The commonest reason is that the app is too large to hold a
-			// second copy of, and refusing to update on those grounds would leave the
-			// app stuck on an old version — including for a security fix. Proceed, and
-			// say plainly that there is no way back.
-			res.Warning = "no rollback point could be taken, so this update cannot be undone: " + err.Error()
-			log.Printf("update %s: %s", project, res.Warning)
-			// Worth telling the owner about even though the update goes ahead: the
-			// commonest cause is a disk with no room for a second copy, which is a
-			// condition that will also break their backups.
-			in.report(incident.Report{
-				ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
-				Title:  project + " was updated without a rollback point",
-				Detail: err.Error() + "\n\nThe update went ahead, but it cannot be undone. The usual cause is not enough free disk to hold a second copy of the app.",
-				Args:   map[string]string{"app": project},
-			})
-		default:
-			res.Backup = name
+		if err != nil {
+			return res, in.refuseNoRollback(project, err)
 		}
+		res.Backup = name
 	}
 
 	// Stop the old version before anything of the new one runs. The new version's init
@@ -372,4 +390,21 @@ func (in *Installer) SetUpdateRef(ctx context.Context, project, refStr string) (
 	st := statusOf(ref)
 	st.Available = !bytes.Equal(current, newBase)
 	return st, nil
+}
+
+// refuseNoRollback reports an update refused for want of a rollback point. The app is
+// untouched, so it is a warning, and the incident says how to go ahead anyway: an
+// error that leaves the owner no next step is a design bug.
+func (in *Installer) refuseNoRollback(project string, cause error) error {
+	err := fmt.Errorf("%w: %v", ErrNoRollback, cause)
+	log.Printf("update %s: refused: %v", project, err)
+	in.report(incident.Report{
+		ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
+		Title: project + " was not updated: no rollback point could be taken",
+		Detail: cause.Error() + "\n\nNothing was changed; the app is still running its current version. " +
+			"Free some disk and retry, or update this app on its own with \"Update without backup\" — " +
+			"a failed update then cannot be undone.",
+		Args: map[string]string{"app": project},
+	})
+	return err
 }

@@ -36,7 +36,7 @@
   let error = $state('')
   /** The confirmation open on the page: update all, one system app, or a link. */
   let confirm = $state<
-    | { kind: 'run'; ids: string[]; system: boolean; pre: Preflight | null }
+    | { kind: 'run'; ids: string[]; system: boolean; noBackup: boolean; pre: Preflight | null }
     | { kind: 'link'; row: AppUpdate }
     | null
   >(null)
@@ -91,17 +91,17 @@
 
   /** Open the run confirmation. The preflight measures app folders to say which
    *  rollback points will not fit, so it is asked once, here. */
-  function askRun(ids: string[], system = false) {
-    confirm = { kind: 'run', ids, system, pre: null }
+  function askRun(ids: string[], system = false, noBackup = false) {
+    confirm = { kind: 'run', ids, system, noBackup, pre: null }
     act(async () => {
       const pre = await preflightUpdates(ids)
       if (confirm?.kind === 'run') confirm = { ...confirm, pre }
     })
   }
 
-  function startRun(ids: string[]) {
+  function startRun(ids: string[], noBackup = false) {
     act(async () => {
-      await runUpdates(ids)
+      await runUpdates(ids, noBackup)
       confirm = null
     })
   }
@@ -169,6 +169,11 @@
   {/if}
   {#if item?.error}<p class="detail bad">{item.error}</p>{/if}
   {#if item?.warning}<p class="detail warn">{item.warning}</p>{/if}
+  {#if item?.no_rollback && !running}
+    <button disabled={busy} onclick={() => askRun([row.id], !!row.protected, true)}>
+      {$t('updates_no_backup_retry')}
+    </button>
+  {/if}
 {/snippet}
 
 <header class="head">
@@ -217,7 +222,9 @@
         <p class="meta">{$t('updates_preflight')}</p>
       {:else}
         <p>{$t('updates_confirm_run', { n: String(confirm.pre.apps.length) })}</p>
-        {#if confirm.pre.no_rollback?.length}
+        {#if confirm.noBackup}
+          <p class="warn">{$t('updates_no_backup_warning')}</p>
+        {:else if confirm.pre.no_rollback?.length}
           <p class="warn">
             {$t('updates_no_rollback', { apps: confirm.pre.no_rollback.join(', ') })}
           </p>
@@ -229,9 +236,9 @@
         <button
           class="primary"
           disabled={busy || confirm.pre === null}
-          onclick={() => confirm?.kind === 'run' && startRun(confirm.ids)}
+          onclick={() => confirm?.kind === 'run' && startRun(confirm.ids, confirm.noBackup)}
         >
-          {$t('updates_start')}
+          {confirm.noBackup ? $t('updates_no_backup_start') : $t('updates_start')}
         </button>
       </div>
     </div>

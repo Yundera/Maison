@@ -17,6 +17,7 @@
     type UpdateStatus,
     type EnvVar,
   } from '../stores/apps'
+  import { ApiError } from '../api/client'
   import { BRAND } from '../brand'
   import { bare, isAddressableRef } from '../storeref'
   import { fetchStoreSources, type StoreSource } from '../stores/store'
@@ -244,6 +245,9 @@
   let applyingUpdate = $state(false)
   let updateMsg = $state('')
   let updateChecked = $state(false) // one-shot: don't re-auto-check on error
+  // The last update was refused because no rollback point could be taken; offer to
+  // go ahead without one. Cleared by any other outcome.
+  let offerNoBackup = $state(false)
 
   // The update source, editable: one locator — `<store>/-/<folder>/<app id>` —
   // which is the same string the store's own address bar carries, so retargeting an
@@ -304,15 +308,18 @@
     }
   }
 
-  async function runApplyUpdate() {
+  async function runApplyUpdate(noBackup = false) {
     applyingUpdate = true
     updateMsg = ''
     try {
-      const applied = await applyUpdate(id)
-      updateMsg = applied ? 'Updated & recreated.' : 'Already up to date.'
+      const res = await applyUpdate(id, noBackup)
+      offerNoBackup = false
+      updateMsg = res.updated ? 'Updated & recreated.' : 'Already up to date.'
+      if (res.warning) updateMsg += ' ' + res.warning
       await runCheckUpdate() // refresh the status after applying
     } catch (e) {
-      updateMsg = String(e)
+      offerNoBackup = e instanceof ApiError && e.body?.no_rollback === true
+      updateMsg = e instanceof Error ? e.message : String(e)
     } finally {
       applyingUpdate = false
     }
@@ -687,10 +694,20 @@
           >
             {checkingUpdate ? 'Checking…' : 'Check again'}
           </button>
+          {#if offerNoBackup}
+            <button
+              class="danger"
+              disabled={applyingUpdate || checkingUpdate || !update?.available}
+              title="Skips the rollback point: if the new version fails to start, it cannot be put back."
+              onclick={() => runApplyUpdate(true)}
+            >
+              Update without backup
+            </button>
+          {/if}
           <button
             class="primary"
             disabled={applyingUpdate || checkingUpdate || !update?.available}
-            onclick={runApplyUpdate}
+            onclick={() => runApplyUpdate()}
           >
             {applyingUpdate ? 'Updating…' : 'Update now'}
           </button>
@@ -994,6 +1011,11 @@
   }
   .actions button:disabled {
     opacity: 0.5;
+  }
+  .actions button.danger {
+    background: var(--red);
+    color: #fff;
+    border-color: var(--red);
   }
   /* Update tab */
   .update-box {

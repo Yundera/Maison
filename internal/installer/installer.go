@@ -104,6 +104,12 @@ type Installer struct {
 	BackupBeforeUpdate func(ctx context.Context, project string) (string, error)
 	RollBack           func(ctx context.Context, project, name string) error
 
+	// RollbackRoom checks, before anything else of an update happens, that the
+	// rollback point BackupBeforeUpdate would take fits on its disk. A non-nil error
+	// refuses the update (ErrNoRollback). Nil skips the check; the copy itself then
+	// fails on ENOSPC, which also refuses the update, just later.
+	RollbackRoom func(ctx context.Context, project string) error
+
 	// StopBeforeUpdate stops the app's containers once the rollback point is taken and
 	// before the new version is converged. The new version's pre_up init steps run
 	// against the app's data, and the old containers still have it open: a database that

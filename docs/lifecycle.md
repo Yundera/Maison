@@ -161,8 +161,10 @@ install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdat
 ```
 1. fetch the store's current compose for the app store-ref names
 2. equal to what's on disk, byte for byte? → nothing to do, report "up to date"
+   room for the rollback point on the local disk? no → REFUSE, nothing changed
 3. pull the new version's images  ← while the old version is still serving
 4. back up the app  ← the rollback point, taken before anything is written
+                      (failed? → REFUSE, nothing changed)
 5. stop the old version  (system apps excepted)
 6. overwrite docker-compose.yml (the strict base only)
 7. refresh .seed from the same store sync as the compose above
@@ -179,11 +181,30 @@ them under the local engine's own retention like any other — there is no separ
 retention for them, and `retention.Plan` never drops the newest, so a rollback point
 cannot be expired out from under an update.
 
-If the rollback point cannot be taken — almost always because the app is too large
-to hold a second copy of — **the update still proceeds**, and the response carries a
-`warning` saying it cannot be undone. Refusing to update on those grounds would pin
-the largest apps on old versions, including for security fixes, which is the worse
-failure.
+If the rollback point cannot be taken, **the update is refused** and nothing is
+changed (`installer.ErrNoRollback`; `409` with `no_rollback: true` from
+`POST /api/apps/{id}/update`, `no_rollback` on the run item). Room is checked first,
+before the image pull: the same stat-only measurement as the backup dialog
+(`EstimateBackup` against the local engine: the folder minus its `backup.exclude`,
+times the copy's headroom, against free disk). A copy that fails anyway is a refusal too.
+Each refusal raises an `app.update:<app>` warning that says how to go ahead.
+
+Going ahead is the **owner's choice, per app**: `{"noBackup": true}` on
+`POST /api/apps/{id}/update`, or on `POST /api/updates/run` naming exactly one app.
+The Update tab and the refused row on Settings → Updates offer it as *Update without
+backup*. It skips the room check and the rollback point, and the response carries a
+`warning` that the update cannot be undone. "Update all" never asks for it.
+
+Why refuse rather than go ahead: the old behaviour updated anyway so the largest apps
+were never pinned on old versions. But it made the one destructive change Maison makes
+irreversible without anyone having chosen that, and it ran the copy until the disk was
+full — failing not just the update but every app still writing to that disk. The
+explicit per-app option keeps the large apps updatable without either.
+
+The copy itself writes through `apps.writebackFile`, which flushes and evicts each
+8 MiB as it goes. Page cache is charged to Maison's cgroup, and an unbounded copy of a
+multi-GB file filled a 512 MiB limit with dirty pages and got Maison OOM-killed
+mid-update (watch.nsl.sh, 2026-09-30).
 
 The old version is **stopped before anything of the new one runs** (step 5). The new
 version's `init` steps run in `pre_up`, against the app's data, and the old containers
@@ -233,8 +254,8 @@ overlay. Three rules:
 - **Strictly sequential**, like the nightly backup: every update takes a local rollback
   point, a full copy of the app, and several at once is how a data disk fills. The
   confirmation dialog asks `GET /api/updates/preflight` first, which names the apps whose
-  rollback point will not fit counting the ones taken before them — and they are still
-  updated, for the reason given above.
+  rollback point will not fit counting the ones taken before them — those will be
+  refused, untouched, and can then be updated one at a time without a backup.
 - **A failure does not stop the run.** The failed app has already been put back and has
   raised its incident; the next app's update has nothing to do with it.
 - **System apps are left out.** Updating the dashboard, or the gateway in front of it,

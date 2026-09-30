@@ -27,7 +27,7 @@ relay fail a backup — but it was welded to the scheduler.
 Meanwhile a dozen other real failures were `log.Printf`-and-swallowed, in a container
 log nobody reads:
 
-- an update that could not take a rollback point, so the app can no longer be undone
+- an update refused because it could not take a rollback point (nothing changed; the incident says how to update without one)
 - an update that failed **and** whose rollback failed, leaving the app in neither state
 - a `post_install` or `post_up` hook that failed, leaving an app half-configured
 - a nightly store refresh that has been 404ing for a month
@@ -114,7 +114,7 @@ what nobody is present for.
 | `app.install:<app>` | `app.install` | `installer.StartInstall`, cleared by a later success |
 | `app.uninstall:<app>` | `app.uninstall` | `apps.Registry.StartUninstall`, cleared by a later success |
 | `app.hook:<app>` | `app.stackup` | `stackup.Up` (`.env` sync, `RunInit`, `post_up`) and `installer` (`post_install`) |
-| `app.update:<app>` | `app.update` | `installer.ApplyUpdate` — warning for "no rollback point" and for "failed and rolled back" (the old version is running); **critical** for "the rollback failed too", "rolled back but not running" (`installer.Steady`) and "failed with no rollback point to undo it". Cleared by a later successful update |
+| `app.update:<app>` | `app.update` | `installer.ApplyUpdate` — warning for "refused: no rollback point could be taken" (nothing changed) and for "failed and rolled back" (the old version is running); **critical** for "the rollback failed too", "rolled back but not running" (`installer.Steady`) and "failed with no rollback point to undo it". Cleared by a later successful update |
 | `store.source` | `store.source` | `appstore.StartDailyRefresh`, after two consecutive failures |
 
 `internal/stackup` is package-level functions with no receiver to hang a hook on, so

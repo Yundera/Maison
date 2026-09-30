@@ -134,7 +134,7 @@ func TestApplyUpdateStopsTheOldVersionBetweenTheRollbackPointAndTheWrite(t *test
 
 	// There is no Docker here, so bringing the new version up fails — which is exactly
 	// the path that has to put the app back.
-	if _, err := in.ApplyUpdate(context.Background(), "jellyfin"); err == nil {
+	if _, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{}); err == nil {
 		t.Fatal("an update that could not start reported success")
 	}
 	if got := strings.Join(*steps, " → "); got != "backup → stop → rollback" {
@@ -150,7 +150,7 @@ func TestApplyUpdateWritesNothingWhenTheStopFails(t *testing.T) {
 		return errors.New("daemon went away")
 	}
 
-	_, err := in.ApplyUpdate(context.Background(), "jellyfin")
+	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
 	if err == nil || !strings.Contains(err.Error(), "daemon went away") {
 		t.Fatalf("err = %v, want the stop failure", err)
 	}
@@ -159,5 +159,66 @@ func TestApplyUpdateWritesNothingWhenTheStopFails(t *testing.T) {
 	}
 	if got := strings.Join(*steps, " → "); got != "backup → stop" {
 		t.Errorf("steps = %s, want backup → stop and no rollback", got)
+	}
+}
+
+// No room for the rollback point: refused before anything happens — no pull, no
+// backup attempt, no stop, no write — and the error says why and how to go ahead.
+func TestApplyUpdateRefusedWhenTheRollbackPointDoesNotFit(t *testing.T) {
+	in, dir, installed, steps := updateFixture(t)
+	in.RollbackRoom = func(context.Context, string) error {
+		*steps = append(*steps, "room")
+		return errors.New("it needs 103 GiB, 104 GiB is free")
+	}
+
+	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
+	if !errors.Is(err, ErrNoRollback) {
+		t.Fatalf("err = %v, want ErrNoRollback", err)
+	}
+	if got := strings.Join(*steps, " → "); got != "room" {
+		t.Errorf("steps = %s, want the room check alone", got)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dir, "docker-compose.yml")); string(raw) != installed {
+		t.Error("compose was rewritten by a refused update")
+	}
+}
+
+// A rollback copy that fails is a refusal too, before the app is stopped. It used to
+// go ahead without a way back.
+func TestApplyUpdateRefusedWhenTheRollbackPointFails(t *testing.T) {
+	in, dir, installed, steps := updateFixture(t)
+	in.BackupBeforeUpdate = func(context.Context, string) (string, error) {
+		*steps = append(*steps, "backup")
+		return "", errors.New("no space left on device")
+	}
+
+	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
+	if !errors.Is(err, ErrNoRollback) {
+		t.Fatalf("err = %v, want ErrNoRollback", err)
+	}
+	if got := strings.Join(*steps, " → "); got != "backup" {
+		t.Errorf("steps = %s, want backup and nothing after it", got)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dir, "docker-compose.yml")); string(raw) != installed {
+		t.Error("compose was rewritten by a refused update")
+	}
+}
+
+// NoBackup is the owner's explicit way past that refusal: no room check, no backup,
+// and — with nothing to restore — no rollback when the new version fails to start.
+func TestApplyUpdateNoBackupSkipsTheRollbackPoint(t *testing.T) {
+	in, _, _, steps := updateFixture(t)
+	in.RollbackRoom = func(context.Context, string) error {
+		*steps = append(*steps, "room")
+		return errors.New("would refuse")
+	}
+
+	// No Docker here, so the up fails; what matters is what ran before it.
+	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{NoBackup: true})
+	if err == nil || errors.Is(err, ErrNoRollback) {
+		t.Fatalf("err = %v, want the up failure, not a refusal", err)
+	}
+	if got := strings.Join(*steps, " → "); got != "stop" {
+		t.Errorf("steps = %s, want stop alone (no room check, backup or rollback)", got)
 	}
 }

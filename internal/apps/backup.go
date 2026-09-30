@@ -1448,10 +1448,13 @@ func copyFile(src, dst string, fi fs.FileInfo, onRead func(n int64)) error {
 	defer in.Close()
 
 	tmp := dst + ".partial"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fi.Mode().Perm())
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fi.Mode().Perm())
 	if err != nil {
 		return err
 	}
+	// Bounded writeback: an app folder can hold multi-GB files, and unbounded dirty
+	// cache is charged to Maison's own memory limit (see writebackFile).
+	out := newWritebackFile(f)
 	if _, err := io.Copy(out, &progressReader{r: in, onRead: onRead}); err != nil {
 		out.Close()
 		_ = os.Remove(tmp)

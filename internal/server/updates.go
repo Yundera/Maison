@@ -57,6 +57,10 @@ type UpdateRunItem struct {
 	RolledBack bool   `json:"rolled_back,omitempty"`
 	Warning    string `json:"warning,omitempty"`
 	Error      string `json:"error,omitempty"`
+	// NoRollback marks an item refused because its rollback point could not be
+	// taken (installer.ErrNoRollback). Nothing was changed; the row offers
+	// "Update without backup" for that app alone.
+	NoRollback bool `json:"no_rollback,omitempty"`
 }
 
 // UpdateRun is the current run, or the last one once it has finished. A run's
@@ -86,6 +90,9 @@ type updatesState struct {
 
 var (
 	errRunInProgress = errors.New("an update run is already in progress")
+	// Skipping the rollback point is an owner's decision about one app, made after
+	// seeing that app refused — never something "update all" does wholesale.
+	errNoBackupNeedsOneApp = errors.New("an update without a backup is chosen for one app at a time")
 	errNothingToRun  = errors.New("nothing to update")
 )
 
@@ -231,7 +238,10 @@ func runQueue(rows []installer.AppUpdate, ids []string) ([]string, error) {
 
 // startUpdateRun queues ids and runs them in the background. It returns once the run
 // is accepted.
-func (s *Server) startUpdateRun(ids []string) error {
+func (s *Server) startUpdateRun(ids []string, opts installer.UpdateOptions) error {
+	if opts.NoBackup && len(ids) != 1 {
+		return errNoBackupNeedsOneApp
+	}
 	u := &s.updates
 	u.mu.Lock()
 	if u.run.Running {
@@ -251,11 +261,11 @@ func (s *Server) startUpdateRun(ids []string) error {
 	u.mu.Unlock()
 	s.broadcastUpdates()
 
-	go s.runUpdates(q)
+	go s.runUpdates(q, opts)
 	return nil
 }
 
-func (s *Server) runUpdates(q []string) {
+func (s *Server) runUpdates(q []string, opts installer.UpdateOptions) {
 	u := &s.updates
 	set := func(i int, fn func(*UpdateRunItem)) {
 		u.mu.Lock()
@@ -271,7 +281,7 @@ func (s *Server) runUpdates(q []string) {
 		var res installer.UpdateResult
 		err := s.apps.WithBusy(id, func() error {
 			var e error
-			res, e = s.installer.ApplyUpdate(ctx, id)
+			res, e = s.installer.ApplyUpdate(ctx, id, opts)
 			return e
 		})
 		cancel()
@@ -284,6 +294,7 @@ func (s *Server) runUpdates(q []string) {
 			it.Applied, it.RolledBack, it.Warning = res.Applied, res.RolledBack, res.Warning
 			if err != nil {
 				it.Status, it.Error = runFailed, err.Error()
+				it.NoRollback = errors.Is(err, installer.ErrNoRollback)
 				return
 			}
 			it.Status = runDone
@@ -372,8 +383,8 @@ type UpdatePreflight struct {
 	Apps []string `json:"apps"`
 	// NoRollback names the apps whose rollback point will not fit on the data disk,
 	// counting the ones taken before them in the same run — each is a full local copy,
-	// and the run does not free them. They are still updated: refusing would pin the
-	// largest apps on old versions, security fixes included (see lifecycle.md).
+	// and the run does not free them. They will be REFUSED, untouched; each can then
+	// be updated on its own without a backup (see lifecycle.md).
 	NoRollback []string `json:"no_rollback,omitempty"`
 }
 
@@ -423,6 +434,8 @@ func (s *Server) handleRunUpdates(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		IDs []string `json:"ids"`
+		// NoBackup: exactly one id, the owner's retry after a refusal.
+		NoBackup bool `json:"noBackup"`
 	}
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -430,7 +443,7 @@ func (s *Server) handleRunUpdates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	switch err := s.startUpdateRun(body.IDs); {
+	switch err := s.startUpdateRun(body.IDs, installer.UpdateOptions{NoBackup: body.NoBackup}); {
 	case errors.Is(err, errRunInProgress):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case err != nil:

@@ -31,13 +31,27 @@ async function req<T>(
  */
 async function apiError(method: string, path: string, res: Response): Promise<Error> {
   const text = await res.text().catch(() => '')
-  let msg = ''
+  let body: Record<string, unknown> | null = null
   try {
-    msg = (JSON.parse(text) as { error?: string })?.error ?? ''
+    body = JSON.parse(text) as Record<string, unknown>
   } catch {
     /* not JSON — fall through */
   }
-  return new Error(msg || `${method} ${path} -> ${res.status} ${text}`.trim())
+  const msg = typeof body?.error === 'string' ? body.error : ''
+  return new ApiError(msg || `${method} ${path} -> ${res.status} ${text}`.trim(), res.status, body)
+}
+
+/** A failed response. `message` is what to show; `body` is the parsed JSON body, for
+ *  a caller that acts on a flag the API sets beside the message (an update refused
+ *  with `no_rollback`, say). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: Record<string, unknown> | null,
+  ) {
+    super(message)
+  }
 }
 
 export const api = {

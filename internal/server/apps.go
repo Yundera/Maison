@@ -133,13 +133,24 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
+	// {"noBackup": true} — the owner's explicit retry of an update refused for want
+	// of a rollback point. Body optional: a bare POST is an ordinary update.
+	var body struct {
+		NoBackup bool `json:"noBackup"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
 	var res installer.UpdateResult
 	err := s.apps.WithBusy(id, func() error {
 		var e error
-		res, e = s.installer.ApplyUpdate(ctx, id)
+		res, e = s.installer.ApplyUpdate(ctx, id, installer.UpdateOptions{NoBackup: body.NoBackup})
 		return e
 	})
 	updated := res.Applied
@@ -154,11 +165,21 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		if res.Warning != "" {
 			out["warning"] = res.Warning
 		}
-		writeJSON(w, http.StatusInternalServerError, out)
+		status := http.StatusInternalServerError
+		if errors.Is(err, installer.ErrNoRollback) {
+			// Refused, nothing changed: the UI offers "Update without backup".
+			out["no_rollback"] = true
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, out)
 		return
 	}
 	s.broadcastApps()
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "updated": updated})
+	out := map[string]any{"status": "ok", "updated": updated}
+	if res.Warning != "" {
+		out["warning"] = res.Warning
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleUninstallApp starts an uninstall and returns immediately: the work runs

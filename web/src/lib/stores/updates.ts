@@ -52,6 +52,9 @@ export interface RunItem {
   rolled_back?: boolean
   warning?: string
   error?: string
+  /** Refused: no rollback point could be taken. Nothing changed; the app can be
+   *  updated on its own without a backup. */
+  no_rollback?: boolean
 }
 
 export interface UpdateRun {
@@ -71,7 +74,8 @@ export interface UpdatesReport {
 
 export interface Preflight {
   apps: string[]
-  /** Apps whose rollback point will not fit on the disk. They are still updated. */
+  /** Apps whose rollback point will not fit on the disk. They will be refused,
+   *  untouched; each can then be updated on its own without a backup. */
   no_rollback?: string[]
 }
 
@@ -100,7 +104,9 @@ export const preflightUpdates = (ids: string[] = []) =>
   api.get<Preflight>(`/api/updates/preflight${ids.length ? `?ids=${ids.map(encodeURIComponent).join(',')}` : ''}`)
 
 /** Start a run. None = every available app except system apps. */
-export const runUpdates = (ids: string[] = []) => api.post('/api/updates/run', { ids })
+/** `noBackup` is accepted for exactly one app — the retry after a refusal. */
+export const runUpdates = (ids: string[] = [], noBackup = false) =>
+  api.post('/api/updates/run', noBackup ? { ids, noBackup } : { ids })
 
 /** What the settings rail badges: updates waiting in the ordinary grid, plus checks
  *  that failed. System apps are not counted — they are not in "update all". */

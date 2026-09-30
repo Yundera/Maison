@@ -360,10 +360,11 @@ func copyZipEntry(f *zip.File, path string) error {
 	if mode == 0 {
 		mode = 0o644
 	}
-	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	dst, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
+	out := newWritebackFile(dst)
 	defer out.Close()
 	_, err = io.Copy(out, rc)
 	return err
@@ -382,10 +383,13 @@ func archiveDir(srcDir, dstZip string, onProgress func(copied, total int64)) err
 	}
 	total := dirSize(srcDir)
 
-	zf, err := os.Create(dstZip)
+	f, err := os.Create(dstZip)
 	if err != nil {
 		return err
 	}
+	// The archive is as big as the app folder; bound what it leaves dirty in the
+	// page cache (see writebackFile). Deferred first, so it closes after zw.
+	zf := newWritebackFile(f)
 	defer zf.Close()
 
 	zw := zip.NewWriter(zf)

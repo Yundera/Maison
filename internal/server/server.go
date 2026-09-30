@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -284,6 +285,21 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 				return "", nil
 			}
 			return name, err
+		}
+		// The same measurement the backup dialog makes, against the local engine the
+		// rollback point is written to: a stat-only walk of the folder minus its
+		// declared exclusions, times the copy's headroom, against free disk. Without it
+		// the copy runs until the disk is full — failing not just this update but every
+		// app still writing to that disk.
+		s.installer.RollbackRoom = func(_ context.Context, project string) error {
+			est, err := s.apps.EstimateBackup(project, apps.EngineLocal, false)
+			if err != nil || est.Skipped || est.Enough {
+				// Unmeasurable: let the copy try and fail honestly on ENOSPC rather
+				// than refusing on a guess. Skipped: no rollback point by design.
+				return nil
+			}
+			return fmt.Errorf("not enough free disk for a rollback copy of %s: it needs %s, %s is free",
+				project, humanBytes(uint64(est.Needed)), humanBytes(uint64(est.Free)))
 		}
 		s.installer.RollBack = func(ctx context.Context, project, name string) error {
 			if err := s.apps.Restore(ctx, project, "", name, nil); err != nil {

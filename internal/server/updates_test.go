@@ -83,7 +83,7 @@ func TestRunContinuesPastAFailure(t *testing.T) {
 		installer.AppUpdate{ID: "a", State: installer.StateAvailable},
 		installer.AppUpdate{ID: "b", State: installer.StateAvailable},
 	)
-	if err := s.startUpdateRun(nil); err != nil {
+	if err := s.startUpdateRun(nil, installer.UpdateOptions{}); err != nil {
 		t.Fatalf("startUpdateRun: %v", err)
 	}
 	run := waitRunDone(t, s)
@@ -104,7 +104,7 @@ func TestSecondRunIsRefusedWhileOneIsGoing(t *testing.T) {
 	s := testUpdatesServer(t)
 	s.updates.rows = rows(installer.AppUpdate{ID: "a", State: installer.StateAvailable})
 	s.updates.run.Running = true
-	if err := s.startUpdateRun(nil); !errors.Is(err, errRunInProgress) {
+	if err := s.startUpdateRun(nil, installer.UpdateOptions{}); !errors.Is(err, errRunInProgress) {
 		t.Errorf("err = %v, want errRunInProgress", err)
 	}
 }
@@ -122,6 +122,17 @@ func TestUpdatesRoutesAreReachable(t *testing.T) {
 		if !strings.Contains(rec.Header().Get("Content-Type"), "json") || !strings.Contains(rec.Body.String(), `"error"`) {
 			t.Errorf("%s %s -> %d %q; want a JSON error from the updates handler",
 				c.method, c.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// Skipping the rollback point is chosen per app, after that app was refused. A run of
+// several — or "update all" — cannot ask for it.
+func TestNoBackupRunNeedsExactlyOneApp(t *testing.T) {
+	s := &Server{}
+	for _, ids := range [][]string{nil, {"a", "b"}} {
+		if err := s.startUpdateRun(ids, installer.UpdateOptions{NoBackup: true}); !errors.Is(err, errNoBackupNeedsOneApp) {
+			t.Errorf("ids %v: err = %v, want errNoBackupNeedsOneApp", ids, err)
 		}
 	}
 }

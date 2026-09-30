@@ -456,13 +456,18 @@ export function checkUpdate(id: string): Promise<UpdateStatus> {
 }
 
 /** Pull the store's current compose (when it differs) and bring the stack back
- *  up. Returns true when an update was actually applied. */
-export async function applyUpdate(id: string): Promise<boolean> {
-  const res = await api.post<{ status: string; updated: boolean }>(
+ *  up. `noBackup` skips the rollback point — the owner's retry after an update was
+ *  refused because one could not be taken (an ApiError whose body has `no_rollback`). */
+export async function applyUpdate(
+  id: string,
+  noBackup = false,
+): Promise<{ updated: boolean; warning?: string }> {
+  const res = await api.post<{ status: string; updated: boolean; warning?: string }>(
     `/api/apps/${encodeURIComponent(id)}/update`,
+    noBackup ? { noBackup: true } : undefined,
   )
   await loadApps()
-  return res?.updated ?? false
+  return { updated: res?.updated ?? false, warning: res?.warning }
 }
 
 /** Point the app at a different store, app or folder. The reference is resolved

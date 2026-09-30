@@ -68,3 +68,19 @@ func TestCopyFileLargeUnderMemoryLimit(t *testing.T) {
 		t.Fatalf("copied %d bytes, want %d", got.Size(), fi.Size())
 	}
 }
+
+// TestMirrorManyFilesUnderMemoryLimit is the second watch.nsl.sh reproduction, run by
+// hand: mirror a tree of very many small files inside a memory-limited container.
+// Before, mirror held every stale path in a map and nntmux's 1.27M-file NZB store
+// took Maison's heap past 512 MiB.
+//
+//	MAISON_BIGMIRROR_SRC=/data/tree MAISON_BIGMIRROR_DST=/data/copy ./apps.test -test.run ManyFiles
+func TestMirrorManyFilesUnderMemoryLimit(t *testing.T) {
+	src, dst := os.Getenv("MAISON_BIGMIRROR_SRC"), os.Getenv("MAISON_BIGMIRROR_DST")
+	if src == "" || dst == "" {
+		t.Skip("manual: set MAISON_BIGMIRROR_SRC and MAISON_BIGMIRROR_DST")
+	}
+	if err := mirror(src, dst, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}

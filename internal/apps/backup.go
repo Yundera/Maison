@@ -1311,7 +1311,9 @@ func pct(done, total int64) float64 {
 	if total <= 0 {
 		return 100
 	}
-	return float64(done) / float64(total) * 100
+	// A file that changed between mirror's measuring walk and its copy walk is
+	// copied without having been counted, so done can overshoot.
+	return min(float64(done)/float64(total)*100, 100)
 }
 
 // mirror makes dst an exact copy of src, and reports progress over the bytes it
@@ -1339,8 +1341,14 @@ func mirror(src, dst string, skip *exclude.Set, onProgress func(copied, total in
 	// Measure the work first so the bar means something: only the files that will
 	// actually be transferred count, so an unchanged second pass reads as instant
 	// rather than as a full copy that mysteriously flies by.
+	//
+	// Only the TOTAL is kept, never the list of files: pass A below re-asks upToDate
+	// per file (one stat) instead. Holding the stale set cost memory per file, and an
+	// app folder with 1.27 million files (nntmux's NZB store, watch.nsl.sh 2026-09-30)
+	// grew Maison's heap past its 512 MiB limit and got it OOM-killed mid-update. A
+	// file that changes between the two walks is simply copied — which is also the
+	// more correct answer.
 	var total int64
-	stale := map[string]bool{}
 	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -1365,7 +1373,6 @@ func mirror(src, dst string, skip *exclude.Set, onProgress func(copied, total in
 		if upToDate(filepath.Join(dst, rel), fi) {
 			return nil
 		}
-		stale[rel] = true
 		total += fi.Size()
 		return nil
 	})
@@ -1400,12 +1407,12 @@ func mirror(src, dst string, skip *exclude.Set, onProgress func(copied, total in
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if !stale[rel] {
-			return nil
-		}
 		fi, err := d.Info()
 		if err != nil {
 			return err
+		}
+		if upToDate(target, fi) {
+			return nil
 		}
 		if err := copyFile(path, target, fi, func(n int64) {
 			copied += n

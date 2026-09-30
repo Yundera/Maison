@@ -13,7 +13,8 @@
    */
   import { t } from '../../i18n'
   import { settingsApp } from '../../stores/ui'
-  import { setUpdateRef } from '../../stores/apps'
+  import { setUpdateRef, apps, appProgress, subscribeApps } from '../../stores/apps'
+  import { renderDuration, renderRate, renderSize } from '../../format'
   import { incidents, loadIncidents, subscribeIncidents, type Incident } from '../../stores/incidents'
   import {
     updates,
@@ -31,6 +32,9 @@
   loadIncidents()
   $effect(() => subscribeUpdates())
   $effect(() => subscribeIncidents())
+  // The live step of an app being updated rides on the app list, which this page
+  // does not otherwise follow.
+  $effect(() => subscribeApps())
 
   let busy = $state(false)
   let error = $state('')
@@ -48,6 +52,21 @@
   const run = $derived($updates?.run)
   const runItems = $derived(new Map<string, RunItem>((run?.items ?? []).map((i) => [i.id, i])))
   const running = $derived(!!run?.running)
+  /** Live progress of an app being updated — the same overlay its tile draws, so the
+   *  row and the tile always agree on the step and the percentage. */
+  const liveProgress = $derived(
+    new Map($apps.filter((a) => a.updating).map((a) => [a.id, { p: appProgress(a), msg: a.update_message }])),
+  )
+  function progressDetail(p: ReturnType<typeof appProgress>): string {
+    if (!p) return ''
+    const bits: string[] = []
+    if (p.total) bits.push(`${renderSize(p.done ?? 0)} / ${renderSize(p.total)}`)
+    const rate = renderRate(p.rate)
+    if (rate) bits.push(rate)
+    const eta = renderDuration(p.eta)
+    if (eta) bits.push($t('backup_time_left', { time: eta }))
+    return bits.join(' · ')
+  }
   const checking = $derived(!!$updates?.checking)
 
   /** Open app.update incidents, by app — a failed or rolled-back update that the
@@ -164,8 +183,18 @@
 {#snippet runNote(row: AppUpdate)}
   {@const item = runItems.get(row.id)}
   {@const st = status(item)}
+  {@const live = item?.status === 'updating' ? liveProgress.get(row.id) : undefined}
   {#if st}
     <span class="state {st.cls}">{st.text}</span>
+  {/if}
+  {#if live?.p}
+    <div class="step">
+      <span class="step-label">
+        {$t(live.p.label)} {Math.round(live.p.pct)}%{#if live.msg} — {live.msg}{/if}
+      </span>
+      <div class="bar"><span class="fill" style:width={`${live.p.pct}%`}></span></div>
+      {#if progressDetail(live.p)}<span class="step-detail">{progressDetail(live.p)}</span>{/if}
+    </div>
   {/if}
   {#if item?.error}<p class="detail bad">{item.error}</p>{/if}
   {#if item?.warning}<p class="detail warn">{item.warning}</p>{/if}
@@ -406,6 +435,30 @@
 {/if}
 
 <style>
+  .step {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.35rem;
+    width: 100%;
+  }
+  .step-label,
+  .step-detail {
+    font-size: 0.8rem;
+    color: var(--text-muted, var(--grey-600));
+  }
+  .bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--surface-2, hsla(0, 0%, 50%, 0.2));
+    overflow: hidden;
+  }
+  .bar .fill {
+    display: block;
+    height: 100%;
+    background: var(--progress-update);
+    transition: width 0.3s ease;
+  }
   .head {
     max-width: 46rem;
     margin-bottom: 1rem;

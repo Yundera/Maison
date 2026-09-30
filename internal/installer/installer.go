@@ -101,7 +101,10 @@ type Installer struct {
 	// RollBack also brings the app back up. A failed update has usually left the app
 	// stopped (see StopBeforeUpdate), so putting the files back is not the whole of it,
 	// and an app that does not start again is a rollback that did not work.
-	BackupBeforeUpdate func(ctx context.Context, project string) (string, error)
+	//
+	// report, called as the copy moves, feeds the tile's progress bar during the
+	// backup phase (Pct, byte counts, rate, ETA); Phase is set by the caller.
+	BackupBeforeUpdate func(ctx context.Context, project string, report func(UpdateState)) (string, error)
 	RollBack           func(ctx context.Context, project, name string) error
 
 	// RollbackRoom checks, before anything else of an update happens, that the
@@ -137,6 +140,7 @@ type Installer struct {
 
 	mu       sync.Mutex
 	installs map[string]*InstallState // project name -> live progress
+	updates  map[string]*UpdateState  // project name -> live update progress
 }
 
 // InstallState is a snapshot of one in-flight (or failed) install. It is overlaid

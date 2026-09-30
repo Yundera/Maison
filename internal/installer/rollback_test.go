@@ -102,7 +102,7 @@ func updateFixture(t *testing.T) (*Installer, string, string, *[]string) {
 	}
 
 	steps := &[]string{}
-	in.BackupBeforeUpdate = func(context.Context, string) (string, error) {
+	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, error) {
 		*steps = append(*steps, "backup")
 		return "2026-01-01_000000", nil
 	}
@@ -187,7 +187,7 @@ func TestApplyUpdateRefusedWhenTheRollbackPointDoesNotFit(t *testing.T) {
 // go ahead without a way back.
 func TestApplyUpdateRefusedWhenTheRollbackPointFails(t *testing.T) {
 	in, dir, installed, steps := updateFixture(t)
-	in.BackupBeforeUpdate = func(context.Context, string) (string, error) {
+	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, error) {
 		*steps = append(*steps, "backup")
 		return "", errors.New("no space left on device")
 	}
@@ -220,5 +220,33 @@ func TestApplyUpdateNoBackupSkipsTheRollbackPoint(t *testing.T) {
 	}
 	if got := strings.Join(*steps, " → "); got != "stop" {
 		t.Errorf("steps = %s, want stop alone (no room check, backup or rollback)", got)
+	}
+}
+
+// The tile's bar follows the update step by step, and goes away however it ends —
+// here a failed start that is rolled back.
+func TestApplyUpdateReportsEachStep(t *testing.T) {
+	in, _, _, _ := updateFixture(t)
+	var phases []string
+	in.OnUpdate = func() {
+		for _, st := range in.Updates() {
+			if n := len(phases); n == 0 || phases[n-1] != st.Phase {
+				phases = append(phases, st.Phase)
+			}
+		}
+	}
+	in.RollbackRoom = func(context.Context, string) error { return nil }
+	in.BackupBeforeUpdate = func(_ context.Context, _ string, report func(UpdateState)) (string, error) {
+		report(UpdateState{Pct: 50, Done: 5, Total: 10})
+		return "2026-01-01_000000", nil
+	}
+
+	_, _ = in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{}) // no Docker: start fails
+	want := "check → pull → backup → stop → apply → start → rollback"
+	if got := strings.Join(phases, " → "); got != want {
+		t.Errorf("phases = %s, want %s", got, want)
+	}
+	if left := in.Updates(); len(left) != 0 {
+		t.Errorf("progress left behind after the update ended: %+v", left)
 	}
 }

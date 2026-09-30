@@ -271,8 +271,24 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// A delete renames the archive into the trash and removes it in the background;
 		// a restart mid-removal leaves the rest behind, invisible but holding disk.
 		apps.SweepBackupTrash(cfg.BackupsDir())
-		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string) (string, error) {
-			name, err := s.apps.BackupWith(ctx, local, project, false, nil)
+		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string, report func(installer.UpdateState)) (string, error) {
+			// The copy's own events, smoothed into a rate and ETA the way the backup
+			// tile's are, so the update's backup phase reads like any other backup.
+			tr := &apps.Tracker{}
+			emit := func(ev apps.BackupEvent) {
+				pct := ev.TrackPct()
+				if pct < 0 {
+					return // a moment (start, done), not a stretch with progress
+				}
+				p := tr.Observe(ev.Phase+"/"+ev.Engine, pct, ev.Done, ev.Total)
+				msg := "Copying (the app keeps running)"
+				if ev.Phase == apps.PhaseSync {
+					msg = "Final sync (the app is stopped)"
+				}
+				report(installer.UpdateState{Message: msg, Pct: pct, Done: ev.Done, Total: ev.Total,
+					Rate: p.Rate, ETA: int(p.ETA.Seconds())})
+			}
+			name, err := s.apps.BackupWith(ctx, local, project, false, emit)
 			// An app that declares backup.skip has no rollback point by design rather
 			// than by failure, so it is reported as "none taken" ("", nil) rather than as
 			// an error. The installer already treats an empty name as no way back; an
@@ -576,7 +592,38 @@ func (s *Server) listApps(ctx context.Context) []apps.App {
 		list = overlayInstalls(list, s.installer.Installs())
 	}
 	list = overlayUninstalls(list, s.apps.Uninstalls())
-	return overlayBackups(list, s.apps.Backups())
+	list = overlayBackups(list, s.apps.Backups())
+	if s.installer != nil {
+		list = overlayUpdates(list, s.installer.Updates())
+	}
+	return list
+}
+
+// overlayUpdates stamps update progress onto matching tiles. An update only runs on
+// an installed app, so there is never a placeholder to append.
+func overlayUpdates(list []apps.App, updates []installer.UpdateState) []apps.App {
+	if len(updates) == 0 {
+		return list
+	}
+	byID := make(map[string]int, len(list))
+	for i, a := range list {
+		byID[a.ID] = i
+	}
+	for _, st := range updates {
+		i, ok := byID[st.ID]
+		if !ok {
+			continue
+		}
+		list[i].Updating = true
+		list[i].UpdatePhase = st.Phase
+		list[i].UpdateMessage = st.Message
+		list[i].UpdatePct = st.Pct
+		list[i].UpdateDone = st.Done
+		list[i].UpdateTotal = st.Total
+		list[i].UpdateRate = st.Rate
+		list[i].UpdateETA = st.ETA
+	}
+	return list
 }
 
 // appsSnapshot returns the current app list for the live "apps" channel.

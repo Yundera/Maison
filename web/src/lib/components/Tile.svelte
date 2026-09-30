@@ -391,6 +391,9 @@
   .pfill.backup {
     background: var(--progress-backup);
   }
+  .pfill.update {
+    background: var(--progress-update);
+  }
   .unavailable .icon img,
   .unavailable .icon {
     filter: grayscale(1);

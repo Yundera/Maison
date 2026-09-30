@@ -127,9 +127,17 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 		return res, nil // already up to date — nothing to do
 	}
 
+	// From here on the tile shows which step the update is on (UpdateState), and the
+	// bar goes away however the update ends.
+	defer in.endUpdate(project)
+	step := func(phase, msg string, pct float64) {
+		in.setUpdate(project, UpdateState{Phase: phase, Message: msg, Pct: pct})
+	}
+
 	// Refused before the image pull, so an app whose rollback point cannot fit costs
 	// a size walk, not a download followed by a refusal. The walk is stat-only.
 	if !opts.NoBackup && in.RollbackRoom != nil {
+		step(UpdatePhaseCheck, "Checking free space for the rollback point", 0)
 		if err := in.RollbackRoom(ctx, project); err != nil {
 			return res, in.refuseNoRollback(project, err)
 		}
@@ -139,7 +147,7 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// below would otherwise cost the whole download, not just the swap. Not fatal —
 	// `compose up` pulls whatever is still missing, and fails loudly if it cannot.
 	if f, err := composefile.Parse(newBase); err == nil {
-		in.pullImages(ctx, f, func(Event) {})
+		in.pullImages(ctx, f, func(ev Event) { step(UpdatePhasePull, ev.Message, ev.Download) })
 	}
 
 	// The rollback point, before anything is written.
@@ -159,7 +167,11 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 		res.Warning = "updated without a rollback point, as requested: a failed update cannot be undone"
 		log.Printf("update %s: %s", project, res.Warning)
 	case in.BackupBeforeUpdate != nil:
-		name, err := in.BackupBeforeUpdate(ctx, project)
+		step(UpdatePhaseBackup, "Taking the rollback point", 0)
+		name, err := in.BackupBeforeUpdate(ctx, project, func(st UpdateState) {
+			st.Phase = UpdatePhaseBackup
+			in.setUpdate(project, st)
+		})
 		if err != nil {
 			return res, in.refuseNoRollback(project, err)
 		}
@@ -173,12 +185,14 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// answers "timeout") and the update is rolled back for nothing. Nothing has been
 	// written yet, so a stop that fails needs no undo.
 	if in.StopBeforeUpdate != nil {
+		step(UpdatePhaseStop, "Stopping the current version", 100)
 		if err := in.StopBeforeUpdate(ctx, project); err != nil {
 			log.Printf("update %s: stop before update: %v", project, err)
 			return res, fmt.Errorf("stop %s before updating: %w", project, err)
 		}
 	}
 
+	step(UpdatePhaseApply, "Writing the new version", 100)
 	if err := os.WriteFile(composePath, newBase, 0o644); err != nil {
 		return res, err
 	}
@@ -203,6 +217,9 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	if override := filepath.Join(dir, "docker-compose.override.yml"); fileExists(override) {
 		files = append(files, override)
 	}
+	// No measured track: converging and `compose up` report no progress, so the bar
+	// sits full while the label says what is happening (as a backup's start does).
+	step(UpdatePhaseStart, "Starting the new version", 100)
 	if err := stackup.Up(ctx, in.cfg, project, dir, files); err != nil {
 		return in.rollBack(ctx, project, res, err)
 	}
@@ -238,6 +255,7 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 	}
 	// Deliberately not the request's context: it may already be cancelled by the
 	// failure, and abandoning a rollback half-done is the worst available outcome.
+	in.setUpdate(project, UpdateState{Phase: UpdatePhaseRollback, Message: "Putting the previous version back", Pct: 100})
 	if err := in.RollBack(context.WithoutCancel(ctx), project, res.Backup); err != nil {
 		res.Warning = "the update failed AND rolling back failed: " + err.Error()
 		log.Printf("update %s: %s", project, res.Warning)

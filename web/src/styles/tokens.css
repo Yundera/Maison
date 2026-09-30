@@ -74,6 +74,10 @@
   --progress-install: hsl(118, 60%, 48%);
   --progress-uninstall: var(--red);
   --progress-backup: hsl(38, 92%, 50%);
+  /* Update is violet: it is the one operation that is all of the others in turn
+     (download, backup, stop, start), so it gets its own colour and the label says
+     which step it is on. */
+  --progress-update: hsl(265, 70%, 62%);
 
   /* Frosted glass (the single most load-bearing visual).
      DELIBERATELY DARK, and not covered by the light-surface tokens above: the

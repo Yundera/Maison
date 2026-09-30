@@ -39,6 +39,17 @@ export interface App {
   /** True while a store install is in flight for this app: the tile shows a
    *  progress bar (download, then start) instead of being clickable. */
   installing?: boolean
+  /** True while an update runs: the tile shows the step it is on — check | pull |
+   *  backup | stop | apply | start | rollback — and that step's progress, instead
+   *  of the bare busy overlay. Byte counts, rate and ETA are set in backup only. */
+  updating?: boolean
+  update_phase?: string
+  update_message?: string
+  update_pct?: number
+  update_done?: number
+  update_total?: number
+  update_rate?: number
+  update_eta?: number
   /** Image-pull progress, 0-100 (only meaningful while installing). */
   download?: number
   /** Stack-start progress, 0-100, driven by Docker (only while installing). */
@@ -120,6 +131,14 @@ function persistApps(list: App[]): void {
       delete c.remove
       delete c.uninstall_error
       delete c.backing_up
+      delete c.updating
+      delete c.update_phase
+      delete c.update_message
+      delete c.update_pct
+      delete c.update_done
+      delete c.update_total
+      delete c.update_rate
+      delete c.update_eta
       delete c.copy
       delete c.sync
       delete c.compress
@@ -175,7 +194,7 @@ export function subscribeApps(): () => void {
   return live.subscribe('apps', (d) => {
     const list = (d as App[]) ?? []
     const current = get(apps)
-    const inFlight = current.some((a) => a.installing || a.uninstalling || a.busy)
+    const inFlight = current.some((a) => a.installing || a.uninstalling || a.busy || a.updating)
     if (list.length === 0 && current.length > 0 && !inFlight) return
     applySnapshot(list)
   })
@@ -210,7 +229,7 @@ export async function dismissAppError(id: string): Promise<void> {
 /** Which operation a progress bar is showing. The kind picks the bar's colour
  *  (`--progress-*` in styles/tokens.css): downloading is blue, starting the
  *  stack is green, uninstalling is red, backing up is amber. */
-export type ProgressKind = 'download' | 'install' | 'uninstall' | 'backup'
+export type ProgressKind = 'download' | 'install' | 'uninstall' | 'backup' | 'update'
 
 export interface AppProgress {
   kind: ProgressKind
@@ -239,8 +258,33 @@ export interface AppProgress {
  *
  *  A failed operation is not progress — it clears the bar and leaves the error
  *  (install_error / uninstall_error) to be shown instead. */
+/** i18n label for each update step. */
+const updateLabels: Record<string, string> = {
+  check: 'update_checking',
+  pull: 'downloading',
+  backup: 'backing_up',
+  stop: 'stopping',
+  apply: 'update_applying',
+  start: 'starting_up',
+  rollback: 'update_rolling_back',
+}
+
 export function appProgress(a: App | undefined): AppProgress | null {
   if (!a) return null
+  if (a.updating) {
+    // One bar for the step running now, in the update colour. Only the backup step
+    // is measured in bytes; the rest are moments or unmeasured, and carry their
+    // own percentage (full while a step with no track runs).
+    const backup = a.update_phase === 'backup'
+    return {
+      kind: 'update',
+      pct: a.update_pct ?? 0,
+      label: updateLabels[a.update_phase ?? ''] ?? 'updating',
+      ...(backup
+        ? { eta: a.update_eta, done: a.update_done, total: a.update_total, rate: a.update_rate }
+        : {}),
+    }
+  }
   if (a.uninstalling) {
     // Keyed on the phase, for the reason the backup branch below spells out: reading
     // the counters means "no track is still running" has to fall through to some

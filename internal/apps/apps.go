@@ -123,6 +123,18 @@ type App struct {
 	BackupTotal int64   `json:"backup_total,omitempty"`
 	BackupRate  float64 `json:"backup_rate,omitempty"`
 	BackupETA   int     `json:"backup_eta,omitempty"`
+	// Update progress (see installer.UpdateState), overlaid the same way while an
+	// update runs: which step it is on — check, pull, backup, stop, apply, start,
+	// rollback — and that step's own progress. Byte counts, rate and ETA are set in
+	// the backup step only. Never set by List() itself.
+	Updating      bool    `json:"updating,omitempty"`
+	UpdatePhase   string  `json:"update_phase,omitempty"`
+	UpdateMessage string  `json:"update_message,omitempty"`
+	UpdatePct     float64 `json:"update_pct,omitempty"`
+	UpdateDone    int64   `json:"update_done,omitempty"`
+	UpdateTotal   int64   `json:"update_total,omitempty"`
+	UpdateRate    float64 `json:"update_rate,omitempty"`
+	UpdateETA     int     `json:"update_eta,omitempty"`
 }
 
 // Health verdicts, aggregated across a project's containers.

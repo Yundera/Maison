@@ -78,8 +78,8 @@ var stampRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}_\d{6})(\.zip)?$`)
 
 // projectRe matches a compose project name we are willing to touch on disk. It is
 // the traversal guard for every path built from a caller-supplied app name: no
-// separators, no dots (which the app model reserves for staging directories and
-// hidden dirs), so "..", "a/b" and ".staging-2026-07-10_153045" are all rejected.
+// separators and no dots (Compose accepts none in a project name), so "..", "a/b"
+// and ".staging-2026-07-10_153045" are all rejected.
 var projectRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
 // parseBackup reads an archive's on-disk name back into a Backup. ok is false for

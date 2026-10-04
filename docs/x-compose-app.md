@@ -72,7 +72,7 @@ x-compose-app:
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
 | `category` | string | no | Store grouping. | `category` |
-| **`view`** | `apps` \| `service` \| `system` \| `hidden` | no (default: `apps`, or `service` for an app with no web UI) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
+| **`view`** | `apps` \| `service` \| `system` | no (default: `apps`, or `service` for an app with no web UI) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
 | **`parent`** | string | no | Compose project name of the app this one **extends**. Its tile nests under that app's instead of standing alone. Unresolvable — absent, misspelled, itself an extension — falls back to an ordinary tile. See [`parent` makes the app an extension of another](#parent-makes-the-app-an-extension-of-another). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
 | `description` | string \| localized | no | Store long description (Markdown). | `description` |
@@ -437,7 +437,6 @@ presentation, not capability — with one deliberate exception, below.
 | `apps` (default) | The ordinary app grid, alongside everything else. |
 | `service` | The **Services** grid: an app with no web UI. Usually [derived](#an-app-with-no-web-ui-is-a-service), not declared. |
 | `system` | The **System** grid, and the app is **protected** (below). |
-| `hidden` | No tile at all. |
 
 The dashboard's section heading becomes an **App / Services / System** switch,
 showing only the grids that have something in them, and is a plain heading when
@@ -455,8 +454,13 @@ been anyway — a version gate would turn a cosmetic hint into a refusal to star
 the app at all. Note the consequence for `system`: on an older build the app is
 also not protected.
 
-An unrecognised value falls back to `apps` rather than failing the app, in
-keeping with "unknown keys are tolerated and skipped".
+An unrecognised value counts as no declaration rather than failing the app, in
+keeping with "unknown keys are tolerated and skipped" — the app is sorted as if it
+had said nothing (below).
+
+There is no value for "no tile". `hidden` used to be one and is retired: a compose
+that still says it is sorted like one that says nothing, so the app reappears in
+the App or Services grid rather than staying invisible.
 
 There is no `view` value for "extension of another app" — that is a relationship,
 not a grid, and it is spelled [`parent`](#parent-makes-the-app-an-extension-of-another).

@@ -394,6 +394,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/system/cleanup", s.handleGetCleanup)
 		r.Post("/system/cleanup", s.handleRunCleanup)
 		r.Post("/system/cleanup/orphans", s.handleRemoveOrphans)
+		r.Get("/system/containers/untracked", s.handleUntrackedContainers)
 		r.Get("/apps", s.handleListApps)
 		r.Get("/apps/{id}/config", s.handleGetConfig)
 		r.Put("/apps/{id}/config", s.handlePutConfig)

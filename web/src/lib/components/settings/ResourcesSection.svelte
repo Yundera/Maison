@@ -41,6 +41,7 @@
   import Sparkline from '../Sparkline.svelte'
   import AppUsageRows from '../AppUsageRows.svelte'
   import StorageTab from './StorageTab.svelte'
+  import UntrackedContainers from './UntrackedContainers.svelte'
 
   type Tab = 'cpu' | 'network' | 'disk' | 'storage' | 'apps'
   type Range = 'live' | '1h' | '24h' | '7d' | '30d'
@@ -562,6 +563,9 @@
     <section class="block">
       <AppUsageRows />
       <p class="hint">{$t('monitor_hint')}</p>
+    </section>
+    <section class="block">
+      <UntrackedContainers />
     </section>
   {/if}
 

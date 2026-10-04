@@ -53,9 +53,16 @@ type Port struct {
 	Public  uint16
 }
 
-// Container is a compose-managed container, flattened for our needs.
+// Container is a container, flattened for our needs. Project and the fields after
+// it are compose labels, empty for a container started outside Compose.
 type Container struct {
-	ID          string
+	ID string
+	// Name is Docker's container name without the leading slash; Image is the
+	// reference it was created from; Status is Docker's own one-line summary
+	// ("Up 2 hours (healthy)", "Exited (0) 3 days ago").
+	Name        string
+	Image       string
+	Status      string
 	Project     string
 	Service     string
 	WorkingDir  string
@@ -83,6 +90,22 @@ func parseHealth(status string) string {
 
 // ListProjectContainers returns all containers that belong to a compose project.
 func (c *Client) ListProjectContainers(ctx context.Context) ([]Container, error) {
+	all, err := c.ListAllContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Container, 0, len(all))
+	for _, ct := range all {
+		if ct.Project != "" {
+			out = append(out, ct)
+		}
+	}
+	return out, nil
+}
+
+// ListAllContainers returns every container on the host, running or not, whether
+// or not Compose created it.
+func (c *Client) ListAllContainers(ctx context.Context) ([]Container, error) {
 	list, err := c.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return nil, err
@@ -90,8 +113,9 @@ func (c *Client) ListProjectContainers(ctx context.Context) ([]Container, error)
 	out := make([]Container, 0, len(list))
 	for _, ct := range list {
 		project := ct.Labels[labelProject]
-		if project == "" {
-			continue
+		name := ""
+		if len(ct.Names) > 0 {
+			name = strings.TrimPrefix(ct.Names[0], "/")
 		}
 		var ports []Port
 		for _, p := range ct.Ports {
@@ -101,6 +125,9 @@ func (c *Client) ListProjectContainers(ctx context.Context) ([]Container, error)
 		}
 		out = append(out, Container{
 			ID:          ct.ID,
+			Name:        name,
+			Image:       ct.Image,
+			Status:      ct.Status,
 			Project:     project,
 			Service:     ct.Labels[labelService],
 			WorkingDir:  ct.Labels[labelWorkingDir],

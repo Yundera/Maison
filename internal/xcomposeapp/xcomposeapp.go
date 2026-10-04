@@ -378,9 +378,6 @@ const (
 	// scheduler leaves it alone. There is no operator-side list; an app is a
 	// system app because its own compose says so.
 	ViewSystem = "system"
-	// ViewHidden keeps an app off the dashboard altogether — infrastructure with
-	// nothing worth clicking.
-	ViewHidden = "hidden"
 	// ViewService is an ordinary app with no web UI — a file share, a database, a
 	// peer port. It is the one view that is normally *derived* rather than
 	// declared: an app that declares no view and no web UI lands here (see
@@ -407,7 +404,7 @@ func NormalizeView(v string) string {
 // unrecognised value counts as saying nothing.
 func DeclaredView(v string) (string, bool) {
 	switch view := strings.ToLower(strings.TrimSpace(v)); view {
-	case ViewApps, ViewSystem, ViewHidden, ViewService:
+	case ViewApps, ViewSystem, ViewService:
 		return view, true
 	default:
 		return "", false

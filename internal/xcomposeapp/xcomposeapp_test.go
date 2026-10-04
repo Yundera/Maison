@@ -127,7 +127,7 @@ func TestNormalizeView(t *testing.T) {
 	cases := map[string]string{
 		"system":    ViewSystem,
 		"  System ": ViewSystem,
-		"HIDDEN":    ViewHidden,
+		"hidden":    ViewApps, // retired: a tile is never hidden any more
 		"Service":   ViewService,
 		"apps":      ViewApps,
 		"":          ViewApps,
@@ -151,7 +151,7 @@ func TestDeclaredView(t *testing.T) {
 		{"apps", ViewApps, true},
 		{" SERVICE", ViewService, true},
 		{"system", ViewSystem, true},
-		{"hidden", ViewHidden, true},
+		{"hidden", "", false},
 		{"", "", false},
 		{"dashboard", "", false},
 	}

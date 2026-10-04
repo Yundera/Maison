@@ -207,13 +207,11 @@ with no health check has no dot.
 
 Existence and appearance say *whether* a tile is drawn; the app's `x-compose-app`
 `view` says *where*. `system` puts it in the dashboard's System grid and protects
-it (no stop, no uninstall, no scheduled backup); `hidden` draws no tile at all;
-anything else — including every app that says nothing — lands in the ordinary
-grid. [`x-compose-app.md`](./x-compose-app.md) is authoritative for it.
-
-Note the asymmetry with the rule above: a hidden app still *exists*. Its folder is
-there, it runs, and Maison manages it — it simply has no tile. Only a `.` in the
-name takes an app out of the model entirely (see below).
+it (no stop, no uninstall, no scheduled backup); `service` puts it in the Services
+grid, which is also where an app that says nothing lands when it declares no web
+UI; anything else lands in the ordinary grid. There is no way to have no tile: an
+app Maison manages is always shown somewhere. [`x-compose-app.md`](./x-compose-app.md)
+is authoritative for it.
 
 ---
 
@@ -239,9 +237,9 @@ Two properties of the location are load-bearing:
 
 - **The nesting hides it.** `managedDirs` reads the top level of `AppData` and never
   descends, so an archive tree one level down cannot be mistaken for an app whatever
-  it is called. The leading dot is no longer what does the hiding — it is kept because
-  every lister still rejects a dotted name as an app, and because a dot-name under a
-  state directory reads as "not yours to touch".
+  it is called. The leading dot is not what does the hiding — a dotted name could not
+  be an app anyway (below) — it is kept because a dot-name under a state directory
+  reads as "not yours to touch".
 - **It is inside `AppData`, so archiving is a rename.** Same filesystem means
   `os.Rename`, which is instantaneous no matter how much data the folder holds. This
   is why the path is spelled out against `AppData` rather than built from `STATE_DIR`:
@@ -417,30 +415,23 @@ destroy the data it is about to replace.
 
 ---
 
-## Dot in a name = hidden
+## An app's name is a compose project name
 
-`.` is a **reserved character** for Maison. Any entry under `AppData/` whose name
-contains a `.` is **not displayed** as an app:
+An app's folder name **is** its Compose project name, so only a name Compose would
+accept as one can be an app: lowercase letters, digits, `-` and `_`, starting with a
+letter or digit. Anything else directly under `AppData/` — a dotted scratch folder
+such as `.staging-<stamp>`, say — is not an app, whatever it holds, and never gets
+a tile. The installer derives every app id this way, so it never creates such a
+folder itself.
 
-```
-AppData/jellyfin        → shown  (tile "jellyfin")
-AppData/maison          → shown  (tile "Maison" — the dashboard tiles itself)
-AppData/.tmp-download   → hidden (scratch / hidden dir)
-```
+This is a consequence of what an app *is*, not a hiding feature: there is no way to
+take a real app off the dashboard. The same rule is the traversal guard for every
+path Maison builds from an app name (`ValidProjectName`).
 
-This single rule does double duty:
-
-- It keeps **staging directories** (`.staging-<stamp>`, and anything else carrying a
-  date-dotted suffix) out of the grid.
-- It gives Maison a namespace for **scratch / internal** folders — anything it
-  doesn't want to surface, it names with a `.`.
-
-Note what it is *not* doing any more: the archive tree is not hidden by this rule, it
-is hidden by living one level down, inside `AppData/maison/` (above). `managedDirs`
-reads only the top level of `AppData`.
-
-An app that needs to be visible therefore **must not** have a `.` in its directory
-name.
+Containers no app accounts for — a compose project with no Maison folder and no
+recognised metadata, or a container started with `docker run` — get no tile either,
+because they are not apps. Settings › Resources › Apps lists them, read-only, so the
+page still accounts for every container on the host.
 
 ---
 
@@ -448,17 +439,15 @@ name.
 
 | Concern | Source of truth |
 |---|---|
-| Which apps exist | Presence of `AppData/<app>/` (dot-free name) |
+| Which apps exist | Presence of `AppData/<app>/` (a valid compose project name) |
 | App definition | `docker-compose.yml` (strict store copy) + `docker-compose.override.yml` (user edits) |
 | Variables | `.env` (prefilled on create) |
 | Running / stopped / busy / clickable | Live Docker state |
 | Health dot | Docker health check |
-| Which grid (app / system / none) | The app's `x-compose-app` `view` |
+| Which grid (app / services / system) | The app's `x-compose-app` `view`, else whether it declares a web UI |
 | Uninstall | Move to `maison/.backups/<app>/<stamp>` (optionally `.zip`) — data never deleted |
 | Backup | Two-pass copy into `maison/.backups/<app>/<stamp>`; the app is down only for the delta pass |
 | Restore | Archive the current folder, then put the chosen one back — always reversible |
 | Install from backup | Restore an archive as `AppData/<app>/`, then install over it (keeps its `.env` + data) |
 | Where backups live | `AppData/maison/.backups/<app>/<YYYY-MM-DD_HHMMSS>[.zip]` |
-| Hidden entries | Any name containing `.` |
-</content>
-</invoke>
+| Containers outside any app | Listed read-only in Settings › Resources › Apps |

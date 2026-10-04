@@ -55,7 +55,7 @@ type App struct {
 	// Drives the tile's top-left status dot (green/orange).
 	Health string `json:"health,omitempty"`
 	// View is the dashboard grid this tile belongs in — "apps" (the default),
-	// "system", "service", or "hidden" (no tile at all). Declared by the app's own
+	// "system" or "service". Declared by the app's own
 	// x-compose-app `view`; when it declares none, an app with no web UI is
 	// sorted into "service" (see deriveView).
 	View string `json:"view,omitempty"`
@@ -318,11 +318,6 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 
 	projects := map[string]*projectState{}
 	for _, c := range conts {
-		// A dot in the project name is reserved (archives, internal dirs) and never
-		// surfaces as a tile — see docs/app-model.md.
-		if strings.Contains(c.Project, ".") {
-			continue
-		}
 		ps := projects[c.Project]
 		if ps == nil {
 			ps = &projectState{workingDir: c.WorkingDir, svcPorts: map[string][]dockerx.Port{}}
@@ -473,10 +468,10 @@ func (r *Registry) managedDirs() []string {
 	}
 	var names []string
 	for _, e := range entries {
-		// A dot in the directory name hides it from the dashboard: this covers
-		// uninstall archives (<app>.<date>.archive) and Maison's own
-		// dot-prefixed state dir. See docs/app-model.md.
-		if e.IsDir() && !strings.Contains(e.Name(), ".") && r.isManaged(e.Name()) {
+		// An app's folder name is its compose project name, so a folder whose name
+		// cannot be one (a dotted scratch dir, say) is not an app, whatever it holds.
+		// See docs/app-model.md.
+		if e.IsDir() && projectRe.MatchString(e.Name()) && r.isManaged(e.Name()) {
 			names = append(names, e.Name())
 		}
 	}

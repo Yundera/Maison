@@ -18,7 +18,7 @@ func TestBuildAppDerivesProtectedFromView(t *testing.T) {
 		protected bool
 	}{
 		{"system app", "system", xcomposeapp.ViewSystem, true},
-		{"hidden app", "hidden", xcomposeapp.ViewHidden, false},
+		{"retired hidden view falls back", "hidden", xcomposeapp.ViewApps, false},
 		{"service app", "service", xcomposeapp.ViewService, false},
 		{"ordinary app", "", xcomposeapp.ViewApps, false},
 		{"unknown view falls back", "platform", xcomposeapp.ViewApps, false},
@@ -69,7 +69,7 @@ func TestBuildAppDerivesServiceView(t *testing.T) {
 		{"web UI from either block counts", &xcasaos.StoreInfo{WebUIPort: "80"}, &xcomposeapp.App{}, nil, xcomposeapp.ViewApps},
 		{"explicit apps wins", nil, &xcomposeapp.App{View: "apps"}, nil, xcomposeapp.ViewApps},
 		{"explicit system wins", nil, &xcomposeapp.App{View: "system"}, nil, xcomposeapp.ViewSystem},
-		{"explicit hidden wins", nil, &xcomposeapp.App{View: "hidden"}, nil, xcomposeapp.ViewHidden},
+		{"retired hidden view is derived", nil, &xcomposeapp.App{View: "hidden"}, nil, xcomposeapp.ViewService},
 		{"unknown view is derived", nil, &xcomposeapp.App{View: "platform"}, nil, xcomposeapp.ViewService},
 		{"no metadata, published port", nil, nil, web, xcomposeapp.ViewApps},
 		{"no metadata, no published port", nil, nil, map[string][]dockerx.Port{"db": {{Private: 5432}}}, xcomposeapp.ViewService},

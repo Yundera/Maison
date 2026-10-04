@@ -33,6 +33,20 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// handleUntrackedContainers lists the containers no app accounts for (Settings ›
+// Resources › Apps). Read-only: there is no action on one to offer.
+func (s *Server) handleUntrackedContainers(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	list, err := s.apps.Untracked(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 func (s *Server) handleAppAction(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return

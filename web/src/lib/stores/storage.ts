@@ -103,6 +103,20 @@ export interface CleanupState {
 export const fetchStorage = () => api.get<StorageUsage>('/api/system/storage')
 export const startScan = () => api.post<DataScan>('/api/system/storage/scan')
 export const fetchCleanup = () => api.get<CleanupState>('/api/system/cleanup')
+
+/** A container no app accounts for (Settings › Resources › Apps). Read-only. */
+export interface UntrackedContainer {
+  id: string
+  name: string
+  image: string
+  state: string
+  status: string
+  /** Compose labels; absent for a container started with a plain `docker run`. */
+  project?: string
+  service?: string
+}
+
+export const fetchUntracked = () => api.get<UntrackedContainer[]>('/api/system/containers/untracked')
 export const runCleanup = () => api.post<CleanupRun>('/api/system/cleanup')
 export const removeOrphans = (keys: string[]) =>
   api.post<CleanupRun>('/api/system/cleanup/orphans', { keys })

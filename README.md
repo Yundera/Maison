@@ -183,12 +183,13 @@ Just the app grid — no global search bar, no promo cards.
 - Each **tile** = icon + name, with a status dot driven by the container health check.
   Hover reveals **Open** and a burger (⋯) menu: **Open, Settings, Restart, Stop, Start,
   Uninstall**. Tiles are **drag-to-reorder**.
-- **App / System.** The section heading is a switch when the box has system apps —
-  the platform's own pieces, which declare `view: system` in their compose
-  ([`docs/x-compose-app.md`](./docs/x-compose-app.md)). They get their own grid, and
-  their menu withholds **Stop** and **Uninstall** (the API refuses both); **Restart**
-  stays. `view: hidden` keeps an app off the dashboard entirely. With no system app
-  declared, the heading is a plain "App" and nothing else changes.
+- **App / Services / System.** The section heading is a switch when the box has
+  system apps or services. System apps are the platform's own pieces, which declare
+  `view: system` in their compose ([`docs/x-compose-app.md`](./docs/x-compose-app.md)):
+  they get their own grid, and their menu withholds **Stop** and **Uninstall** (the
+  API refuses both); **Restart** stays. Services are apps with no web UI (Samba, a
+  database), sorted there automatically; their tile opens Settings instead of a URL.
+  With neither, the heading is a plain "App" and nothing else changes.
 - A tile is **greyed** when stopped, shows a **`…` overlay** while a lifecycle op is in
   flight, and shows **two progress bars** (image download + stack start) while installing.
 - **Unmanaged apps** — any host Compose stack carrying `x-casaos` that Maison didn't

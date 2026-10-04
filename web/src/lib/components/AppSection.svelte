@@ -63,9 +63,8 @@
 
   /** The tiles for one view, in the operator's saved order.
    *
-   *  `hidden` apps are in neither: they are infrastructure with nothing worth
-   *  clicking. External links and the App Store tile belong to the app grid —
-   *  the store installs apps, not platform pieces. */
+   *  External links and the App Store tile belong to the app grid — the store
+   *  installs apps, not platform pieces. */
   function buildOrdered(v: View, a: App[], l: Link[]): TileData[] {
     // An app that declares a parent the server could resolve is an extension: it
     // is listed under that app, never beside it. Note the children are NOT
@@ -73,7 +72,7 @@
     // grid the parent is in, because "under jellyfin" is where it means anything.
     const extensions = new Map<string, App[]>()
     for (const app of a) {
-      if (!app.parent || (app.view ?? 'apps') === 'hidden') continue
+      if (!app.parent) continue
       const kids = extensions.get(app.parent) ?? []
       kids.push(app)
       extensions.set(app.parent, kids)

@@ -501,8 +501,9 @@ export function checkUpdate(id: string): Promise<UpdateStatus> {
 }
 
 /** Pull the store's current compose (when it differs) and bring the stack back
- *  up. `noBackup` skips the rollback point — the owner's retry after an update was
- *  refused because one could not be taken (an ApiError whose body has `no_rollback`). */
+ *  up. `noBackup` skips the rollback point — the owner's choice, made with the
+ *  Backup box beside "Update now". An update refused because the rollback point
+ *  could not be taken is an ApiError whose body has `no_rollback`. */
 export async function applyUpdate(
   id: string,
   noBackup = false,

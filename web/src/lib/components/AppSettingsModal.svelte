@@ -279,9 +279,10 @@
   let applyingUpdate = $state(false)
   let updateMsg = $state('')
   let updateChecked = $state(false) // one-shot: don't re-auto-check on error
-  // The last update was refused because no rollback point could be taken; offer to
-  // go ahead without one. Cleared by any other outcome.
-  let offerNoBackup = $state(false)
+  // Take a rollback point before updating. On by default; unticking it is the owner's
+  // choice to update an app whose backup would not fit, or would take too long, and to
+  // give up the automatic put-back if the new version fails to start.
+  let backupFirst = $state(true)
 
   // The update source, editable: one locator — `<store>/-/<folder>/<app id>` —
   // which is the same string the store's own address bar carries, so retargeting an
@@ -342,18 +343,19 @@
     }
   }
 
-  async function runApplyUpdate(noBackup = false) {
+  async function runApplyUpdate() {
     applyingUpdate = true
     updateMsg = ''
     try {
-      const res = await applyUpdate(id, noBackup)
-      offerNoBackup = false
+      const res = await applyUpdate(id, !backupFirst)
       updateMsg = res.updated ? 'Updated & recreated.' : 'Already up to date.'
       if (res.warning) updateMsg += ' ' + res.warning
       await runCheckUpdate() // refresh the status after applying
     } catch (e) {
-      offerNoBackup = e instanceof ApiError && e.body?.no_rollback === true
       updateMsg = e instanceof Error ? e.message : String(e)
+      // Refused, nothing changed: the way past it is the checkbox beside the button.
+      if (e instanceof ApiError && e.body?.no_rollback === true)
+        updateMsg += ' Untick "Backup" to update without a rollback point.'
     } finally {
       applyingUpdate = false
     }
@@ -739,20 +741,17 @@
           >
             {checkingUpdate ? 'Checking…' : 'Check again'}
           </button>
-          {#if offerNoBackup}
-            <button
-              class="danger"
-              disabled={applyingUpdate || checkingUpdate || !update?.available}
-              title="Skips the rollback point: if the new version fails to start, it cannot be put back."
-              onclick={() => runApplyUpdate(true)}
-            >
-              Update without backup
-            </button>
-          {/if}
+          <label
+            class="check"
+            title="Takes a rollback point first, so a new version that fails to start is put back automatically."
+          >
+            <input type="checkbox" bind:checked={backupFirst} disabled={applyingUpdate} />
+            <span>Backup</span>
+          </label>
           <button
             class="primary"
             disabled={applyingUpdate || checkingUpdate || !update?.available}
-            onclick={() => runApplyUpdate()}
+            onclick={runApplyUpdate}
           >
             {applyingUpdate ? 'Updating…' : 'Update now'}
           </button>
@@ -1038,6 +1037,13 @@
     font-size: 0.8rem;
     color: var(--text-muted);
   }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.875rem;
+    cursor: pointer;
+  }
   .primary {
     background: var(--primary);
     color: var(--text-on-accent);
@@ -1056,11 +1062,6 @@
   }
   .actions button:disabled {
     opacity: 0.5;
-  }
-  .actions button.danger {
-    background: var(--red);
-    color: #fff;
-    border-color: var(--red);
   }
   /* Update tab */
   .update-box {

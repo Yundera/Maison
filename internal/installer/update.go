@@ -93,8 +93,9 @@ var ErrNoRollback = errors.New("no rollback point")
 // UpdateOptions are the choices an owner makes for one update.
 type UpdateOptions struct {
 	// NoBackup applies the update without taking a rollback point, so a failed
-	// update cannot be undone. Offered after an update was refused with
-	// ErrNoRollback, for one app at a time.
+	// update cannot be undone. The owner's choice, for one app at a time: the
+	// app's Update tab offers it up front (a "Backup" box, ticked by default), and
+	// it is the way past an update refused with ErrNoRollback.
 	NoBackup bool
 }
 

@@ -4,6 +4,7 @@
     setConfig,
     setWebUI,
     setTips,
+    renderTips,
     getServices,
     checkUpdate,
     applyUpdate,
@@ -24,6 +25,7 @@
   import { openStream } from '../live/stream'
   import { renderSize } from '../format'
   import OverrideForm from './OverrideForm.svelte'
+  import TipsView from './TipsView.svelte'
   import BackupsTab from './BackupsTab.svelte'
 
   let {
@@ -149,20 +151,52 @@
     override = c.override
     webui = c.webui
     tips = c.tips
+    savedTips = c.tips
     configLoaded = true
   }
   $effect(() => {
     if (managed && !configLoaded) loadConfig()
   })
 
-  // Tips editor — the app's guidance, editable; saved into the override.
+  // Tips — the app's guidance. The page opens on the rendered tips (Markdown, with
+  // ${VAR} references filled in by the server), because that is what the operator
+  // came to read — a service's tile click lands here. Edit swaps in the raw source;
+  // saving writes it into the override and goes back to the rendered view.
+  let savedTips = $state('') // the source as last loaded or saved, for Cancel
+  let renderedTips = $state('')
+  let renderedLoaded = $state(false)
+  let editingTips = $state(false)
   let savingTips = $state(false)
   let tipsMsg = $state('')
+  async function loadRenderedTips() {
+    try {
+      renderedTips = await renderTips(id)
+    } catch (e) {
+      tipsMsg = String(e)
+    } finally {
+      renderedLoaded = true
+    }
+  }
+  $effect(() => {
+    if (managed && tab === 'tips' && !renderedLoaded) loadRenderedTips()
+  })
+  function editTips() {
+    tipsMsg = ''
+    editingTips = true
+  }
+  function cancelTips() {
+    tips = savedTips
+    tipsMsg = ''
+    editingTips = false
+  }
   async function saveTips() {
     savingTips = true
     tipsMsg = ''
     try {
       await setTips(id, tips)
+      savedTips = tips
+      await loadRenderedTips()
+      editingTips = false
       tipsMsg = 'Saved.'
     } catch (e) {
       tipsMsg = String(e)
@@ -440,14 +474,24 @@
 
     <div class="content">
       {#if tab === 'tips'}
-        {#if !configLoaded}
+        {#if !configLoaded || !renderedLoaded}
           <p class="hint">Loading…</p>
+        {:else if !editingTips}
+          {#if savedTips.trim()}
+            <TipsView tips={renderedTips} />
+          {:else}
+            <p class="hint">No tips for this app yet.</p>
+          {/if}
+          <div class="actions">
+            <span class="msg">{tipsMsg}</span>
+            <button class="primary" onclick={editTips}>{savedTips.trim() ? 'Edit tips' : 'Add tips'}</button>
+          </div>
         {:else}
           <p class="hint">
             <strong>Tips</strong> for this app — setup guidance, credentials reminders, reverse-proxy
-            details, whatever you need. Seeded from the store and freely editable; saving writes them
-            into the <code>docker-compose.override.yml</code>. <code>{'${VAR}'}</code> references are
-            shown as-is here; use the tile's <em>Tips</em> menu to see them with values filled in.
+            details, whatever you need. Markdown. Seeded from the store and freely editable; saving
+            writes them into the <code>docker-compose.override.yml</code>. <code>{'${VAR}'}</code>
+            references are shown as-is here and filled in once saved.
           </p>
           <textarea
             bind:value={tips}
@@ -456,6 +500,7 @@
           ></textarea>
           <div class="actions">
             <span class="msg">{tipsMsg}</span>
+            <button disabled={savingTips} onclick={cancelTips}>Cancel</button>
             <button class="primary" disabled={savingTips} onclick={saveTips}>
               {savingTips ? 'Saving…' : 'Save tips'}
             </button>

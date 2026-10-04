@@ -84,6 +84,12 @@
   // the tile is greyed and its click is disabled. Stopped apps that DO have a URL
   // stay clickable: opening one lands on the launch gate, which starts it.
   const openable = $derived(tile.kind !== 'app' || appUrl(tile.app) !== '')
+  // A service (no web UI, by declaration) has nothing to open, and that is not a
+  // fault: its tile is not greyed, and a click opens its settings instead — the
+  // logs, status and override are the only things there are to look at. A service
+  // that does resolve a URL (an explicit `view: service` with a webui-host) just
+  // opens it like any app.
+  const settingsOnly = $derived(tile.kind === 'app' && tile.app.view === 'service' && !openable)
 
   // `ev` is the click that asked for it, when there is one: openApp/openTarget read
   // its modifiers so a ctrl/cmd/middle click still opens a new tab even when the
@@ -98,9 +104,15 @@
     // was below it (the dashboard) instead of the catalog.
     if (tile.kind === 'system') openStore()
     else if (tile.kind === 'app') {
+      if (settingsOnly) openSettings()
       if (!openable) return
       openApp(tile.app, ev)
     } else openTarget(tile.link.url, ev)
+  }
+
+  function openSettings() {
+    menuOpen = false
+    if (tile.kind === 'app') settingsApp.set({ id: tile.app.id, name: tile.app.name, managed: tile.app.managed })
   }
 
   async function act(action: 'start' | 'stop' | 'restart') {
@@ -118,7 +130,7 @@
   }
 </script>
 
-<div class="tile" class:stopped class:busy={locked} class:unavailable={!openable} class:child={isChild}>
+<div class="tile" class:stopped class:busy={locked} class:unavailable={!openable && !settingsOnly} class:child={isChild}>
   <div class="glass"></div>
 
   {#if tile.kind !== 'system' && !locked}
@@ -157,15 +169,12 @@
           >
         </div>
       {/if}
-      <button disabled={!openable} onclick={() => { menuOpen = false; open() }}>{$t('open')}</button>
+      <!-- A service has no web UI to open; its click already lands on Settings. -->
+      {#if !settingsOnly}
+        <button disabled={!openable} onclick={() => { menuOpen = false; open() }}>{$t('open')}</button>
+      {/if}
       {#if tile.kind === 'app'}
-        <button
-          onclick={() => {
-            menuOpen = false
-            if (tile.kind === 'app')
-              settingsApp.set({ id: tile.app.id, name: tile.app.name, managed: tile.app.managed })
-          }}>{$t('settings')}</button
-        >
+        <button onclick={openSettings}>{$t('settings')}</button>
         {#if tile.app.managed}
           <button
             onclick={() => {
@@ -199,8 +208,8 @@
     class="body"
     onclick={open}
     onauxclick={(e) => e.button === 1 && open(e)}
-    disabled={!openable || locked}
-    title={openable ? '' : 'No reachable web address'}
+    disabled={(!openable && !settingsOnly) || locked}
+    title={openable ? '' : settingsOnly ? $t('service_no_web_ui') : 'No reachable web address'}
   >
     <div class="icon">
       {#if tile.kind === 'system'}

@@ -16,8 +16,10 @@ export interface App {
   index?: string
   category?: string
   /** Which dashboard grid this tile belongs in, from the app's x-compose-app
-   *  `view`. Absent means the ordinary grid; "hidden" apps get no tile. */
-  view?: 'apps' | 'system' | 'hidden'
+   *  `view`. Absent means the ordinary grid; "hidden" apps get no tile.
+   *  "service" is usually derived server-side: an app that declares no view
+   *  and no web UI. */
+  view?: 'apps' | 'system' | 'service' | 'hidden'
   /** The id of the app this one extends, from its x-compose-app `parent`, and
    *  only ever an app that is actually installed — the server clears a parent it
    *  cannot resolve, so an extension whose parent is missing arrives as an

@@ -72,7 +72,7 @@ x-compose-app:
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
 | `category` | string | no | Store grouping. | `category` |
-| **`view`** | `apps` \| `system` \| `hidden` | no (default `apps`) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
+| **`view`** | `apps` \| `service` \| `system` \| `hidden` | no (default: `apps`, or `service` for an app with no web UI) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
 | **`parent`** | string | no | Compose project name of the app this one **extends**. Its tile nests under that app's instead of standing alone. Unresolvable — absent, misspelled, itself an extension — falls back to an ordinary tile. See [`parent` makes the app an extension of another](#parent-makes-the-app-an-extension-of-another). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
 | `description` | string \| localized | no | Store long description (Markdown). | `description` |
@@ -435,12 +435,14 @@ presentation, not capability — with one deliberate exception, below.
 | Value | The tile |
 |---|---|
 | `apps` (default) | The ordinary app grid, alongside everything else. |
+| `service` | The **Services** grid: an app with no web UI. Usually [derived](#an-app-with-no-web-ui-is-a-service), not declared. |
 | `system` | The **System** grid, and the app is **protected** (below). |
 | `hidden` | No tile at all. |
 
-The dashboard's section heading becomes an **App / System** switch as soon as one
-app declares `view: system`, and is a plain heading otherwise — a deployment that
-declares nothing looks exactly as it did.
+The dashboard's section heading becomes an **App / Services / System** switch,
+showing only the grids that have something in them, and is a plain heading when
+only the app grid does — a deployment with no system apps and no services looks
+exactly as it did.
 
 ```yaml
 x-compose-app:
@@ -458,6 +460,37 @@ keeping with "unknown keys are tolerated and skipped".
 
 There is no `view` value for "extension of another app" — that is a relationship,
 not a grid, and it is spelled [`parent`](#parent-makes-the-app-an-extension-of-another).
+
+### An app with no web UI is a service
+
+`service` is the one view Maison normally works out for itself. An app that
+declares **no** `view` lands in the Services grid when nothing in its compose names
+a web UI:
+
+| Block | Counts as a web UI |
+|---|---|
+| `x-compose-app` | `webui-host`, or any `routes` entry |
+| `x-casaos` | `hostname`, `webui_port` or `port_map` |
+
+A `webui-path`, `webui-port`, `index` or `scheme` on its own is not an address and
+does not count. The answer comes from what the compose **declares**, never from
+whether a URL resolved: a `webui-host` builds no URL until a domain is configured,
+and that app is still an app.
+
+A stack with no `x-compose-app` or `x-casaos` block at all (a compose brought up by
+hand) declares nothing either way. There a published host port keeps it in the app
+grid, clickable through that port as before, and no published port makes it a
+service.
+
+A **declared** `view` always wins, `apps` included: that is how a UI-less app stays
+in the ordinary grid. An unrecognised value counts as no declaration.
+
+A service is otherwise an ordinary app — it can be stopped, uninstalled and backed
+up like any other, and it is **not** protected. Its tile is not greyed out: with
+nothing to open, a click opens its settings. Maison also never turns a service's
+published port into a click URL — that port is the non-HTTP listener the app
+exists for (Samba's `445`), not a web page. A service that *does* resolve a URL
+(an explicit `view: service` with a `webui-host`) opens it like any app.
 
 ### `view: system` protects the app
 
@@ -499,7 +532,7 @@ x-compose-app:
 An app with a resolvable `parent` is an **extension**. It gets no top-level tile
 of its own: the dashboard nests it under the parent's tile, and the store shows
 it in an *Extensions* section on the parent's detail page rather than loose in
-the catalog. There is no third grid and no third value of `view` — "which grid"
+the catalog. There is no extensions grid and no `view` value for it — "which grid"
 and "attached to what" are different questions, and only the second one has an
 answer worth showing the operator.
 

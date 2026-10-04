@@ -55,8 +55,9 @@ type App struct {
 	// Drives the tile's top-left status dot (green/orange).
 	Health string `json:"health,omitempty"`
 	// View is the dashboard grid this tile belongs in — "apps" (the default),
-	// "system", or "hidden" (no tile at all). Declared by the app's own
-	// x-compose-app `view`; see xcomposeapp.NormalizeView.
+	// "system", "service", or "hidden" (no tile at all). Declared by the app's own
+	// x-compose-app `view`; when it declares none, an app with no web UI is
+	// sorted into "service" (see deriveView).
 	View string `json:"view,omitempty"`
 	// Protected marks a system app: it renders as an ordinary tile in the System
 	// grid, but Maison refuses to stop or uninstall it (the menu withholds those
@@ -597,18 +598,21 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 			app.Store = ca.ID
 		}
 		app.URL = ca.WebURL(domain)
-		app.View = xcomposeapp.NormalizeView(ca.View)
 		// Declared only: whether it resolves depends on what else is installed,
 		// which this function cannot see. List() settles it (resolveParents).
 		app.Parent = strings.TrimSpace(ca.Parent)
 	}
+	app.View = deriveView(si, ca, svcPorts)
 	// A system app is a protected app: no stop, no uninstall, no scheduled
-	// backup. One derivation for all three (see the Protected field).
+	// backup. One derivation for all three (see the Protected field). Only a
+	// *declared* system view gets here — deriveView never produces one.
 	app.Protected = app.View == xcomposeapp.ViewSystem
 	// Prefer the container's ACTUAL published host port so "Open" works without a
 	// gateway. Only when x-compose-app gave no URL and no hostname (gateway route)
-	// is configured.
-	if app.URL == "" && app.Hostname == "" && svcPorts != nil {
+	// is configured — and never for a service: the port it publishes is the
+	// non-HTTP listener it exists for (Samba's 445), and a tile opening
+	// http://box:445 is worse than no click URL at all.
+	if app.URL == "" && app.Hostname == "" && svcPorts != nil && app.View != xcomposeapp.ViewService {
 		main := ""
 		if si != nil {
 			main = si.Main
@@ -630,6 +634,37 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 		app.Icon = ""
 	}
 	return app
+}
+
+// deriveView settles which grid an app's tile lands in.
+//
+// A declared view always wins — including `apps`, which is how a maintainer keeps
+// a UI-less app in the ordinary grid. Absent a declaration, the question is
+// whether the app has a web UI at all, answered from what its metadata
+// *declares* and never from whether a URL resolved: a webui-host only builds a
+// URL once a domain is configured, and sorting on the result would move every
+// app into Services on a box that has none yet.
+//
+// A stack with no metadata at all (a compose someone brought up by hand) declares
+// nothing either way, so there the published ports are the only evidence: one
+// published port keeps it an app, clickable through that port as before; none
+// makes it a service.
+func deriveView(si *xcasaos.StoreInfo, ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) string {
+	if ca != nil {
+		if v, ok := xcomposeapp.DeclaredView(ca.View); ok {
+			return v
+		}
+	}
+	if si == nil && ca == nil {
+		if reachableHostPort(svcPorts, "", 0) > 0 {
+			return xcomposeapp.ViewApps
+		}
+		return xcomposeapp.ViewService
+	}
+	if si.DeclaresWebUI() || ca.DeclaresWebUI() {
+		return xcomposeapp.ViewApps
+	}
+	return xcomposeapp.ViewService
 }
 
 // reachableHostPort picks a published host port to open: the one bound to the

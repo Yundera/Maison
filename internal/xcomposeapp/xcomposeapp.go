@@ -381,6 +381,11 @@ const (
 	// ViewHidden keeps an app off the dashboard altogether — infrastructure with
 	// nothing worth clicking.
 	ViewHidden = "hidden"
+	// ViewService is an ordinary app with no web UI — a file share, a database, a
+	// peer port. It is the one view that is normally *derived* rather than
+	// declared: an app that declares no view and no web UI lands here (see
+	// apps.buildApp). It buys no behaviour; unlike ViewSystem it is not protected.
+	ViewService = "service"
 )
 
 // NormalizeView maps a declared `view` onto one of the constants above,
@@ -390,14 +395,30 @@ const (
 // everywhere else in this extension, and refusing to render an app over a
 // cosmetic hint would be a worse failure than putting it in the ordinary grid.
 func NormalizeView(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case ViewSystem:
-		return ViewSystem
-	case ViewHidden:
-		return ViewHidden
-	default:
-		return ViewApps
+	if view, ok := DeclaredView(v); ok {
+		return view
 	}
+	return ViewApps
+}
+
+// DeclaredView is NormalizeView without the default: it reports whether v names
+// a view at all, so a caller can tell "the maintainer chose the app grid" from
+// "the maintainer said nothing" and derive a view only for the latter. An
+// unrecognised value counts as saying nothing.
+func DeclaredView(v string) (string, bool) {
+	switch view := strings.ToLower(strings.TrimSpace(v)); view {
+	case ViewApps, ViewSystem, ViewHidden, ViewService:
+		return view, true
+	default:
+		return "", false
+	}
+}
+
+// DeclaresWebUI reports whether the block names a web endpoint: a click-URL
+// host, or a route Maison publishes. A webui-path or webui-port alone is not an
+// address, so neither counts.
+func (a *App) DeclaresWebUI() bool {
+	return a != nil && (strings.TrimSpace(a.WebUIHost) != "" || len(a.Routes) > 0)
 }
 
 // BackupSpec is the app's say in how it is backed up.

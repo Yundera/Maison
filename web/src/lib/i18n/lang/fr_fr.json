@@ -1,6 +1,8 @@
 {
   "app": "Applications",
   "system": "Système",
+  "services": "Services",
+  "service_no_web_ui": "Pas d’interface web — cliquez pour les paramètres",
   "app_store": "Magasin d'applications",
   "system_status": "État du système",
   "storage": "Stockage",

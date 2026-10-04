@@ -128,6 +128,7 @@ func TestNormalizeView(t *testing.T) {
 		"system":    ViewSystem,
 		"  System ": ViewSystem,
 		"HIDDEN":    ViewHidden,
+		"Service":   ViewService,
 		"apps":      ViewApps,
 		"":          ViewApps,
 		"dashboard": ViewApps,
@@ -135,6 +136,49 @@ func TestNormalizeView(t *testing.T) {
 	for in, want := range cases {
 		if got := NormalizeView(in); got != want {
 			t.Errorf("NormalizeView(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// DeclaredView is what lets the app listing derive a view: it must tell an
+// explicit `apps` from saying nothing, and treat an unknown value as nothing.
+func TestDeclaredView(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"apps", ViewApps, true},
+		{" SERVICE", ViewService, true},
+		{"system", ViewSystem, true},
+		{"hidden", ViewHidden, true},
+		{"", "", false},
+		{"dashboard", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := DeclaredView(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("DeclaredView(%q) = %q, %v; want %q, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestDeclaresWebUI(t *testing.T) {
+	cases := []struct {
+		name string
+		app  *App
+		want bool
+	}{
+		{"nil block", nil, false},
+		{"empty block", &App{}, false},
+		{"webui-host", &App{WebUIHost: "app-${domain}"}, true},
+		{"routes only", &App{Routes: []Route{{UpstreamPort: "8080"}}}, true},
+		{"path alone is not an address", &App{WebUIPath: "/admin"}, false},
+		{"port alone is not an address", &App{WebUIPort: "8443"}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.app.DeclaresWebUI(); got != tc.want {
+			t.Errorf("%s: DeclaresWebUI() = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

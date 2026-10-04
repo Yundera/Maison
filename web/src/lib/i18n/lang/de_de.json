@@ -1,6 +1,8 @@
 {
   "app": "Apps",
   "system": "System",
+  "services": "Dienste",
+  "service_no_web_ui": "Keine Weboberfläche — klicken für Einstellungen",
   "app_store": "App Store",
   "system_status": "Systemstatus",
   "storage": "Speicher",

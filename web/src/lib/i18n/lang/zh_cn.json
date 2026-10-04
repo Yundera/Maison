@@ -1,6 +1,8 @@
 {
   "app": "应用",
   "system": "系统",
+  "services": "服务",
+  "service_no_web_ui": "无网页界面 — 点击打开设置",
   "app_store": "应用商店",
   "system_status": "系统状态",
   "storage": "存储",

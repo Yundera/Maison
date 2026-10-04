@@ -10,10 +10,11 @@
   import { t } from '../i18n'
 
   // Which grid is on screen. The platform's own pieces declare `view: system` in
-  // their compose and get their own; everything else lands in the ordinary one.
+  // their compose and get their own; apps with no web UI (the server sorts them,
+  // see `view: service`) get theirs; everything else lands in the ordinary one.
   // Deliberately NOT persisted across reloads: a dashboard that reopens on the
   // System grid reads as "where did my apps go".
-  type View = 'apps' | 'system'
+  type View = 'apps' | 'service' | 'system'
   let view = $state<View>('apps')
 
   // Parents whose extensions are currently unfolded. Collapsed by default and
@@ -26,9 +27,16 @@
   let addMenu = $state(false)
   let showLinkModal = $state(false)
 
-  // The switch only appears once there is something to switch to, so a box with
-  // no system apps looks exactly as it did before.
-  const hasSystem = $derived($apps.some((a) => a.view === 'system'))
+  // A tab only appears once there is something in it, and the switch only once
+  // there is a second tab, so a box with no system apps and no services looks
+  // exactly as it did before. Extensions are left out of the count: they render
+  // under their parent, so a grid holding only extensions would be empty.
+  const LABELS: Record<View, string> = { apps: 'app', service: 'services', system: 'system' }
+  const views = $derived(
+    (['apps', 'service', 'system'] as View[]).filter(
+      (v) => v === 'apps' || $apps.some((a) => a.view === v && !a.parent),
+    ),
+  )
 
   onMount(() => {
     loadApps()
@@ -124,10 +132,10 @@
     items = buildOrdered(v, a, l)
   })
 
-  // The last system app can be uninstalled (or stop declaring itself one) while
-  // its grid is on screen; fall back rather than leave an empty one showing.
+  // The last app of a grid can be uninstalled (or stop belonging to it) while
+  // that grid is on screen; fall back rather than leave an empty one showing.
   $effect(() => {
-    if (!hasSystem && view === 'system') view = 'apps'
+    if (!views.includes(view)) view = 'apps'
   })
 
   function onConsider(e: CustomEvent<{ items: TileData[] }>) {
@@ -153,14 +161,13 @@
 
 <section class="app-section">
   <header class="section-header">
-    {#if hasSystem}
+    {#if views.length > 1}
       <h1 class="views">
-        <button class:active={view === 'apps'} aria-pressed={view === 'apps'} onclick={() => (view = 'apps')}
-          >{$t('app')}</button
-        >
-        <button class:active={view === 'system'} aria-pressed={view === 'system'} onclick={() => (view = 'system')}
-          >{$t('system')}</button
-        >
+        {#each views as v (v)}
+          <button class:active={view === v} aria-pressed={view === v} onclick={() => (view = v)}
+            >{$t(LABELS[v])}</button
+          >
+        {/each}
       </h1>
     {:else}
       <h1>{$t('app')}</h1>

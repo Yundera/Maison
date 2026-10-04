@@ -5,6 +5,7 @@ package xcasaos
 
 import (
 	"errors"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -41,6 +42,15 @@ type StoreInfo struct {
 
 	PreInstallCmd  string `yaml:"pre-install-cmd,omitempty" json:"pre_install_cmd,omitempty"`
 	PostInstallCmd string `yaml:"post-install-cmd,omitempty" json:"post_install_cmd,omitempty"`
+}
+
+// DeclaresWebUI reports whether the block names anything a click URL can be built
+// from: a gateway hostname, the web-UI container port, or a host port. An index
+// or scheme alone is not an address.
+func (s *StoreInfo) DeclaresWebUI() bool {
+	return s != nil && (strings.TrimSpace(s.Hostname) != "" ||
+		strings.TrimSpace(s.WebUIPort) != "" ||
+		strings.TrimSpace(s.PortMap) != "")
 }
 
 // Tips holds install-time guidance shown to the user.

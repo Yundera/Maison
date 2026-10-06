@@ -810,8 +810,19 @@ The mail is sent **once per box**, and "once" is anchored on a receipt file rath
 remembering:
 
 ```
-${StateDir}/backup-key-sent.json     0600   {"sent_at":…, "to":…, "engine":…, "auto":true}
+${StateDir}/backup-key-sent.json     0600   {"sent_at":…, "to":…, "engine":…, "auto":true, "fingerprint":…}
 ```
+
+`fingerprint` names *which* key the receipt covers: the first 16 hex digits of the password's
+SHA-256 — enough to notice the key changed, nothing that gives it back. A space reset from the
+deployment's dashboard makes the box mint a new key, and without this the receipt would go on saying
+"already sent" about a key that no longer opens anything. So the automatic send fires again when the
+key on disk no longer matches the receipt, and the check runs from the five-minute detector loop as
+well as at boot, once per pass, so a key that changes while Maison is running is mailed without a
+restart. A receipt **without** a fingerprint — every receipt written before it existed — counts as
+matching, so an upgrade mails nothing. A key the user typed into the recovery form is recorded as
+`"held_by_user": true` with its fingerprint and no `sent_at`: they demonstrably hold a copy, and
+mailing it back would only add a second plaintext one to an inbox.
 
 Written *after* a successful send, so a crash mid-send costs a duplicate mail rather than a key that
 is never handed over — the right way round. A malformed receipt reads as *already sent*, for the
@@ -1022,6 +1033,35 @@ exercised continuously.
 Restores are per-source anyway, so ordering costs nothing to implement and changes the
 experience from "unusable for three days" to "usable in ten minutes, complete in
 three days".
+
+#### Recovering on a rebuilt box (what ships today)
+
+The first slice of the above, for the commonest case: a box reinstalled onto the same backup space.
+The host side finds a repository it has no password for, refuses to create a second one, and leaves
+a `needs-recovery` marker; from then on the engine's `status` answers `needsRecovery: true`.
+
+- **The page asks for the key.** The engine's row turns red ("needs your backup key"), the page
+  leads with it, and the engine's tab shows a key field in place of the key block. The field is
+  offered only when the adapter declares `Caps.Recover`; an older adapter hides it. A link to
+  start fresh appears when the host wrote a `recoveryHelpUrl` into `state.json`.
+- **`POST /api/backup/engines/{id}/recover`** with `{key}`. Maison writes the key to
+  `repository.password.candidate` (0600) in the engine directory — the only file it ever writes
+  there — and runs the adapter's `recover` verb, which connects (never creates), promotes the
+  candidate to `repository.password` and pins every existing snapshot. The candidate is removed on
+  every path. 400 is a wrong key (exit 14), 409 an engine not waiting for one, 501 an engine that
+  cannot take one. The key never reaches a log, and the receipt records it as held by the user.
+- **The existing snapshots are pinned**, so retention cannot expire them, whatever happens next.
+- **Then the schedule question**, as a dialog: the box was just reinstalled, its apps may be empty,
+  and nightly runs would save that emptiness and push the real history out of retention. The
+  default is **pause** (`paused` / `paused_at` in `backup.json`): the timer stops, a manual run still
+  works, and a banner with *Resume* stays on the page until it ends. This is the "scheduler stays
+  off until recovery is explicitly confirmed" rule above, in the form a user can act on.
+- **Two incidents** keep both states visible: `backup.recovery:<engine>` (critical, raised whatever
+  the schedule says, closed once the key is in) and `backup.paused` (warning, open while the
+  schedule is on and paused). With only backup incidents open, the bell opens Settings → Backups.
+
+What it does not do yet: restore order, gating app start on restored data, or resumable restores.
+Those remain the design above.
 
 Recovery is a **one-way restore, not a merge.** Restoring an older snapshot and then
 letting the nightly run creates a rollback point in the chain — correct under GFS

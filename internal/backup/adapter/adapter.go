@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,7 +25,11 @@ const (
 	statusTimeout = 2 * time.Minute
 	deleteTimeout = 10 * time.Minute
 	capsTimeout   = 1 * time.Minute
-	unbounded     = 0
+	// recoverTimeout covers a connect plus a pin per snapshot, in batches. Bounded,
+	// because a user is watching a spinner; generous, because a space with years of
+	// nightly history is thousands of pins.
+	recoverTimeout = 15 * time.Minute
+	unbounded      = 0
 )
 
 // engineCaps is the root this engine runs as, narrowed.
@@ -53,6 +58,10 @@ type Provider struct {
 	status   apps.EngineStatus
 	statusAt time.Time
 	caps     *apps.Caps
+
+	// recoverMu serialises Recover. There is one candidate file per engine directory,
+	// and two attempts racing would have one test the other's key.
+	recoverMu sync.Mutex
 }
 
 // New builds a provider from a descriptor. It performs no I/O: a provider is
@@ -122,6 +131,9 @@ func (p *Provider) Caps() apps.Caps {
 // same engine at their own bucket must not be told they are using someone's service.
 type repoState struct {
 	Label string `json:"label"`
+	// RecoveryHelpURL is where a user without their key can start over. Absent on a
+	// box whose deployment offers no such place, and on a template that predates it.
+	RecoveryHelpURL string `json:"recoveryHelpUrl,omitempty"`
 }
 
 func (p *Provider) readState() repoState {
@@ -155,22 +167,51 @@ func (p *Provider) Status(ctx context.Context) apps.EngineStatus {
 	return st
 }
 
+// Invalidate drops the cached status, so the next Status asks the engine again.
+//
+// For the one change Maison itself causes rather than observes: a recovery turns a box
+// with no key into a connected one, and a page that re-read a thirty-second-old "needs
+// your key" straight after the user typed it would tell them it had not worked.
+func (p *Provider) Invalidate() {
+	p.mu.Lock()
+	p.statusAt = time.Time{}
+	p.mu.Unlock()
+}
+
 func (p *Provider) probe(ctx context.Context) apps.EngineStatus {
 	// The label is read first and kept whatever the probe says: a box that has been
 	// issued a space but has not connected to it yet should still be able to say whose
 	// space it is, rather than being described by its engine while it is being set up.
-	label := p.readState().Label
+	state := p.readState()
 
 	var ws wireStatus
-	if err := p.call(ctx, statusTimeout, nil, &ws, "status"); err != nil {
-		return apps.EngineStatus{Label: label, Detail: err.Error()}
+	raw, err := p.callRaw(ctx, statusTimeout, nil, "status")
+	if err != nil {
+		st := apps.EngineStatus{Label: state.Label, RecoveryHelpURL: state.RecoveryHelpURL, Detail: err.Error()}
+		// "Not configured" is still read for a recovery flag. The protocol has the
+		// adapter answer needsRecovery with exit 0, but an adapter that also exits 10
+		// for it is saying something true, and collapsing it to plain "not configured"
+		// would hide every backup the user owns behind the words for a fresh box.
+		if errors.Is(err, apps.ErrNotConfigured) && len(raw) > 0 &&
+			json.Unmarshal(raw, &ws) == nil && ws.NeedsRecovery {
+			st.NeedsRecovery = true
+			if ws.Detail != "" {
+				st.Detail = ws.Detail
+			}
+		}
+		return st
+	}
+	if err := unmarshalResult(raw, &ws); err != nil {
+		return apps.EngineStatus{Label: state.Label, RecoveryHelpURL: state.RecoveryHelpURL, Detail: err.Error()}
 	}
 	return apps.EngineStatus{
-		Configured: ws.Configured,
-		Connected:  ws.Connected,
-		Label:      label,
-		Identity:   ws.Identity,
-		Detail:     ws.Detail,
+		Configured:      ws.Configured,
+		Connected:       ws.Connected,
+		Label:           state.Label,
+		Identity:        ws.Identity,
+		Detail:          ws.Detail,
+		NeedsRecovery:   ws.NeedsRecovery,
+		RecoveryHelpURL: state.RecoveryHelpURL,
 	}
 }
 

@@ -72,6 +72,14 @@ const (
 	// and cannot be reached today. Two different repairs: this one is fixed by the
 	// deployment declaring the engine again, that one by the storage coming back.
 	KindBackupMissing = "backup.missing"
+	// KindBackupRecovery is storage holding backups this box has no key for — a rebuilt
+	// box reattached to its old space. Neither of the two above: nothing is missing and
+	// nothing is down, and the only repair is the user typing their key.
+	KindBackupRecovery = "backup.recovery"
+	// KindBackupPaused is a schedule the user held after a recovery. A warning rather
+	// than nothing, because a pause is meant to end and the one way it goes wrong is
+	// being forgotten.
+	KindBackupPaused = "backup.paused"
 	KindDiskFull     = "disk.full"
 	KindDiskUnseen   = "disk.unseen"
 	KindAppUnhealthy = "app.unhealthy"
@@ -107,8 +115,9 @@ const (
 // owns them; these two are shared — the schedule asserts the first, and the detectors
 // and the upgrade adoption in server.New both have to refer to it.
 const (
-	IDBackupRun   = "backup.run"
-	IDBackupStale = "backup.stale"
+	IDBackupRun    = "backup.run"
+	IDBackupStale  = "backup.stale"
+	IDBackupPaused = "backup.paused"
 )
 
 // Report is what a reporter asserts. Everything else about an incident — when it

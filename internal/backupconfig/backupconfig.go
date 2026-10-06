@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/yundera/maison/internal/notify"
 )
@@ -28,6 +29,22 @@ import (
 type Config struct {
 	// Enabled turns the schedule on. Backups can always be taken by hand.
 	Enabled bool `json:"enabled"`
+
+	// Paused holds the schedule without switching it off, and PausedAt says since when.
+	//
+	// It is NOT Enabled=false, and the difference is the point. Off is the user's
+	// deliberate answer to "do you want nightly backups", and everything downstream
+	// treats it as such — no staleness alert, no nagging. Paused is "yes, but not
+	// tonight": a box just reconnected to its repository after a rebuild has apps that
+	// are still empty, and a nightly run would save that emptiness and start pushing the
+	// user's real backups out of retention. So it stops the timer, keeps saying so (the
+	// backup.paused incident), and is undone with one click rather than by remembering
+	// to switch backups back on.
+	//
+	// A backup by hand still runs while paused: the pause is about the schedule doing
+	// something unattended, not about the user doing something on purpose.
+	Paused   bool       `json:"paused,omitempty"`
+	PausedAt *time.Time `json:"paused_at,omitempty"`
 
 	// Engine is the user's chosen engine ID, or "" to follow whatever the deployment
 	// provisioned. Storing only the override — never the provisioned value — is what
@@ -257,6 +274,10 @@ func sane(c Config) Config {
 	}
 	if c.Keep.Latest < 1 {
 		c.Keep.Latest = 1
+	}
+	// A pause date with no pause is a leftover, and would read as one on the page.
+	if !c.Paused {
+		c.PausedAt = nil
 	}
 	c.Count = max(c.Count, 0)
 	c.MaxAgeDays = max(c.MaxAgeDays, 0)

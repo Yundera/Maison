@@ -1,8 +1,11 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -210,5 +213,128 @@ func TestAppOfRejectsWhatIsNotAnApp(t *testing.T) {
 	}
 	if app, ok := appOf("app:jellyfin"); !ok || app != "jellyfin" {
 		t.Errorf("appOf(app:jellyfin) = %q, %v", app, ok)
+	}
+}
+
+// The rebuilt box arrives as a status, not as a failure: configured=false and exit 0,
+// with needsRecovery set. Losing the field in the decode would turn "every backup you
+// own is here and needs your key" into the words for a fresh box.
+func TestStatusCarriesNeedsRecovery(t *testing.T) {
+	raw, err := decode([]byte(`{"type":"result","result":{"configured":false,"connected":false,"detail":"storage holds a repository this box has no key for","needsRecovery":true}}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st wireStatus
+	if err := unmarshalResult(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	if !st.NeedsRecovery || st.Configured || st.Connected {
+		t.Errorf("status = %+v, want an unconfigured engine asking for its key", st)
+	}
+
+	// And an adapter that predates the field says nothing, which must read as "no".
+	raw, _ = decode([]byte(`{"type":"result","result":{"configured":true,"connected":true}}`), nil)
+	st = wireStatus{}
+	if err := unmarshalResult(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.NeedsRecovery {
+		t.Error("an old adapter's status read as needing recovery")
+	}
+}
+
+// Caps.Recover is what decides whether the page offers the key form at all, so an
+// adapter that predates the verb must come out false and a new one true.
+func TestCapsCarryRecover(t *testing.T) {
+	raw, err := decode([]byte(`{"type":"result","result":{"engineId":"kopia","protocol":"`+Protocol+`","offsite":true,"recover":true}}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wc wireCaps
+	if err := unmarshalResult(raw, &wc); err != nil {
+		t.Fatal(err)
+	}
+	if c := wc.caps(); !c.Recover || !c.Offsite {
+		t.Errorf("caps = %+v, want recover carried through", c)
+	}
+	if c := (wireCaps{Offsite: true}).caps(); c.Recover {
+		t.Error("an adapter that never said recover was taken to support it")
+	}
+}
+
+// Exit 14 is the user's typo, and has to arrive as a sentinel the route can turn into
+// a 400 — not as a generic failure that would read as a broken engine.
+func TestExit14IsTheWrongKey(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 14").Run()
+	if err == nil {
+		t.Skip("no shell to produce an exit code with")
+	}
+	if got := classify(err); !errors.Is(got, ErrWrongKey) || !errors.Is(got, apps.ErrWrongKey) {
+		t.Errorf("classify(exit 14) = %v, want the wrong-key sentinel", got)
+	}
+	// The neighbours keep their meaning.
+	err = exec.Command("sh", "-c", "exit 10").Run()
+	if got := classify(err); !errors.Is(got, apps.ErrNotConfigured) {
+		t.Errorf("classify(exit 10) = %v, want not configured", got)
+	}
+}
+
+// The help link is the host's to name, read from the same state file as the label.
+func TestReadStateCarriesTheRecoveryHelpURL(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	p := New(cfg, Descriptor{EngineID: "kopia", Image: "img:1"})
+	if err := os.MkdirAll(p.dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"label":"Yundera Backup Storage","recoveryHelpUrl":"https://app.example/dashboard/backup"}`
+	if err := os.WriteFile(filepath.Join(p.dir(), "state.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := p.readState()
+	if st.Label != "Yundera Backup Storage" || st.RecoveryHelpURL != "https://app.example/dashboard/backup" {
+		t.Errorf("state = %+v", st)
+	}
+}
+
+// The candidate is the user's secret in a file: written whole, readable by its owner
+// alone, and never half there for the adapter to read.
+func TestWriteSecretIsPrivateAndWhole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), candidateFile)
+	if err := writeSecret(path, "correct horse battery staple"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "correct horse battery staple" {
+		t.Errorf("candidate = %q", b)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("candidate mode = %v, want 0600", fi.Mode().Perm())
+	}
+	// No temporary left beside it.
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Errorf("found %d files, want only the candidate", len(entries))
+	}
+}
+
+// An empty key never reaches the engine, and leaves nothing on disk.
+func TestRecoverRefusesAnEmptyKeyWithoutWritingIt(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	p := New(cfg, Descriptor{EngineID: "kopia", Image: "img:1"})
+	if err := os.MkdirAll(p.dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Recover(context.Background(), "  \n"); !errors.Is(err, ErrWrongKey) {
+		t.Errorf("Recover(blank) = %v, want the wrong-key sentinel", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir(), candidateFile)); !os.IsNotExist(err) {
+		t.Error("a blank key left a candidate file behind")
 	}
 }

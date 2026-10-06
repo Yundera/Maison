@@ -200,7 +200,7 @@ func TestHumanBytesReadsLikeSomethingAPersonWouldSay(t *testing.T) {
 func TestEveryKindTheServerRaisesIsKnown(t *testing.T) {
 	known := []string{
 		incident.KindBackupFailed, incident.KindBackupStale, incident.KindBackupEngine,
-		incident.KindBackupMissing,
+		incident.KindBackupMissing, incident.KindBackupRecovery, incident.KindBackupPaused,
 		incident.KindDiskFull, incident.KindAppUnhealthy, incident.KindAppPartial,
 		incident.KindAppCrashLoop, incident.KindAppInstall, incident.KindAppUpdate,
 		incident.KindAppStackup, incident.KindStoreSource, incident.KindTest,

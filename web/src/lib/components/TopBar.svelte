@@ -22,6 +22,15 @@
   const alerts = $derived($incidents.open.filter((i) => !i.acked))
   const worst = $derived(alerts.some((i) => i.severity === 'critical') ? 'critical' : 'warning')
 
+  // Where the bell leads. When everything it is ringing about is a backup problem, the
+  // place to fix it is the Backups page — the key form, the Resume button — and a stop
+  // at the notification list on the way would be one more click between the user and
+  // the only control that helps. Anything else in the mix and it opens the list, which
+  // is the one place that shows all of them.
+  const bellTarget = $derived(
+    alerts.length > 0 && alerts.every((i) => i.kind.startsWith('backup.')) ? 'backups' : 'notifications',
+  )
+
   // Language, wallpaper and widgets stay here rather than moving to the settings
   // page: they are instant and previewed against the dashboard behind them, and
   // sending someone to a full-screen page to pick a wallpaper they can no longer
@@ -145,7 +154,7 @@
       class="picon bell"
       title={$t('notifications')}
       aria-label={$t('notifications')}
-      onclick={() => openSettings('notifications')}
+      onclick={() => openSettings(bellTarget)}
     >
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
         <path d="M9 17a3 3 0 0 0 6 0M12 6v1M8 17V12a4 4 0 0 1 8 0v5" />

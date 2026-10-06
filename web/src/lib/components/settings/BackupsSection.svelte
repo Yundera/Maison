@@ -46,7 +46,9 @@
     runBackupNow,
     emailBackupKey,
     showBackupKey,
+    recoverBackupEngine,
     type BackupStatus,
+    type RecoverResult,
     type BackupConfig,
     type EngineInfo,
     type EngineSettings,
@@ -61,6 +63,7 @@
     type Backup,
   } from '../../stores/backups'
   import { backupLive, subscribeBackup } from '../../stores/backuplive'
+  import { ApiError } from '../../api/client'
   import { renderSize } from '../../format'
   import BackupRows from '../BackupRows.svelte'
   import RunPanel from './RunPanel.svelte'
@@ -321,6 +324,56 @@
     status?.key_sent ? new Date(status.key_sent.sent_at).toLocaleString() : '',
   )
 
+  // --- recovery -------------------------------------------------------------------
+  // The rebuilt box. Its storage already holds the backups a previous installation
+  // made, and this box has no key for them, so it takes no backups there and cannot
+  // read the ones it has. The key the user was mailed is the only way back in, and this
+  // is the only place to type it.
+  //
+  // The field is a password input and the value is dropped the moment it has been sent:
+  // it is the one secret on the box with no recovery path, and it has no business
+  // lingering in the page's state.
+  let recoveryKey = $state('')
+  let recovering = $state(false)
+  let recoveryError = $state('')
+  /** What the reconnect found — and, while set, the dialog asking about the schedule. */
+  let recovered = $state<RecoverResult | null>(null)
+
+  async function recover(id: string) {
+    recovering = true
+    recoveryError = ''
+    try {
+      const res = await recoverBackupEngine(id, recoveryKey)
+      recoveryKey = ''
+      recovered = res
+      await loadStatus()
+      loadArchives()
+    } catch (e) {
+      // A 400 is the user's typo, and is said in their language; anything else is the
+      // engine's own message, which is the only thing that makes it diagnosable.
+      recoveryError =
+        e instanceof ApiError && e.status === 400 ? $t('backup_recover_wrong_key') : (e as Error).message
+    } finally {
+      recovering = false
+    }
+  }
+
+  /** The dialog's answer. Pausing is the default and the safe one: a box that was just
+   *  rebuilt has empty apps, and a nightly run would save that emptiness and start
+   *  pushing the real history out of retention. */
+  async function afterRecovery(pause: boolean) {
+    recovered = null
+    if (pause) await commit({ paused: true, paused_at: new Date().toISOString() })
+  }
+
+  const resume = () => commit({ paused: false, paused_at: undefined })
+
+  /** Focus the default choice when the dialog opens, rather than `autofocus`, which a
+   *  component mounted after page load does not honour reliably. */
+  function focusOnMount(node: HTMLElement) {
+    node.focus()
+  }
+
   // --- the protection band ----------------------------------------------------------
 
   const engineInfo = $derived(
@@ -387,7 +440,13 @@
       if (!known) {
         return { id: e.id, label: label(e.id, e.name), level: 'idle', last: '', note: '', receives }
       }
-      if (!receives) {
+      if (e.needs_recovery) {
+        // Before the "receives" test on purpose: on a rebuilt box this engine receives
+        // nothing (it is not connected, so nothing is routed to it), and the idle grey
+        // that earns would hide the one state where everything the user owns is at stake.
+        level = 'bad'
+        note = $t('backup_row_needs_key')
+      } else if (!receives) {
         // Not a fault. An engine can hold history without being written to any more,
         // and saying "no backups" about it would read as data loss.
         level = 'idle'
@@ -404,6 +463,9 @@
       } else if (!conf?.enabled && e.receives_schedule) {
         level = 'warn'
         note = $t('backup_row_manual_only')
+      } else if (conf?.paused && e.receives_schedule) {
+        level = 'warn'
+        note = $t('backup_row_paused')
       }
       return { id: e.id, label: label(e.id, e.name), level, last, note, receives }
     })
@@ -419,6 +481,10 @@
 
   const alert = $derived.by(() => {
     if (!status) return null
+    // First, and before the listing has even arrived: it comes from the status alone,
+    // and it is the one thing on this page that outranks everything else.
+    if ((status.engines ?? []).some((e) => e.needs_recovery))
+      return { level: 'bad', text: $t('backup_state_needs_key') }
     if (loading && !engines.length) return { level: 'checking', text: $t('backup_state_checking') }
     if (!rows.some((r) => r.receives)) return { level: 'bad', text: $t('backup_state_no_destination') }
     if (rows.some((r) => r.level === 'bad')) return { level: 'bad', text: $t('backup_state_destination_failing') }
@@ -525,6 +591,19 @@
 <section class="state">
   {#if alert}
     <p class="verdict {alert.level}">{alert.text}</p>
+  {/if}
+
+  <!-- A pause is meant to end, and the way it goes wrong is being forgotten — so it sits
+       at the top of the page, with the button that ends it, for as long as it lasts. -->
+  {#if conf?.enabled && conf.paused}
+    <div class="paused" role="status">
+      <p>
+        {conf.paused_at
+          ? $t('backup_paused_since', { when: new Date(conf.paused_at).toLocaleString() })
+          : $t('backup_paused')}
+      </p>
+      <button class="go" onclick={resume} disabled={busy}>{$t('backup_resume')}</button>
+    </div>
   {/if}
 
   <ul class="engines">
@@ -814,7 +893,46 @@
     <!-- The encryption key belongs to the engine that has a repository, not to the box:
          it is AppDataShared/backup/<engine>/repository.password, and the local engine
          has none because its archives are not encrypted at all. -->
-    {#if activeInfo?.encrypted}
+    {#if activeInfo?.needs_recovery}
+      <!-- In place of the key block, not beside it: there is no key on this box to show
+           or mail, and the only useful thing to do with this engine is give it one. -->
+      <div class="recovery">
+        <h4>{$t('backup_recover_title')}</h4>
+        <p class="hint">{$t('backup_recover_explain')}</p>
+        {#if activeInfo.can_recover}
+          <form
+            class="recover-form"
+            onsubmit={(e) => {
+              e.preventDefault()
+              recover(activeInfo.id)
+            }}
+          >
+            <input
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder={$t('backup_recover_placeholder')}
+              aria-label={$t('backup_recover_placeholder')}
+              bind:value={recoveryKey}
+              disabled={recovering}
+            />
+            <button class="go" type="submit" disabled={recovering || !recoveryKey.trim()}>
+              {recovering ? $t('backup_recover_working') : $t('backup_recover_submit')}
+            </button>
+          </form>
+          {#if recoveryError}<p class="err at-form">{recoveryError}</p>{/if}
+        {:else}
+          <p class="hint quiet">{$t('backup_recover_unsupported')}</p>
+        {/if}
+        {#if activeInfo.recovery_help_url}
+          <p class="hint quiet">
+            <a href={activeInfo.recovery_help_url} target="_blank" rel="noopener noreferrer">
+              {$t('backup_recover_no_key')}
+            </a>
+          </p>
+        {/if}
+      </div>
+    {:else if activeInfo?.encrypted}
       <h4>{$t('backup_key')}</h4>
       <p class="hint">{$t('backup_key_hint')}</p>
       <div class="actions">
@@ -844,6 +962,7 @@
            it is stated either way rather than only when reassuring. -->
       <p class="hint key-state">
         {#if keyNote}{keyNote}
+        {:else if status?.key_sent?.held_by_user}{$t('backup_key_held_by_user')}
         {:else if status?.key_sent}
           {$t('backup_key_sent_on', { when: keySentAt, to: status.key_sent.to ?? '' })}
         {:else if activeInfo.has_key}{$t('backup_key_never_sent')}{/if}
@@ -920,6 +1039,36 @@
       {/each}
     {/if}
   </section>
+{/if}
+
+<!-- After a recovery, one question before anything else happens: the box was just
+     reinstalled, its apps are probably empty, and the next nightly run would save that.
+     Modal on purpose — it is the one moment the answer matters, and a choice the user
+     can click past is a choice the schedule makes for them at 03:30. -->
+{#if recovered}
+  <div class="backdrop" role="presentation">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="recovered-title">
+      <h2 id="recovered-title">{$t('backup_recovered_title')}</h2>
+      {#if conf?.enabled}
+        <p class="body">{$t('backup_recovered_explain')}</p>
+        <p class="body">{$t('backup_recovered_pinned', { count: String(recovered.pinned) })}</p>
+        <div class="dialog-actions">
+          <button class="ghost" onclick={() => afterRecovery(false)}>{$t('backup_recovered_keep')}</button>
+          <button class="go" use:focusOnMount onclick={() => afterRecovery(true)}>
+            {$t('backup_recovered_pause')}
+          </button>
+        </div>
+      {:else}
+        <!-- Nothing to pause: the schedule is off. Said anyway, because switching it on
+             before the apps are restored is the same mistake by a different route. -->
+        <p class="body">{$t('backup_recovered_schedule_off')}</p>
+        <p class="body">{$t('backup_recovered_pinned', { count: String(recovered.pinned) })}</p>
+        <div class="dialog-actions">
+          <button class="go" use:focusOnMount onclick={() => afterRecovery(false)}>{$t('backup_recovered_ok')}</button>
+        </div>
+      {/if}
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -1326,6 +1475,91 @@
     color: var(--orange);
     font-size: 0.85rem;
     margin: 0 0 0.6rem;
+  }
+
+  /* The paused banner: a warning, not an error — the user chose it — but it must be
+     the first thing seen, so it carries its own button rather than a link elsewhere. */
+  .paused {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 0 0 0.75rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--orange);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .paused p {
+    flex: 1;
+    min-width: 12rem;
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  .recovery {
+    margin-top: 1.5rem;
+  }
+  .recover-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0 0 0.6rem;
+  }
+  .recover-form input {
+    flex: 1;
+    min-width: 12rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .err.at-form {
+    margin: 0 0 0.6rem;
+  }
+  .recovery a {
+    color: var(--primary);
+  }
+
+  /* The post-recovery dialog. The UninstallDialog shape, on the theme's tokens so it
+     reads correctly in the dark theme too. */
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 110;
+    background: var(--scrim);
+    display: grid;
+    place-items: center;
+  }
+  .dialog {
+    width: min(92vw, 28rem);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.25rem 1.4rem;
+    color: var(--text);
+  }
+  .dialog h2 {
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem;
+  }
+  .dialog .body {
+    margin: 0 0 0.75rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1.1rem;
+  }
+  .dialog-actions button {
+    padding: 0.5rem 1.1rem;
+    border-radius: 8px;
+  }
+  .ghost {
+    background: var(--surface-2);
   }
 
   /* Phone. 560px is this app's established narrow breakpoint (AppUsageRows,

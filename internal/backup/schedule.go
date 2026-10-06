@@ -270,7 +270,9 @@ func (s *Scheduler) State() RunState {
 	return st
 }
 
-// NextRun is when the schedule will fire next, or the zero time when it is off.
+// NextRun is when the schedule will fire next, or the zero time when it is off or
+// paused — the page reads an absent next run as "nothing is scheduled", which is the
+// truth in both cases.
 //
 // It includes this box's jitter, because a bare hh:mm would be a promise Maison does
 // not keep: the offset is up to half an hour and is what stops a fleet stampeding one
@@ -279,7 +281,7 @@ func (s *Scheduler) State() RunState {
 // from the configured one.
 func (s *Scheduler) NextRun() time.Time {
 	conf := s.store.Get()
-	if !conf.Enabled {
+	if !scheduleFires(conf) {
 		return time.Time{}
 	}
 	now := s.now()
@@ -733,7 +735,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 			// A box that was switched off through its window backs up when it returns,
 			// rather than silently skipping the day. Bounded to once — catching up is
 			// not the same as running every missed night at once.
-			if conf.Enabled && s.missedARun(conf) {
+			if scheduleFires(conf) && s.missedARun(conf) {
 				wait = time.Minute
 			}
 
@@ -748,7 +750,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 			case <-timer.C:
 			}
 
-			if !s.store.Get().Enabled {
+			if !scheduleFires(s.store.Get()) {
 				continue
 			}
 			if err := s.RunAll(ctx); err != nil {
@@ -756,6 +758,17 @@ func (s *Scheduler) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// scheduleFires is whether the timer may start a run: switched on and not paused.
+//
+// One predicate for the three places that ask, so a pause cannot stop the nightly run
+// while the catch-up path — a box that "missed" the nights it was paused for — fires
+// anyway a minute after the user resumes, or worse, while still paused. RunAll itself
+// does not consult it: a backup by hand is the user acting on purpose, and a pause is
+// about nothing happening unattended.
+func scheduleFires(conf backupconfig.Config) bool {
+	return conf.Enabled && !conf.Paused
 }
 
 // jitter spreads a fleet's runs across half an hour.

@@ -136,6 +136,8 @@ immediately would find half of them unhealthy every time Maison restarted.
 |---|---|---|
 | `backup.stale` | `backup.stale` | Backups on, and the last completed run was over 48h ago |
 | `backup.engine` | `backup.engine` | The chosen engine is kopia and its repository is not connected |
+| `backup.recovery:<engine>` | `backup.recovery` | The engine's storage holds backups this box has no key for. Critical, not gated on the schedule; supersedes `backup.engine` for that engine |
+| `backup.paused` | `backup.paused` | Backups on and paused (after a recovery). Warning. While paused, `backup.stale` is not raised |
 | `disk.full:<device>` | `disk.full` | Opens at 90% (97% is critical), clears below 85% |
 | `app.unhealthy:<app>` | `app.unhealthy` | Docker's health check failing, two passes running |
 | `app.partial:<app>` | `app.partial` | Some containers up, some down, two passes running |

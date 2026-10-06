@@ -3,15 +3,20 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backup/adapter"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/notify"
 	"github.com/yundera/maison/internal/usersettings"
 )
@@ -76,7 +81,14 @@ var (
 	_ backup.UserDataEngine        = (*adapter.Provider)(nil)
 	_ backup.UserDataRestoreEngine = (*adapter.Provider)(nil)
 	_ backup.RetentionEngine       = (*adapter.Provider)(nil)
+	_ apps.Recoverer               = (*adapter.Provider)(nil)
+	_ statusInvalidator            = (*adapter.Provider)(nil)
 )
+
+// statusInvalidator is an engine whose Status is cached and can be told to forget it.
+// Asked for by the recovery route, which has to know the engine's state NOW rather than
+// thirty seconds ago — see handleRecoverEngine.
+type statusInvalidator interface{ Invalidate() }
 
 // applyEngineSettings points the set's write sets at whatever the configuration now
 // says, one set per trigger.
@@ -298,6 +310,18 @@ type engineInfo struct {
 	// per-engine rows exist to show.
 	LastRun *lastRunView `json:"last_run,omitempty"`
 
+	// NeedsRecovery is the rebuilt box: the storage holds backups this box has no key
+	// for. The page leads with it, because it is the one state where everything the user
+	// owns is present and unreadable. See apps.EngineStatus.NeedsRecovery.
+	NeedsRecovery bool `json:"needs_recovery"`
+	// CanRecover is whether this engine can take the key from the page. False for an
+	// adapter that predates the verb, which hides the form rather than offering a
+	// button that would fail.
+	CanRecover bool `json:"can_recover"`
+	// RecoveryHelpURL is where a user without the key can start over, when the
+	// deployment offers such a place. Absent, the page offers no link.
+	RecoveryHelpURL string `json:"recovery_help_url,omitempty"`
+
 	// ReceivesRollback is whether the rollback point an update takes lands here.
 	//
 	// It is always and only the local engine (server.go wires BackupBeforeUpdate to a
@@ -327,7 +351,10 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	if _, _, err := s.escrowKey(); err == nil {
 		out.HasKey = true
 	}
-	if rec, sent := readKeySent(s.cfg); sent && !rec.SentAt.IsZero() {
+	// A receipt the user earned by typing the key in carries no send date, and is shown
+	// all the same: "you entered this key yourself" is the honest replacement for "no
+	// copy has ever been mailed", which would be true and misleading.
+	if rec, sent := readKeySent(s.cfg); sent && (!rec.SentAt.IsZero() || rec.HeldByUser) {
 		out.KeySent = &rec
 	}
 	for _, id := range s.engines.IDs() {
@@ -338,6 +365,8 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		// what stops a second engine having to be added to a branch here.
 		st := p.Status(r.Context())
 		info.Connected, info.Detail, info.Name = st.Connected, st.Detail, st.Label
+		info.NeedsRecovery, info.RecoveryHelpURL = st.NeedsRecovery, st.RecoveryHelpURL
+		info.CanRecover = canRecover(p)
 		// Resolved for this engine alone. Provisioned{} is empty because nothing
 		// renders that layer onto a box yet; when the host-side script does, this is
 		// the one call site that has to learn about it.
@@ -396,6 +425,13 @@ func (s *Server) handlePutBackupConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A pause is stamped here when the client did not say when, so the incident and the
+	// banner can always say since when. The client normally sends it; this is the
+	// fallback, not the clock of record.
+	if in.Paused && in.PausedAt == nil {
+		now := time.Now()
+		in.PausedAt = &now
+	}
 	// A client still sending `smtp` here is honoured once and moved, rather than
 	// having its mail configuration stored where nothing reads it any more.
 	adoptLegacySMTP(s.settings, &in)
@@ -430,6 +466,103 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// canRecover is whether an engine both declares the recover capability and implements
+// the method. Both, because either alone is a button that fails: a declared capability
+// with no method is a build that lost it, and a method with no capability is an adapter
+// image that predates the verb.
+func canRecover(p apps.Provider) bool {
+	_, ok := p.(apps.Recoverer)
+	return ok && p.Caps().Recover
+}
+
+// handleRecoverEngine reconnects a rebuilt box to the repository its space already
+// holds, with the key the user was mailed.
+//
+//	200 {snapshots, pinned}   reconnected; every existing snapshot pinned against retention
+//	400 {error}               an empty or wrong key — the user's typo, not a fault
+//	404                       no such engine
+//	409                       the engine is not waiting for a key
+//	501                       the engine cannot take one (Caps.Recover)
+//
+// **The key never reaches a log**, here or below: it goes from the body into the
+// engine's candidate file and nowhere else, and nothing on this path prints the body.
+//
+// The state is checked fresh, with the status cache dropped first. A box whose
+// recovery has just finished — in another tab, or by the host side — must answer 409
+// rather than run the verb again against a repository it is already connected to.
+//
+// It runs detached from the request: a reconnect that the browser abandoned halfway is
+// still worth finishing, and an interrupted one is worth less than either outcome.
+func (s *Server) handleRecoverEngine(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	p, ok := engineByID(s.engines, id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown backup engine: " + id})
+		return
+	}
+	rec, implements := p.(apps.Recoverer)
+	if !implements || !p.Caps().Recover {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "this backup engine cannot take a recovery key"})
+		return
+	}
+
+	var in struct {
+		Key string `json:"key"`
+	}
+	// A key is tens of bytes. The cap is only so a pasted novel is a 400 rather than an
+	// allocation.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	key := strings.TrimSpace(in.Key)
+	if key == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enter your backup key"})
+		return
+	}
+
+	ctx := context.WithoutCancel(r.Context())
+	if inv, ok := p.(statusInvalidator); ok {
+		inv.Invalidate()
+	}
+	if !p.Status(ctx).NeedsRecovery {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "this backup storage is not waiting for a key"})
+		return
+	}
+
+	res, err := rec.Recover(ctx, key)
+	switch {
+	case errors.Is(err, apps.ErrWrongKey):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "that key does not open these backups"})
+		return
+	case errors.Is(err, apps.ErrNotConfigured):
+		// The engine found nothing to recover after all — the host side moved on between
+		// the status above and the verb.
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "this backup storage is not waiting for a key"})
+		return
+	case err != nil:
+		log.Printf("backup: %s: recovery failed: %v", id, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("backup: %s: reconnected to the existing repository (%d snapshots, %d pinned)", id, res.Snapshots, res.Pinned)
+
+	// The user just typed this key, so they hold a copy: record that instead of letting
+	// the automatic send mail it straight back to them.
+	s.recordKeyHeldByUser(id)
+	// A connected offsite engine is what the legacy fallback writes to, so the write
+	// sets are recomputed now rather than at the next restart.
+	if s.backupConf != nil {
+		applyEngineSettings(s.engines, s.backupConf)
+	}
+	// Closed now rather than at the next detector pass, so the bell does not go on
+	// asking for a key the user has just entered.
+	if s.incidents != nil {
+		s.incidents.Resolve(incident.KindBackupRecovery + ":" + id)
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // resolvedView renders one engine's resolved retention for the settings page.

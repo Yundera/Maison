@@ -1,6 +1,9 @@
 package server
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"log"
@@ -47,6 +50,50 @@ type keySentRecord struct {
 	// Auto distinguishes the boot-time send from a button press, so a support
 	// conversation can tell "we sent it" from "they asked for it".
 	Auto bool `json:"auto,omitempty"`
+
+	// Fingerprint names WHICH key this receipt is for: the first 16 hex digits of the
+	// password's SHA-256. Not the key — sixty-four bits of a hash of a 264-bit random
+	// secret gives nothing back — but enough to notice that the key on disk is no longer
+	// the one that was mailed. That happens when the space is reset from the dashboard
+	// and the box mints a fresh repository: without this the receipt would go on saying
+	// "already sent" about a key that no longer opens anything, and the new one would
+	// never leave the box.
+	//
+	// Absent in a receipt written before it existed, and that reads as MATCHING (see
+	// keyNeedsMail): an upgrade must not mail every box's key a second time.
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// HeldByUser marks a receipt written without a mail: the user typed this key into
+	// the recovery form, so they demonstrably hold a copy, and mailing it back to them
+	// would put a second plaintext copy in an inbox for nothing. SentAt is left zero —
+	// nothing was sent — which is also what keeps the page from claiming a mail.
+	HeldByUser bool `json:"held_by_user,omitempty"`
+}
+
+// keyFingerprint is the receipt's name for a key. See keySentRecord.Fingerprint.
+func keyFingerprint(pw string) string {
+	sum := sha256.Sum256([]byte(pw))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// keyNeedsMail is whether the key on disk still has to leave the box.
+//
+// Three answers, and the two that say "no" without a match are deliberate:
+//   - no receipt: never sent, so yes;
+//   - a receipt with no fingerprint — written before fingerprints, or malformed (see
+//     readKeySent) — counts as covering whatever key is there now. Re-mailing on
+//     upgrade, or on every boot for a damaged file, is exactly what the receipt exists
+//     to prevent;
+//   - a receipt for a different key: the key changed under it, so yes.
+func keyNeedsMail(cfg config.Config, pw string) bool {
+	rec, sent := readKeySent(cfg)
+	if !sent {
+		return true
+	}
+	if rec.Fingerprint == "" {
+		return false
+	}
+	return rec.Fingerprint != keyFingerprint(pw)
 }
 
 // keySentPath is in StateDir, not in the engine directory: the engine directory is
@@ -121,7 +168,7 @@ func sendKeyMail(cfg config.Config, smtp notify.SMTP, engine, pw string, auto bo
 	if err := notify.Send(smtp, "Your backup encryption key", keyMailBody(pw)); err != nil {
 		return err
 	}
-	rec := keySentRecord{SentAt: time.Now(), To: smtp.To, Engine: engine, Auto: auto}
+	rec := keySentRecord{SentAt: time.Now(), To: smtp.To, Engine: engine, Auto: auto, Fingerprint: keyFingerprint(pw)}
 	if err := writeKeySent(cfg, rec); err != nil {
 		log.Printf("backup: key mailed but the receipt could not be written: %v", err)
 	}
@@ -129,8 +176,8 @@ func sendKeyMail(cfg config.Config, smtp notify.SMTP, engine, pw string, auto bo
 }
 
 // EnsureKeyEmailed mails the key once, on the first boot where every precondition
-// holds: a key exists, a mail server is configured, and no receipt says a copy has
-// already left the box.
+// holds: a key exists, a mail server is configured, and no receipt says a copy of THIS
+// key has already left the box.
 //
 // It retries for a few minutes rather than testing once, because on a PCS the mail
 // relay is a sibling container and boot order between the two is not guaranteed — a
@@ -138,44 +185,105 @@ func sendKeyMail(cfg config.Config, smtp notify.SMTP, engine, pw string, auto bo
 // wait for a restart that may be months away.
 //
 // It gives up after that window instead of retrying forever: past the point where the
-// relay would have come up, "not configured" is a real answer and not a race, and the
-// next boot — or the Email me the key button — asks the question again.
+// relay would have come up, "not configured" is a real answer and not a race. The
+// detector loop asks again every five minutes (ensureKeyEmailedOnce), once per pass,
+// which is also what catches a key that changes while Maison is running.
 func (s *Server) EnsureKeyEmailed() {
-	if s.backupConf == nil {
-		return
-	}
-	if _, sent := readKeySent(s.cfg); sent {
-		return
-	}
-	engine, pw, err := s.escrowKey()
-	if err != nil {
-		// No engine on this box holds a key of its own: nothing to hand over, and
-		// nothing to record. A box provisioned later boots again before it has
-		// backups to lose.
-		return
-	}
 	const attempts, wait = 10, 30 * time.Second
 	for i := range attempts {
 		if i > 0 {
 			time.Sleep(wait)
 		}
-		smtp := s.settings.EffectiveSMTP(s.cfg.ProvisionedSMTP())
-		if !smtp.Configured() {
-			continue
-		}
-		// Re-checked inside the loop: the user may have pressed the button, or a
-		// second boot-time send may be in flight, during the wait.
-		if _, sent := readKeySent(s.cfg); sent {
+		switch s.tryMailKey(context.Background()) {
+		case keyMailDone, keyMailNothing:
 			return
 		}
-		if err := sendKeyMail(s.cfg, smtp, engine, pw, true); err != nil {
-			log.Printf("backup: could not mail the encryption key: %v", err)
-			continue
-		}
+	}
+	log.Printf("backup: the encryption key has not been mailed — no mail server is configured")
+}
+
+// ensureKeyEmailedOnce is one attempt, for the detector loop. It is silent when there is
+// nothing to do, which is every pass on a box whose key has been mailed.
+func (s *Server) ensureKeyEmailedOnce(ctx context.Context) {
+	s.tryMailKey(ctx)
+}
+
+type keyMailOutcome int
+
+const (
+	keyMailNothing keyMailOutcome = iota // no key, or this key's copy has already left
+	keyMailDone                          // mailed just now
+	keyMailRetry                         // no relay yet, or the send failed
+)
+
+// tryMailKey is one attempt at the automatic send.
+//
+// It holds keyMailMu across check-and-send, so the boot-time retries and a detector pass
+// landing in the same instant cannot both decide the key is unsent and mail it twice.
+//
+// An engine reporting NeedsRecovery is skipped even if a password file is sitting in its
+// directory: on that box any password present is not the key to the user's backups, and
+// mailing it would hand them a second, useless "your backup key" — the one mistake here
+// worse than sending nothing.
+func (s *Server) tryMailKey(ctx context.Context) keyMailOutcome {
+	if s.backupConf == nil {
+		return keyMailNothing
+	}
+	s.keyMailMu.Lock()
+	defer s.keyMailMu.Unlock()
+
+	engine, pw, err := s.escrowKey()
+	if err != nil {
+		// No engine on this box holds a key of its own: nothing to hand over, and
+		// nothing to record. A box provisioned later is asked again on the next pass.
+		return keyMailNothing
+	}
+	if !keyNeedsMail(s.cfg, pw) {
+		return keyMailNothing
+	}
+	if p, ok := engineByID(s.engines, engine); ok && p.Status(ctx).NeedsRecovery {
+		return keyMailNothing
+	}
+	if s.settings == nil {
+		return keyMailRetry
+	}
+	smtp := s.settings.EffectiveSMTP(s.cfg.ProvisionedSMTP())
+	if !smtp.Configured() {
+		return keyMailRetry
+	}
+	_, hadReceipt := readKeySent(s.cfg)
+	if err := sendKeyMail(s.cfg, smtp, engine, pw, true); err != nil {
+		log.Printf("backup: could not mail the encryption key: %v", err)
+		return keyMailRetry
+	}
+	if hadReceipt {
+		log.Printf("backup: mailed the encryption key to %s (the key on this box has changed since the last copy)", smtp.To)
+	} else {
 		log.Printf("backup: mailed the encryption key to %s (first send on this box)", smtp.To)
+	}
+	return keyMailDone
+}
+
+// recordKeyHeldByUser writes the receipt for a key the user has just typed in, so the
+// automatic send does not mail it straight back to them. It carries the fingerprint of
+// the key now on disk — after a recovery that is the key they typed, promoted by the
+// engine — and no SentAt, because nothing was sent.
+//
+// Nothing is written when the key cannot be read: a receipt with no fingerprint would
+// read as covering whatever key appears later, which is the one receipt this must never
+// leave behind.
+func (s *Server) recordKeyHeldByUser(engine string) {
+	pw, err := readEnginePassword(s.cfg, engine)
+	if err != nil {
+		log.Printf("backup: %s: recovered, but the key is not readable yet — the receipt was not written: %v", engine, err)
 		return
 	}
-	log.Printf("backup: the encryption key has never been mailed — no mail server is configured")
+	s.keyMailMu.Lock()
+	defer s.keyMailMu.Unlock()
+	rec := keySentRecord{Engine: engine, HeldByUser: true, Fingerprint: keyFingerprint(pw)}
+	if err := writeKeySent(s.cfg, rec); err != nil {
+		log.Printf("backup: %s: could not record that the user holds the key: %v", engine, err)
+	}
 }
 
 // handleEmailKey mails the repository password to the configured address.

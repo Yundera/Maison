@@ -31,11 +31,20 @@ const (
 	exitNotConfigured = 10
 	exitNotSupported  = 11
 	exitNotWritable   = 12
+	// 13 is "this storage holds a repository I have no password for". Only the host
+	// side's connect can return it; Maison learns the same fact from status's
+	// needsRecovery instead, so it has no case below.
+	exitWrongKey = 14
 )
 
 // ErrNotWritable is a repository that is reachable but refuses writes — a storage space
 // suspended for quota. Reads and restores keep working.
 var ErrNotWritable = errors.New("the backup repository is not accepting writes")
+
+// ErrWrongKey is a recovery key the repository refused (exit 14). It is apps.ErrWrongKey
+// under the adapter's name, so a caller can test for it without knowing which package
+// declared it — and so a fake engine in a test can return the very same sentinel.
+var ErrWrongKey = apps.ErrWrongKey
 
 type line struct {
 	Type    string   `json:"type"`
@@ -63,6 +72,7 @@ type wireCaps struct {
 	IncrementalPasses bool `json:"incrementalPasses"`
 	ConsumesSource    bool `json:"consumesSource"`
 	Retention         bool `json:"retention"`
+	Recover           bool `json:"recover"`
 
 	RetentionModel string `json:"retentionModel"`
 }
@@ -77,6 +87,7 @@ func (c wireCaps) caps() apps.Caps {
 		ConsumesSource:  c.ConsumesSource,
 		Encrypted:       c.Encrypted,
 		KeyEscrow:       c.KeyEscrow,
+		Recover:         c.Recover,
 	}
 }
 
@@ -85,6 +96,15 @@ type wireStatus struct {
 	Connected  bool   `json:"connected"`
 	Identity   string `json:"identity"`
 	Detail     string `json:"detail"`
+	// NeedsRecovery arrives with configured=false and exit 0: the engine is answering a
+	// question, not failing one. See apps.EngineStatus.NeedsRecovery.
+	NeedsRecovery bool `json:"needsRecovery,omitempty"`
+}
+
+// recoverResult is the recover verb's answer.
+type recoverResult struct {
+	Snapshots int `json:"snapshots"`
+	Pinned    int `json:"pinned"`
 }
 
 type wireBackup struct {
@@ -137,6 +157,8 @@ func classify(err error) error {
 		return apps.ErrNotSupported
 	case exitNotWritable:
 		return ErrNotWritable
+	case exitWrongKey:
+		return ErrWrongKey
 	default:
 		return err
 	}

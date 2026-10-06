@@ -312,3 +312,75 @@ func (p *Provider) ensureRetention(ctx context.Context, sourceID string, keep ba
 	}
 	return p.call(ctx, metaTimeout, nil, nil, "ensure-retention", args...)
 }
+
+// --- recovery ----------------------------------------------------------------
+
+// candidateFile is where a key the user typed waits for the adapter to test it. Named
+// by the protocol: the adapter reads it, promotes it to repository.password if the
+// repository opens with it, and deletes it either way.
+const candidateFile = "repository.password.candidate"
+
+// Recover reattaches a rebuilt box to the repository its space already holds, with the
+// key the user was mailed.
+//
+// **This is the one place Maison writes into the engine directory**, and it writes only
+// the candidate — never repository.password itself. Whether the key is right is a
+// question only the repository can answer, so the promotion is the adapter's, made after
+// a connect succeeded; a Maison that wrote the password file directly would turn a typo
+// into a box that believes it has a key and fails every night.
+//
+// The candidate is removed on every path, by a defer, even though the adapter removes it
+// too. It is the user's unrecoverable secret in a file, and "the other side cleans up"
+// is not a property worth trusting with that: an adapter that crashed, timed out or
+// predates the verb would leave it behind.
+//
+// The key is never logged and never part of an argv — it reaches the adapter through
+// the file alone, which is the same rule call() states for every other secret.
+func (p *Provider) Recover(ctx context.Context, key string) (apps.RecoverResult, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return apps.RecoverResult{}, fmt.Errorf("%w: no key was given", ErrWrongKey)
+	}
+	p.recoverMu.Lock()
+	defer p.recoverMu.Unlock()
+
+	// Whatever happens next, the cached status is wrong afterwards — connected on
+	// success, and on failure still worth asking again rather than serving a probe
+	// from before the attempt.
+	defer p.Invalidate()
+
+	path := filepath.Join(p.dir(), candidateFile)
+	defer func() { _ = os.Remove(path) }()
+	if err := writeSecret(path, key); err != nil {
+		return apps.RecoverResult{}, fmt.Errorf("%s: could not hand the key to the engine: %w", p.ID(), err)
+	}
+
+	var rr recoverResult
+	if err := p.call(ctx, recoverTimeout, nil, &rr, "recover"); err != nil {
+		return apps.RecoverResult{}, err
+	}
+	return apps.RecoverResult{Snapshots: rr.Snapshots, Pinned: rr.Pinned}, nil
+}
+
+// writeSecret writes a file only its owner can read, through a temporary in the same
+// directory, so the adapter never reads half a key. The temporary is created 0600 from
+// the start rather than chmodded after: there is no instant at which the key is
+// readable by anyone else.
+func writeSecret(path, body string) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".candidate-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, werr := f.WriteString(body)
+	cerr := f.Close()
+	if err := firstErr(werr, cerr); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}

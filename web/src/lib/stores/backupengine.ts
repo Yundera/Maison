@@ -45,6 +45,16 @@ export interface EngineInfo {
    *  per-engine rows exist to show. `at` is the last SUCCESSFUL write, so an engine
    *  that has been failing for a week does not look recent for having been tried. */
   last_run?: { at: string; failed: boolean }
+  /** The rebuilt box: this engine's storage already holds backups made by a previous
+   *  installation, and this box has no key for them. Nothing is backed up there until
+   *  the user enters the key they were mailed — which is why the page leads with it. */
+  needs_recovery: boolean
+  /** Whether this engine can take that key from the page. False for an engine that
+   *  predates the feature, which hides the form instead of offering a button that fails. */
+  can_recover: boolean
+  /** Where a user who no longer has the key can start over, when the deployment offers
+   *  such a place. Absent, no link is shown. */
+  recovery_help_url?: string
 }
 
 /** How retention resolved for one engine.
@@ -88,6 +98,14 @@ export interface Retention {
 
 export interface BackupConfig {
   enabled: boolean
+  /** The schedule is held without being switched off — offered right after a recovery,
+   *  while the box's apps are still empty and a nightly run would save that emptiness
+   *  over the real history. A backup by hand still runs. Declared here because the PUT
+   *  replaces the whole document: a config rebuilt without it would resume backups
+   *  behind the user's back. */
+  paused?: boolean
+  /** When the pause began, RFC 3339. Cleared by the server along with the pause. */
+  paused_at?: string
   /** The user's chosen engine, or absent to follow whatever the deployment
    *  provisioned. Only the override is stored, so clearing it resumes tracking. */
   engine?: string
@@ -213,6 +231,9 @@ export interface KeySentRecord {
   engine?: string
   /** True when Maison sent it on its own at boot rather than the user asking. */
   auto?: boolean
+  /** True when nothing was mailed because the user typed this key in themselves, to
+   *  reconnect a rebuilt box. `sent_at` is the zero time then. */
+  held_by_user?: boolean
 }
 
 export interface BackupStatus {
@@ -265,4 +286,18 @@ export function emailBackupKey(): Promise<unknown> {
  *  would leave it in history, prefetches and anything that shares a URL. */
 export function showBackupKey(): Promise<{ key: string }> {
   return api.post<{ key: string }>('/api/backup/key')
+}
+
+/** What reconnecting to an existing repository found there. `pinned` can fall short of
+ *  `snapshots`: pinning is best effort, and the reconnect is what matters. */
+export interface RecoverResult {
+  snapshots: number
+  pinned: number
+}
+
+/** Hands the user's backup key to an engine waiting for it. A POST with the key in the
+ *  body and nowhere else — never a URL. A wrong key comes back as an error the form
+ *  shows, not as a fault. */
+export function recoverBackupEngine(id: string, key: string): Promise<RecoverResult> {
+  return api.post<RecoverResult>(`/api/backup/engines/${encodeURIComponent(id)}/recover`, { key })
 }

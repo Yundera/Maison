@@ -26,6 +26,22 @@ import (
 // repository-password path entirely except for escrow, which reads the file directly
 // because it has to work when the engine does not.
 func (p *Provider) call(ctx context.Context, timeout time.Duration, emit func(apps.Event), result any, verb string, args ...string) error {
+	raw, err := p.callRaw(ctx, timeout, emit, verb, args...)
+	if err != nil {
+		return err
+	}
+	if result == nil {
+		return nil
+	}
+	return unmarshalResult(raw, result)
+}
+
+// callRaw is call without the decode, and it returns the result line it saw EVEN WHEN
+// the verb failed. Almost nothing wants that — a failed verb's payload is not an answer
+// — but status does: an adapter that exits 10 may still have said why, and "not
+// configured because this storage holds backups you have no key for" is a very
+// different page from plain "not configured". See probe.
+func (p *Provider) callRaw(ctx context.Context, timeout time.Duration, emit func(apps.Event), verb string, args ...string) (json.RawMessage, error) {
 	full := append([]string{verb}, args...)
 	full = append(full, "--repo-dir="+p.dir())
 
@@ -53,15 +69,12 @@ func (p *Provider) call(ctx context.Context, timeout time.Duration, emit func(ap
 	// still told the user how far it got, and the result line may carry detail.
 	raw, decErr := decode(out, emit)
 	if runErr != nil {
-		return classify(runErr)
+		return raw, classify(runErr)
 	}
 	if decErr != nil {
-		return decErr
+		return nil, decErr
 	}
-	if result == nil {
-		return nil
-	}
-	return unmarshalResult(raw, result)
+	return raw, nil
 }
 
 // hostname is the identity the engine files backups under, read from the descriptor

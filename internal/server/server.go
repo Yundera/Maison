@@ -66,6 +66,10 @@ type Server struct {
 	backupSched *backup.Scheduler
 	userData    *backup.UserData
 
+	// keyMailMu serialises deciding whether the backup key still has to be mailed with
+	// mailing it — the boot-time retries and the detector loop both ask (backupkey.go).
+	keyMailMu sync.Mutex
+
 	// updates is the Settings → Updates report and its "update all" run (updates.go).
 	updates updatesState
 
@@ -438,6 +442,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// encryption key, and a GET would park it in history and prefetches. See
 		// handleShowKey.
 		r.Post("/backup/key", s.handleShowKey)
+		// The rebuilt box: the user types the key they were mailed and the engine
+		// reattaches to the repository already in its space. The body is that key, so
+		// it is a POST for the same reason as the one above. See handleRecoverEngine.
+		r.Post("/backup/engines/{id}/recover", s.handleRecoverEngine)
 
 		// Settings → Updates. Top-level, clear of the /apps/{id}/{action} catch-all.
 		r.Get("/updates", s.handleGetUpdates)

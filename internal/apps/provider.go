@@ -207,6 +207,47 @@ type EngineStatus struct {
 
 	// Detail is why it is not connected, for the UI. Free text, never parsed.
 	Detail string
+
+	// NeedsRecovery is true when the storage already holds backups this box has no key
+	// for — the rebuilt box, reattached to a space a previous installation filled. It
+	// is a third answer beside Configured and Connected, and must not be read as either:
+	// the engine is not configured (it has no key), yet "not configured" would tell the
+	// user nothing is wrong when every backup they own is sitting there unreadable, and
+	// "unreachable" would send them looking for a network fault. The only repair is the
+	// user typing the key they were mailed (see Recoverer).
+	//
+	// Reported by the engine, never inferred by Maison: what makes storage "someone
+	// else's repository" is the engine's knowledge, and the host side that discovered it
+	// tells the engine, not Maison.
+	NeedsRecovery bool
+
+	// RecoveryHelpURL is where a user who no longer has the key can go to start over —
+	// on a PCS, the deployment's dashboard, which can empty the space. Host-written,
+	// like Label and for the same reason: it describes who provisioned the SPACE, and a
+	// self-hoster pointing the same engine at their own bucket has nobody to send them
+	// to. Empty means no such place exists, and the page offers no link.
+	RecoveryHelpURL string
+}
+
+// RecoverResult is what reconnecting a rebuilt box to its repository found there.
+//
+// Pinned is reported separately from Snapshots because pinning is best effort: the
+// reconnect is what matters, and a pin that failed is a snapshot retention may later
+// expire — worth telling the user, not worth failing a recovery over.
+type RecoverResult struct {
+	Snapshots int `json:"snapshots"`
+	Pinned    int `json:"pinned"`
+}
+
+// Recoverer is implemented by an engine that can reattach to a repository with a key
+// the user supplies. A narrow interface rather than a Provider method, like the user-data
+// and retention ones, because the local engine has no key to enter and an engine that
+// predates the verb must simply not offer the form (Caps.Recover says which).
+//
+// The key is the user's own secret. An implementation must never log it, and must not
+// leave it anywhere on disk if the attempt fails.
+type Recoverer interface {
+	Recover(ctx context.Context, key string) (RecoverResult, error)
 }
 
 // Caps describes an engine's abilities. Zero values are the conservative answer,
@@ -269,6 +310,11 @@ type Caps struct {
 	// the moment the key matters most is the moment the box is broken, and an escrow
 	// that needs a working engine is an escrow that fails exactly when it is needed.
 	KeyEscrow bool
+
+	// Recover is true when this engine can reattach to an existing repository with a key
+	// the user types (see Recoverer). An engine built before the verb existed answers
+	// false, which is what hides the form rather than offering a button that fails.
+	Recover bool
 }
 
 // Trigger is what caused a backup, and therefore which engines receive it.
@@ -433,6 +479,10 @@ var UserDataInPlaceSkip = map[string]bool{"AppDataShared": true}
 // whose host-side setup has not run, not a failure, and callers turn it into "not
 // configured" in the UI rather than an error.
 var ErrNotConfigured = errors.New("backup engine is not configured")
+
+// ErrWrongKey is a recovery key the repository refused. It is the user's typo, not a
+// fault, and is reported back to the form rather than raised as an incident.
+var ErrWrongKey = errors.New("that key does not open the backup repository")
 
 // ErrNotSupported is returned for an operation this engine cannot perform, such as
 // an in-place restore on an engine whose backups are plain folders.

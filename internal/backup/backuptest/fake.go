@@ -51,6 +51,18 @@ type Fake struct {
 	// apps.EngineStatus.
 	Stat *apps.EngineStatus
 
+	// RecoverKey is the key Recover accepts; any other is apps.ErrWrongKey, the same
+	// sentinel the adapter returns for its exit 14. RecoverResult is what a successful
+	// attempt reports, and RecoverErr, when set, fails every attempt with it — a broken
+	// engine rather than a mistyped key.
+	//
+	// A successful Recover also clears Stat's NeedsRecovery and connects it, which is
+	// what a real reconnect does and what a test asserting "the incident resolves
+	// afterwards" depends on.
+	RecoverKey    string
+	RecoverResult apps.RecoverResult
+	RecoverErr    error
+
 	mu    sync.Mutex
 	store map[string][]apps.Backup // app -> committed backups
 	// ListCalls counts per-app listings, and ListAllCalls bulk ones. They are counters
@@ -90,10 +102,40 @@ func (f *Fake) Caps() apps.Caps { return f.Cap }
 
 // Status reports Stat, defaulting to configured and connected.
 func (f *Fake) Status(context.Context) apps.EngineStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.Stat != nil {
 		return *f.Stat
 	}
 	return apps.EngineStatus{Configured: true, Connected: true}
+}
+
+// NewRecovering builds an offsite engine in the rebuilt-box state: storage holding
+// backups it has no key for, recoverable with key. It declares Caps.Recover, so the form
+// is offered for it.
+func NewRecovering(id, key string) *Fake {
+	f := NewFake(id, apps.Caps{Offsite: true, InPlaceRestore: true, Retention: true,
+		Encrypted: true, KeyEscrow: true, Recover: true})
+	f.Stat = &apps.EngineStatus{NeedsRecovery: true, Detail: "storage holds a repository this box has no key for"}
+	f.RecoverKey = key
+	return f
+}
+
+// Recover checks the key against RecoverKey. Recorded as "recover" alone: the key is a
+// secret even in a test, and a fixture that recorded it would be a habit worth not
+// forming.
+func (f *Fake) Recover(ctx context.Context, key string) (apps.RecoverResult, error) {
+	f.record("recover")
+	if f.RecoverErr != nil {
+		return apps.RecoverResult{}, f.RecoverErr
+	}
+	if key == "" || key != f.RecoverKey {
+		return apps.RecoverResult{}, apps.ErrWrongKey
+	}
+	f.mu.Lock()
+	f.Stat = &apps.EngineStatus{Configured: true, Connected: true}
+	f.mu.Unlock()
+	return f.RecoverResult, nil
 }
 
 // Seed adds an already-committed backup, for tests that need a starting state.

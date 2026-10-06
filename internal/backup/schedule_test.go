@@ -724,3 +724,54 @@ func TestLastRunIsRecordedPerDestination(t *testing.T) {
 		t.Error("a run where one destination failed was recorded as healthy")
 	}
 }
+
+// A pause holds the timer and nothing else.
+//
+// Every place the timer decides whether to fire asks the same predicate — including the
+// catch-up path, which would otherwise read the nights a box spent paused as "missed"
+// and run a minute after the pause began. NextRun goes blank for the same reason it does
+// when the schedule is off: nothing is scheduled.
+func TestAPausedScheduleDoesNotFireAndSaysSo(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		conf backupconfig.Config
+		want bool
+	}{
+		{"on", backupconfig.Config{Enabled: true}, true},
+		{"off", backupconfig.Config{}, false},
+		{"on but paused", backupconfig.Config{Enabled: true, Paused: true}, false},
+		{"paused and off", backupconfig.Config{Paused: true}, false},
+	} {
+		if got := scheduleFires(c.conf); got != c.want {
+			t.Errorf("%s: fires = %v, want %v", c.name, got, c.want)
+		}
+	}
+
+	s, store := newScheduler(t)
+	now := time.Now()
+	if err := store.Set(backupconfig.Config{Enabled: true, Paused: true, PausedAt: &now, Hour: 3, Minute: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if next := s.NextRun(); !next.IsZero() {
+		t.Errorf("a paused schedule reports a next run at %v", next)
+	}
+	if err := store.Set(backupconfig.Config{Enabled: true, Hour: 3, Minute: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if next := s.NextRun(); next.IsZero() {
+		t.Error("resuming did not bring the next run back")
+	}
+}
+
+// A pause date outlives nothing: clearing the pause clears when it started, so a
+// resumed box does not carry a stale "paused since" for the page to misread.
+func TestResumingClearsThePauseDate(t *testing.T) {
+	store := backupconfig.New(filepath.Join(t.TempDir(), "backup.json"))
+	now := time.Now()
+	if err := store.Set(backupconfig.Config{Enabled: true, Paused: false, PausedAt: &now}); err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().PausedAt != nil {
+		t.Error("a pause date survived without a pause")
+	}
+}

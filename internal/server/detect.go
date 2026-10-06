@@ -83,6 +83,12 @@ func (s *Server) checkOnce(ctx context.Context, d *detector) {
 	s.checkDisk()
 	s.checkBackup(ctx)
 	s.checkApps(ctx, d)
+	// Not a detector, but it needs the same thing one does: somebody looking while
+	// nobody is present. A key that changes under a running Maison — a space reset from
+	// the dashboard, after which the box mints a new one — would otherwise only be
+	// mailed at the next restart, which may be months away. One attempt per pass, so a
+	// relay that is down costs a log line every five minutes rather than a retry loop.
+	s.ensureKeyEmailedOnce(ctx)
 	d.prune()
 }
 
@@ -199,9 +205,16 @@ func (s *Server) checkBackup(ctx context.Context) {
 	}
 	conf := s.backupConf.Get()
 	enabled := conf.Enabled
+	// Staleness is judged against the schedule actually being allowed to fire. A box the
+	// user paused is not late, it is paused — and says so through its own incident
+	// below, rather than through a critical "backups have stopped running" two days in
+	// that would read as a fault.
+	scheduled := enabled && !conf.Paused
 	at, _, ok := s.backupSched.LastRun()
 
-	if backupIsStale(at, ok, enabled, time.Now()) {
+	s.checkBackupPaused(conf)
+
+	if backupIsStale(at, ok, scheduled, time.Now()) {
 		s.incidents.Report(incident.Report{
 			ID: incident.IDBackupStale, Kind: incident.KindBackupStale, Severity: incident.Critical,
 			Title: "Backups have stopped running",
@@ -232,7 +245,7 @@ func (s *Server) checkBackup(ctx context.Context) {
 		// night, because the run keeps finishing.
 		staleID := incident.IDBackupStale + ":" + id
 		engineAt, _, engineOK := s.backupSched.LastRunIn(id)
-		if receives && backupIsStale(engineAt, engineOK, enabled, time.Now()) {
+		if receives && backupIsStale(engineAt, engineOK, scheduled, time.Now()) {
 			s.incidents.Report(incident.Report{
 				ID: staleID, Kind: incident.KindBackupStale, Severity: incident.Critical,
 				Title: "One backup destination has stopped receiving backups",
@@ -248,6 +261,26 @@ func (s *Server) checkBackup(ctx context.Context) {
 
 		incidentID := "backup.engine:" + id
 		p, known := engineByID(s.engines, id)
+
+		// Recovery first, and for EVERY engine — not gated on the schedule or on the
+		// engine receiving anything. A rebuilt box whose space holds the user's backups
+		// is the most important thing this page can say, and on exactly that box the
+		// schedule is typically off and the engine typically receives nothing (it is not
+		// connected, so the legacy fallback writes locally). Gating it like the checks
+		// around it would leave it silent in the one state it exists for.
+		var st apps.EngineStatus
+		haveStatus := false
+		if known {
+			st, haveStatus = p.Status(ctx), true
+			if s.checkBackupRecovery(id, st) {
+				// The recovery incident is the better sentence for the same fact: an
+				// engine that has no key is also not connected, and "cannot be reached"
+				// would send the user looking for a network fault.
+				s.incidents.Resolve(incidentID)
+				continue
+			}
+		}
+
 		if !enabled || !known || !receives {
 			s.incidents.Resolve(incidentID)
 			continue
@@ -258,7 +291,10 @@ func (s *Server) checkBackup(ctx context.Context) {
 		// connected, always, because it *is* the data disk — whose problems are
 		// disk.full and are reported there. So every engine can be asked the same
 		// question, which is what stops a second engine needing a case added here.
-		if st := p.Status(ctx); !st.Connected {
+		if !haveStatus {
+			st = p.Status(ctx)
+		}
+		if !st.Connected {
 			s.incidents.Report(incident.Report{
 				ID: incidentID, Kind: incident.KindBackupEngine, Severity: incident.Critical,
 				Title:  "The backup repository cannot be reached",
@@ -272,9 +308,76 @@ func (s *Server) checkBackup(ctx context.Context) {
 
 	s.checkBackupDestinations(conf)
 
+	// A recovery incident for an engine that has left the set entirely — its descriptor
+	// gone — has nothing left above to resolve it, so it is closed from the open set,
+	// the same way backup.missing is.
+	for _, inc := range s.incidents.Snapshot().Open {
+		if inc.Kind != incident.KindBackupRecovery {
+			continue
+		}
+		if _, ok := engineByID(s.engines, strings.TrimPrefix(inc.ID, incident.KindBackupRecovery+":")); !ok {
+			s.incidents.Resolve(inc.ID)
+		}
+	}
+
 	// The bare ID one boxes carried before this became per-engine. Resolved once so an
 	// upgrade does not leave an incident nothing will ever clear.
 	s.incidents.Resolve("backup.engine")
+}
+
+// checkBackupRecovery raises or resolves the "needs your key" incident for one engine,
+// and reports whether the engine is in that state.
+//
+// Critical, because what it describes is a box taking no offsite backups at all while
+// every backup the user owns sits in storage it cannot read — and every self-check on
+// the host side reports success through it, so nothing else on the box will say so.
+func (s *Server) checkBackupRecovery(id string, st apps.EngineStatus) bool {
+	incidentID := incident.KindBackupRecovery + ":" + id
+	if !st.NeedsRecovery {
+		s.incidents.Resolve(incidentID)
+		return false
+	}
+	detail := "The backup storage of this server already holds backups made by a previous installation, " +
+		"and this server does not have the key that opens them. Until the key is entered, nothing is being " +
+		"backed up there.\n\nOpen Settings → Backups and enter the backup key you received by email."
+	if st.RecoveryHelpURL != "" {
+		detail += "\n\nIf you no longer have the key, you can start fresh from " + st.RecoveryHelpURL +
+			" — this erases the old backups."
+	}
+	s.incidents.Report(incident.Report{
+		ID: incidentID, Kind: incident.KindBackupRecovery, Severity: incident.Critical,
+		Title:  "Backups need your key",
+		Detail: detail,
+		Args:   map[string]string{"engine": id},
+	})
+	return true
+}
+
+// checkBackupPaused keeps a held schedule visible for as long as it is held.
+//
+// A warning, not critical: the user chose it, and the box is doing what they asked. But
+// a pause is meant to end — it exists so a rebuilt box does not back up its empty apps
+// over the real history — and the way it goes wrong is being forgotten, which an
+// incident that stays open is what prevents. Switching backups off entirely closes it,
+// because that is a decision rather than a pause.
+func (s *Server) checkBackupPaused(conf backupconfig.Config) {
+	if !conf.Enabled || !conf.Paused {
+		s.incidents.Resolve(incident.IDBackupPaused)
+		return
+	}
+	since := "a while"
+	args := map[string]string{}
+	if conf.PausedAt != nil {
+		since = conf.PausedAt.Format(time.RFC1123)
+		args["since"] = since
+	}
+	s.incidents.Report(incident.Report{
+		ID: incident.IDBackupPaused, Kind: incident.KindBackupPaused, Severity: incident.Warning,
+		Title: "Automatic backups are paused",
+		Detail: fmt.Sprintf("Automatic backups have been paused since %s, so nothing new is being backed up.\n\n"+
+			"Once your apps are restored, open Settings → Backups and resume them.", since),
+		Args: args,
+	})
 }
 
 // checkBackupDestinations reports a destination the configuration names and this box

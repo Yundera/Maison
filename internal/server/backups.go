@@ -86,7 +86,7 @@ func (s *Server) handleStartBackup(w http.ResponseWriter, r *http.Request) {
 	engine := r.URL.Query().Get("engine")
 	if err := s.apps.StartBackup(chi.URLParam(r, "id"), engine, zip); err != nil {
 		// A refusal, not a failure — the app declared it has nothing worth backing up.
-		// Same shape as the ErrProtected mapping on the actions route: the UI withholds
+		// Same shape as the ErrNotStoppable mapping on the actions route: the UI withholds
 		// the button, and the API says why for anything that asks anyway.
 		if errors.Is(err, apps.ErrBackupSkipped) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})

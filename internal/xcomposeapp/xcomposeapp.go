@@ -111,10 +111,17 @@ type App struct {
 	// only a build that understands routes ever subscribes to.
 	Routes []Route `yaml:"routes,omitempty"`
 
-	// Lifecycle: directories ensured before every `compose up`, and the shell
+	// Bring-up: directories ensured before every `compose up`, and the shell
 	// hooks that bracket install and up. See docs/x-compose-app.md.
 	Folders []Folder `yaml:"folders,omitempty"`
 	Hooks   Hooks    `yaml:"hooks,omitempty"`
+
+	// Lifecycle is what the app allows the operator to do to it: whether Maison
+	// may stop it, and whether it may uninstall it. Both default to yes.
+	//
+	// It is the app's own declaration, like Backup.Skip — and like it, separate
+	// from View, which only picks the grid. See LifecycleSpec.
+	Lifecycle LifecycleSpec `yaml:"lifecycle,omitempty"`
 
 	// Backup is what this app asks Maison to leave out of its backups — the
 	// directories it can rebuild on its own, or the whole app. See docs/backup.md.
@@ -373,15 +380,15 @@ const (
 	// not say otherwise.
 	ViewApps = "apps"
 	// ViewSystem is the platform's own pieces — the dashboard, its gateway, the
-	// host stack. They get their own grid, and declaring it is also what makes an
-	// app *protected*: Maison refuses to stop or uninstall it and the backup
-	// scheduler leaves it alone. There is no operator-side list; an app is a
-	// system app because its own compose says so.
+	// host stack. They get their own grid, and that is all the value does: it is a
+	// category, not a behaviour. Whether such an app can be stopped, uninstalled
+	// or backed up is declared separately (Lifecycle, Backup.Skip), so the grid an
+	// app sits in never decides what Maison will do to it.
 	ViewSystem = "system"
 	// ViewService is an ordinary app with no web UI — a file share, a database, a
 	// peer port. It is the one view that is normally *derived* rather than
 	// declared: an app that declares no view and no web UI lands here (see
-	// apps.buildApp). It buys no behaviour; unlike ViewSystem it is not protected.
+	// apps.buildApp). Like every view, it buys no behaviour.
 	ViewService = "service"
 )
 
@@ -442,11 +449,11 @@ func (a *App) DeclaresWebUI() bool {
 // tree. Restore is deliberately untouched: an app can be marked skipped while older
 // backups still exist, and those must stay restorable.
 //
-// It is separate from `view: system` on purpose. That field currently decides three
+// It is separate from `view: system` on purpose. That field used to decide three
 // unrelated things at once (tile grouping, refusal to stop or uninstall, and
-// skipped-by-backup — see apps.Registry.Protected), so an ordinary app with nothing
-// worth backing up has no way to say so without claiming to be a platform piece, and
-// a platform piece has no way to ask to be backed up. This says one thing.
+// skipped-by-backup), so an ordinary app with nothing worth backing up had no way to
+// say so without claiming to be a platform piece, and a platform piece had no way to
+// ask to be backed up. View is now only the grid; this says one thing.
 //
 // It is also not the per-app opt-out the *user* gets in the UI. This is the author
 // saying there is nothing here; that would be the owner saying they do not want it.
@@ -475,6 +482,43 @@ func (b *BackupSpec) UnmarshalYAML(n *yaml.Node) error {
 	b.Skip = raw.Skip
 	return nil
 }
+
+// LifecycleSpec is the app's say in what the operator may do to it.
+//
+// Stoppable false is for an app whose absence takes the operator's way back in with
+// it — the dashboard, the gateway in front of it, the login broker. Maison refuses
+// Stop, updates the app without stopping it first, and leaves it out of "Update all"
+// (it is updated only when named on its own), because each of those takes it down
+// with nothing left running to bring it back. Restart and Start stay available: the
+// stack comes back on its own, and that is how a wedged app is recovered without SSH.
+//
+// Uninstallable false is for an app the box cannot do without. Maison refuses
+// Uninstall, and the cleanup sweep never counts its containers as orphans.
+//
+// Both default to true, which is the opposite polarity to Backup.Skip and safe for
+// the opposite reason: a build that predates this field ignores a `false` and offers
+// Stop and Uninstall, which is the ordinary behaviour of every app. Platform stacks
+// that must stay guarded on such a build also keep `view: system`, from which those
+// builds derived the same guard.
+//
+// It is a foot-gun guard, not a security boundary: the app declares it about itself,
+// and the operator can edit it out through Settings → override, which is the escape
+// hatch for one who genuinely means to remove a platform piece. That a store app
+// declares it at all is a store-review question, not something Maison polices.
+//
+// Pointers, because "unset" must read as true and a bool's zero value cannot say so.
+// Read them through CanStop and CanUninstall, never directly.
+type LifecycleSpec struct {
+	Stoppable     *bool `yaml:"stoppable,omitempty"`
+	Uninstallable *bool `yaml:"uninstallable,omitempty"`
+}
+
+// CanStop reports whether the app allows Maison to stop it. True unless declared false.
+func (l LifecycleSpec) CanStop() bool { return l.Stoppable == nil || *l.Stoppable }
+
+// CanUninstall reports whether the app allows Maison to uninstall it. True unless
+// declared false.
+func (l LifecycleSpec) CanUninstall() bool { return l.Uninstallable == nil || *l.Uninstallable }
 
 // Folder is a directory Maison creates (and takes ownership of) before it
 // brings the stack up, so an app that drops privileges can write to its bind

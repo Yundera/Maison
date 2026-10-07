@@ -37,12 +37,13 @@ func newScheduler(t *testing.T, appNames ...string) (*Scheduler, *backupconfig.S
 		t.Fatal(err)
 	}
 	store := backupconfig.New(filepath.Join(cfg.StateDir(), "backup.json"))
-	// A real registry, because the run's skip guard asks it which apps are system
-	// apps — that answer comes from each app's compose, not from configuration.
+	// A real registry, because the run's skip guard asks it which apps declare
+	// backup.skip — that answer comes from each app's compose, not from configuration.
 	return NewScheduler(cfg, apps.New(cfg, nil), New(), store), store
 }
 
-// seedSystemApp gives an app dir a compose that declares it a platform piece.
+// seedSystemApp gives an app dir a compose that puts it in the System grid, and
+// declares nothing else.
 func seedSystemApp(t *testing.T, cfg config.Config, name string) {
 	t.Helper()
 	body := "services: {}\nx-compose-app:\n  view: system\n"
@@ -53,8 +54,8 @@ func seedSystemApp(t *testing.T, cfg config.Config, name string) {
 }
 
 // seedSkippedApp gives an app dir a compose declaring it has nothing worth backing
-// up. Deliberately NOT also a system app: the whole point of the field is that the
-// two are separate decisions, so a test that seeded both would pass on either guard.
+// up. Deliberately NOT also a system app: the two are separate decisions, so a test
+// that seeded both could not tell which one excluded it.
 func seedSkippedApp(t *testing.T, cfg config.Config, name string) {
 	t.Helper()
 	body := "services: {}\nx-compose-app:\n  schema_version: 2\n  backup:\n    skip: true\n"
@@ -88,9 +89,9 @@ func TestTargetsSkipNonProjects(t *testing.T) {
 	}
 }
 
-// A system app is left out of the nightly run: backing an app up stops it, and
-// the platform's own pieces are exactly the ones that must not go down at 03:30.
-func TestTargetsSkipSystemApps(t *testing.T) {
+// `view: system` is a grid, not a backup decision: a system app that does not declare
+// backup.skip is in the nightly run like any other.
+func TestTargetsIncludeSystemAppsUnlessSkipped(t *testing.T) {
 	s, store := newScheduler(t, "jellyfin", "yundera")
 	seedSystemApp(t, s.cfg, "yundera")
 	if err := store.Set(backupconfig.Config{UserData: false, Hour: 3, Minute: 30, Keep: backupconfig.Keep{Latest: 1}}); err != nil {
@@ -100,14 +101,13 @@ func TestTargetsSkipSystemApps(t *testing.T) {
 	for _, tg := range s.Targets() {
 		got = append(got, tg.ID())
 	}
-	if want := "app:jellyfin"; strings.Join(got, " ") != want {
+	if want := "app:jellyfin app:yundera"; strings.Join(got, " ") != want {
 		t.Fatalf("Targets = %v, want %q", got, want)
 	}
 }
 
-// An app that declares backup.skip is left out of the nightly run without having to
-// claim to be a system app — which is the distinction the field exists to draw, since
-// `view: system` also decides tile grouping and refusal-to-stop.
+// An app that declares backup.skip is left out of the nightly run, whatever grid it
+// sits in.
 func TestTargetsSkipDeclaredSkippedApps(t *testing.T) {
 	s, store := newScheduler(t, "jellyfin", "kopia")
 	seedSkippedApp(t, s.cfg, "kopia")

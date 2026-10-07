@@ -59,9 +59,10 @@ type Input struct {
 	// containers were removed, and `compose up` would otherwise have to re-pull.
 	Referenced []string
 
-	// Protected are compose projects Maison treats as system apps. Never orphans,
-	// whatever their folder says.
-	Protected map[string]bool
+	// KeepProjects are compose projects whose app declares it cannot be uninstalled
+	// (x-compose-app `lifecycle.uninstallable: false`). Never orphans, whatever their
+	// folder says: removing their containers would be an uninstall by another name.
+	KeepProjects map[string]bool
 
 	// KeepNetworks are network names never removed, used or not — the app network
 	// every store app joins by name.
@@ -210,7 +211,7 @@ func Build(in Input) Plan {
 			})
 			continue
 		}
-		if in.Protected[c.Project] || selfProjects[c.Project] {
+		if in.KeepProjects[c.Project] || selfProjects[c.Project] {
 			continue
 		}
 		if c.WorkingDir == "" || in.FolderGone == nil || !in.FolderGone(c.WorkingDir) {

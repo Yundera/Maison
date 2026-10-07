@@ -104,9 +104,9 @@ func TestOrphans(t *testing.T) {
 			{ID: "r2", Name: "manual-exited", State: "exited"},
 			{ID: "r3", Name: "manual-created", State: "created"},
 		},
-		Protected:  map[string]bool{"sys": true},
-		FolderGone: func(d string) bool { return gone[d] },
-		Self:       "self",
+		KeepProjects: map[string]bool{"sys": true},
+		FolderGone:   func(d string) bool { return gone[d] },
+		Self:         "self",
 	})
 	if len(p.Orphans) != 2 {
 		t.Fatalf("want ghost + manual-exited, got %+v", p.Orphans)

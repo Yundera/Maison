@@ -206,8 +206,9 @@ with no health check has no dot.
 ### 4. Which grid — driven by the app's `view`
 
 Existence and appearance say *whether* a tile is drawn; the app's `x-compose-app`
-`view` says *where*. `system` puts it in the dashboard's System grid and protects
-it (no stop, no uninstall, no scheduled backup); `service` puts it in the Services
+`view` says *where*. `system` puts it in the dashboard's System grid — a category,
+with no behaviour attached (stop, uninstall and backup are the app's own `lifecycle`
+and `backup.skip` declarations); `service` puts it in the Services
 grid, which is also where an app that says nothing lands when it declares no web
 UI; anything else lands in the ordinary grid. There is no way to have no tile: an
 app Maison manages is always shown somewhere. [`x-compose-app.md`](./x-compose-app.md)

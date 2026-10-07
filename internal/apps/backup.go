@@ -197,7 +197,7 @@ func (r *Registry) exclusionsFor(id string) (*exclude.Set, []error) {
 // every caller is a cold path (once per nightly run, once per backup, once per
 // estimate) rather than anything that would want a cache.
 //
-// Deliberately NOT routed through viewOf's remembered-view cache. That cache exists to
+// Deliberately NOT routed through lifecycleOf's remembered cache. That cache exists to
 // keep answering for a stopped *unmanaged* stack, whose compose is only reachable
 // through the working directory Docker reports; a skipped app is by definition one
 // with a folder under AppsDir, which metaFor reads directly.
@@ -645,9 +645,9 @@ func (r *Registry) BackupTo(ctx context.Context, ps []Provider, id string, zip b
 	}
 	// THE ONE GATE FOR THE WHOLE MANUAL SIDE, and it is here rather than at the HTTP
 	// handler because this is where every caller funnels: StartBackup for the button,
-	// and BackupWith for the update rollback point — which reaches an app the
-	// scheduler would never touch, since installer.StopBeforeUpdate skips the stop for
-	// a system app while this function takes its own stop/start regardless.
+	// and BackupWith for the update rollback point — which reaches every app with an
+	// update, and takes its own stop/start regardless of installer.StopBeforeUpdate
+	// skipping the stop for an app that declares itself not stoppable.
 	//
 	// Refused before r.enter and before anything is stopped. That ordering is the
 	// point of the field for the engine that declares it: backing up the backup engine

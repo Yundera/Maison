@@ -579,14 +579,12 @@ app can be marked skipped while backups taken before it still exist, and those s
 listable and restorable. Nor is the uninstall archive, which is the owner's decision
 at that moment rather than the author's.
 
-It is a separate declaration from `view: system` on purpose. That field decides
-skipped-by-backup *and* tile grouping *and* refusal-to-stop from one value
-(`internal/apps/apps.go`, "One derivation for all three"), so before `backup.skip` the
-only way for an ordinary app to opt out of backups was to claim to be a platform
-piece. And, more to the point here, `view: system` never reached the manual path at
-all: `Protected` is consulted by the scheduler, by stop and by uninstall, and by
-nothing behind `POST /api/apps/{id}/backup`. A system app could always be backed up by
-hand.
+It is a separate declaration from `view: system` on purpose. That field used to decide
+skipped-by-backup *and* tile grouping *and* refusal-to-stop from one value, so before
+`backup.skip` the only way for an ordinary app to opt out of backups was to claim to be
+a platform piece — and even then only the nightly run honoured it, never the manual path
+behind `POST /api/apps/{id}/backup`. `view` is now only the grid; `backup.skip` is the
+one backup decision, on every path, and the scheduler consults nothing else.
 
 That is not academic for the engine itself. **Backing up kopia means stopping the
 container taking the snapshot** — the app path is stop → snapshot → start, and

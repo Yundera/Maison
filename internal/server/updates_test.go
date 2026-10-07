@@ -19,10 +19,10 @@ import (
 
 func rows(rs ...installer.AppUpdate) []installer.AppUpdate { return rs }
 
-func TestRunQueueLeavesSystemAppsOutOfUpdateAll(t *testing.T) {
+func TestRunQueueLeavesStaysUpAppsOutOfUpdateAll(t *testing.T) {
 	rs := rows(
 		installer.AppUpdate{ID: "jellyfin", State: installer.StateAvailable},
-		installer.AppUpdate{ID: "maison", State: installer.StateAvailable, Protected: true},
+		installer.AppUpdate{ID: "maison", State: installer.StateAvailable, StaysUp: true},
 		installer.AppUpdate{ID: "dufs", State: installer.StateCurrent},
 		installer.AppUpdate{ID: "legacy", State: installer.StateUntracked},
 	)
@@ -31,13 +31,13 @@ func TestRunQueueLeavesSystemAppsOutOfUpdateAll(t *testing.T) {
 		t.Errorf("update all = %v, %v; want [jellyfin]", q, err)
 	}
 
-	// Named alone, a system app is updated.
+	// Named alone, a stays-up app is updated.
 	if q, err := runQueue(rs, []string{"maison"}); err != nil || len(q) != 1 {
 		t.Errorf("maison alone = %v, %v; want it queued", q, err)
 	}
 	// Named among others, it is refused rather than silently dropped.
 	if _, err := runQueue(rs, []string{"jellyfin", "maison"}); err == nil {
-		t.Error("a system app was accepted into a multi-app run")
+		t.Error("a stays-up app was accepted into a multi-app run")
 	}
 	// Nothing current or untracked is ever queued.
 	if _, err := runQueue(rs, []string{"dufs", "legacy"}); !errors.Is(err, errNothingToRun) {

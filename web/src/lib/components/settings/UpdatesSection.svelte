@@ -166,8 +166,8 @@
 
   // ── Grouping: every app once ───────────────────────────────────────────────
 
-  const available = $derived(rows.filter((r) => r.state === 'available' && !r.protected))
-  const system = $derived(rows.filter((r) => r.state === 'available' && r.protected))
+  const available = $derived(rows.filter((r) => r.state === 'available' && !r.stays_up))
+  const system = $derived(rows.filter((r) => r.state === 'available' && r.stays_up))
   const attention = $derived(
     rows.filter((r) => r.state === 'error' || (r.state === 'current' && problemFor(r.id) !== null)),
   )
@@ -383,7 +383,7 @@
     {#if idle && !(confirm && 'id' in confirm && confirm.id === row.id)}
       <div class="row-actions">
         {#if st === 'refused'}
-          <button disabled={busy} onclick={() => (row.protected ? (confirm = { kind: 'system', id: row.id }) : update(row.id))}>
+          <button disabled={busy} onclick={() => (row.stays_up ? (confirm = { kind: 'system', id: row.id }) : update(row.id))}>
             {$t('updates_retry')}
           </button>
           <button class="warn-btn" disabled={busy} onclick={() => (confirm = { kind: 'nobackup', id: row.id })}>
@@ -393,7 +393,7 @@
           <button
             class={p ? '' : 'primary'}
             disabled={busy}
-            onclick={() => (row.protected ? (confirm = { kind: 'system', id: row.id }) : update(row.id))}
+            onclick={() => (row.stays_up ? (confirm = { kind: 'system', id: row.id }) : update(row.id))}
           >
             {p ? $t('updates_retry') : $t('updates_update')}
           </button>

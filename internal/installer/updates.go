@@ -38,11 +38,14 @@ const (
 // CheckTarget is the part of an app tile CheckAll needs. The installer holds no
 // app registry, so the caller hands the list in.
 type CheckTarget struct {
-	ID        string
-	Name      string
-	Icon      string
-	Managed   bool
-	Protected bool
+	ID      string
+	Name    string
+	Icon    string
+	Managed bool
+	// StaysUp is set for an app that declares itself not stoppable
+	// (x-compose-app `lifecycle.stoppable: false`): it is kept running through its
+	// update and updated only on its own.
+	StaysUp bool
 }
 
 // ImageChange is one service whose image an update changes — the closest thing a
@@ -69,11 +72,12 @@ type Suggestion struct {
 
 // AppUpdate is one row of the Updates page.
 type AppUpdate struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Icon      string `json:"icon,omitempty"`
-	Protected bool   `json:"protected,omitempty"`
-	State     string `json:"state"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Icon string `json:"icon,omitempty"`
+	// StaysUp: see CheckTarget. Such an app is left out of "Update all".
+	StaysUp bool   `json:"stays_up,omitempty"`
+	State   string `json:"state"`
 	// Ref and StoreName say where a tracked app updates from.
 	Ref       string        `json:"ref,omitempty"`
 	StoreName string        `json:"store_name,omitempty"`
@@ -92,7 +96,7 @@ func (in *Installer) CheckAll(ctx context.Context, targets []CheckTarget) []AppU
 	untracked := false
 
 	for i, t := range targets {
-		out[i] = AppUpdate{ID: t.ID, Name: t.Name, Icon: t.Icon, Protected: t.Protected}
+		out[i] = AppUpdate{ID: t.ID, Name: t.Name, Icon: t.Icon, StaysUp: t.StaysUp}
 		if !t.Managed {
 			out[i].State = StateUnmanaged
 			continue

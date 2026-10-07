@@ -145,6 +145,9 @@ dismissed.
 | **Stop** | `docker stop` on the project's containers. No hooks. The folder stays. | Same. |
 | **Restart** | `docker restart`. **No hooks, no folders, no compose** — it is a container-level bounce, not an up. | Same. |
 
+An app that declares `lifecycle.stoppable: false` is refused **Stop** (`403`; the menu
+withholds it) — see [`x-compose-app.md`](./x-compose-app.md#lifecycle-what-the-operator-may-do-to-the-app). Start and Restart stay available.
+
 Restart deliberately does *not* run the up sequence. If you want folders and
 `pre_up` re-applied, that is a **Start** (or a config save), not a restart.
 
@@ -165,7 +168,7 @@ install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdat
 3. pull the new version's images  ← while the old version is still serving
 4. back up the app  ← the rollback point, taken before anything is written
                       (failed? → REFUSE, nothing changed)
-5. stop the old version  (system apps excepted)
+5. stop the old version  (not for an app declaring lifecycle.stoppable: false)
 6. overwrite docker-compose.yml (the strict base only)
 7. refresh .seed from the same store sync as the compose above
 8. stackup.Up  → converge (folders, secrets, variables, init, seed, files — including
@@ -265,9 +268,9 @@ overlay. Three rules:
   single-app update asks nothing (it is backed up and rolled back on failure).
 - **A failure does not stop the run.** The failed app has already been put back and has
   raised its incident; the next app's update has nothing to do with it.
-- **System apps are left out.** Updating the dashboard, or the gateway in front of it,
-  can take down the process running the queue. A system app is updated on its own, by
-  naming it alone; a run naming it among others is refused.
+- **Apps declaring `lifecycle.stoppable: false` are left out.** Updating the dashboard,
+  or the gateway in front of it, can take down the process running the queue. Such an
+  app is updated on its own, by naming it alone; a run naming it among others is refused.
 
 An untracked app is offered a **suggestion**, from two kinds of evidence: the project
 name an install of a store app would have created, and the image of the app's main
@@ -328,7 +331,8 @@ hides it against a remote engine, where a zip would defeat deduplication.
 ### Detached, like an install
 
 `DELETE /api/apps/{id}` **starts** the uninstall and returns `202 Accepted`; only an
-up-front refusal (a system app → `403`) is answered synchronously. The work runs
+up-front refusal (an app declaring `lifecycle.uninstallable: false` → `403`) is answered
+synchronously. The work runs
 on a background context, so it survives the request, and the confirmation dialog
 closes at once instead of blocking the dashboard on a zip that can take minutes.
 
@@ -464,10 +468,12 @@ Four properties that are not obvious from "run it daily":
   behind itself only compounds the delay.
 - **Jitter.** A fleet all firing at 03:30 is a thundering herd against one bucket.
   The offset is derived from the data path, so it is stable per box.
-- **Two apps are never targets:** Maison's own state directory (stopping it kills
-  the process running the backup) and any app declaring `view: system`. Platform state
-  is therefore not covered by the schedule — a deliberate gap, because covering it
-  properly means backing it up *without* stopping it.
+- **Two kinds of app are never targets:** Maison's own state directory (stopping it
+  kills the process running the backup), and any app declaring `backup.skip`. The
+  grid an app sits in plays no part — a `view: system` app without `skip` is backed
+  up like any other, which means it is stopped for the stopped pass. The platform
+  stacks declare `skip` for that reason; backing them up *without* stopping them is a
+  shape the app path does not have yet.
 
 ---
 

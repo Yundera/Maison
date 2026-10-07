@@ -30,10 +30,12 @@ export interface App {
   /** Aggregated Docker health-check verdict; drives the tile status dot.
    *  Absent when no container declares a health check. */
   health?: 'healthy' | 'unhealthy' | 'starting'
-  /** A system app (view === 'system'): the tile withholds Stop and Uninstall
-   *  and the backend refuses both. Restart stays available — it is how a
-   *  wedged platform app is recovered without an SSH session. */
-  protected?: boolean
+  /** The app's own x-compose-app `lifecycle` declaration, true unless it says
+   *  otherwise — never derived from `view`. When false the tile withholds the
+   *  entry and the backend refuses it. Restart stays available either way — it is
+   *  how a wedged platform app is recovered without an SSH session. */
+  stoppable?: boolean
+  uninstallable?: boolean
   /** True while a lifecycle op (start/stop/restart/uninstall) is in flight:
    *  the tile shows a "…" overlay and hides its burger menu. */
   busy?: boolean
@@ -214,7 +216,8 @@ export async function appAction(id: string, action: 'start' | 'stop' | 'restart'
  *  The request returns as soon as the uninstall is *accepted*, not when it is
  *  done: from there the tile carries its progress (a red bar — backing up, then
  *  archiving, then removing) over the live app list, so nothing has to wait on an
- *  upload that can run for minutes. A rejection (a protected app) still surfaces
+ *  upload that can run for minutes. A rejection (an app that declares it cannot be
+ *  uninstalled) still surfaces
  *  here, as a throw. */
 export async function uninstallApp(id: string, zip = false): Promise<void> {
   await api.del<{ status: string }>(`/api/apps/${encodeURIComponent(id)}?zip=${zip}`)

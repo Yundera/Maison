@@ -59,16 +59,18 @@ type App struct {
 	// x-compose-app `view`; when it declares none, an app with no web UI is
 	// sorted into "service" (see deriveView).
 	View string `json:"view,omitempty"`
-	// Protected marks a system app: it renders as an ordinary tile in the System
-	// grid, but Maison refuses to stop or uninstall it (the menu withholds those
-	// entries and the API answers 403), and the backup scheduler skips it.
+	// Stoppable and Uninstallable are the app's own x-compose-app `lifecycle`
+	// declaration, defaulting to true. When false, the tile's menu withholds the
+	// entry and the API answers 403; Stoppable false also keeps the app running
+	// through an update and out of "Update all", and Uninstallable false keeps its
+	// containers out of the cleanup sweep. See xcomposeapp.LifecycleSpec.
 	//
-	// It is derived from View in one place — buildApp — rather than resolved
-	// independently by each guard, so the tile, the API and the scheduler cannot
-	// disagree about what is protected. That single derivation is also where an
-	// explicit `protected:` key would slot in, should a system-looking app ever
-	// need to stay uninstallable.
-	Protected bool `json:"protected,omitempty"`
+	// Neither is derived from View: the grid an app sits in decides nothing about
+	// what Maison will do to it. Both are resolved in one place — buildApp — so the
+	// tile, the API and the guards cannot disagree. Never omitted: false is the
+	// value that matters.
+	Stoppable     bool `json:"stoppable"`
+	Uninstallable bool `json:"uninstallable"`
 	// Parent is the app this one extends, by project id — declared by the app's
 	// own x-compose-app `parent` and kept only when it actually resolves (see
 	// resolveParents). An app carrying one is an *extension*: the dashboard nests
@@ -182,7 +184,7 @@ type Registry struct {
 	containers *containerCache
 
 	mu         sync.Mutex
-	views      map[string]string          // app id -> view from the last listing
+	lifecycles map[string]lifecycle       // app id -> lifecycle from the last listing
 	busy       map[string]int             // app id -> in-flight operation count
 	uninstalls map[string]*UninstallState // app id -> live uninstall progress
 	backups    map[string]*BackupState    // app id -> live backup/restore progress
@@ -387,7 +389,7 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	resolveParents(out)
-	r.rememberViews(out)
+	r.rememberLifecycles(out)
 	return out, nil
 }
 
@@ -430,30 +432,42 @@ func resolveParents(list []App) {
 	}
 }
 
-// rememberViews caches the view resolved for each app on the last listing.
+// lifecycle is an app's resolved x-compose-app `lifecycle` declaration.
+type lifecycle struct{ stoppable, uninstallable bool }
+
+// lifecycleOf resolves the declaration from an app's metadata; an app with none
+// allows both.
+func lifecycleOf(ca *xcomposeapp.App) lifecycle {
+	if ca == nil {
+		return lifecycle{stoppable: true, uninstallable: true}
+	}
+	return lifecycle{stoppable: ca.Lifecycle.CanStop(), uninstallable: ca.Lifecycle.CanUninstall()}
+}
+
+// rememberLifecycles caches the lifecycle resolved for each app on the last listing.
 //
 // The list is rebuilt constantly (every WebSocket broadcast), so this is the
-// cheap path for Protected(): it answers from metadata already parsed, and keeps
-// answering for a *stopped* unmanaged stack — whose compose location is only
-// knowable from a running container. Without the cache, stopping Docker or
-// stopping the stack would quietly unprotect it.
-func (r *Registry) rememberViews(list []App) {
-	views := make(map[string]string, len(list))
+// cheap path for Stoppable() and Uninstallable(): it answers from metadata already
+// parsed, and keeps answering for a *stopped* unmanaged stack — whose compose
+// location is only knowable from a running container. Without the cache, stopping
+// Docker or stopping the stack would quietly drop its guard.
+func (r *Registry) rememberLifecycles(list []App) {
+	m := make(map[string]lifecycle, len(list))
 	for _, a := range list {
-		views[a.ID] = a.View
+		m[a.ID] = lifecycle{stoppable: a.Stoppable, uninstallable: a.Uninstallable}
 	}
 	r.mu.Lock()
-	r.views = views
+	r.lifecycles = m
 	r.mu.Unlock()
 }
 
-// cachedView returns the view remembered for an app by the last List, and
+// cachedLifecycle returns the lifecycle remembered for an app by the last List, and
 // whether it was known at all.
-func (r *Registry) cachedView(id string) (string, bool) {
+func (r *Registry) cachedLifecycle(id string) (lifecycle, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	v, ok := r.views[id]
-	return v, ok
+	l, ok := r.lifecycles[id]
+	return l, ok
 }
 
 func (r *Registry) isManaged(project string) bool {
@@ -598,10 +612,8 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 		app.Parent = strings.TrimSpace(ca.Parent)
 	}
 	app.View = deriveView(si, ca, svcPorts)
-	// A system app is a protected app: no stop, no uninstall, no scheduled
-	// backup. One derivation for all three (see the Protected field). Only a
-	// *declared* system view gets here — deriveView never produces one.
-	app.Protected = app.View == xcomposeapp.ViewSystem
+	lc := lifecycleOf(ca)
+	app.Stoppable, app.Uninstallable = lc.stoppable, lc.uninstallable
 	// Prefer the container's ACTUAL published host port so "Open" works without a
 	// gateway. Only when x-compose-app gave no URL and no hostname (gateway route)
 	// is configured — and never for a service: the port it publishes is the
@@ -801,13 +813,13 @@ func (r *Registry) Republish(ctx context.Context) {
 	r.changed()
 }
 
-// Stop brings a project down. A system app is refused: stopping the dashboard —
-// or the gateway in front of it — takes the UI down with the request that asked
-// for it, and nothing is left to start it again. Restart stays available, since
-// the stack comes back on its own.
+// Stop brings a project down. An app that declares itself not stoppable is
+// refused: stopping the dashboard — or the gateway in front of it — takes the UI
+// down with the request that asked for it, and nothing is left to start it again.
+// Restart stays available, since the stack comes back on its own.
 func (r *Registry) Stop(ctx context.Context, id string) error {
-	if r.Protected(id) {
-		return ErrProtected
+	if !r.Stoppable(id) {
+		return ErrNotStoppable
 	}
 	r.enter(id)
 	defer r.leave(id)
@@ -820,34 +832,33 @@ func (r *Registry) Restart(ctx context.Context, id string) error {
 	return r.dx.RestartProject(ctx, id)
 }
 
-// Protected reports whether the app is a system app — exempt from stop and
-// uninstall, and skipped by the backup scheduler.
-func (r *Registry) Protected(id string) bool {
-	return r.viewOf(id) == xcomposeapp.ViewSystem
-}
+// Stoppable reports whether the app allows Maison to stop it — x-compose-app
+// `lifecycle.stoppable`, true unless declared false.
+func (r *Registry) Stoppable(id string) bool { return r.lifecycleOf(id).stoppable }
 
-// viewOf resolves an app's declared view: from the last listing when it is
-// known, else straight from the app's compose.
+// Uninstallable reports whether the app allows Maison to uninstall it —
+// x-compose-app `lifecycle.uninstallable`, true unless declared false.
+func (r *Registry) Uninstallable(id string) bool { return r.lifecycleOf(id).uninstallable }
+
+// lifecycleOf resolves an app's declared lifecycle: from the last listing when it
+// is known, else straight from the app's compose.
 //
 // The working-dir lookup in the fallback is not optional. An unmanaged stack has
 // no folder under AppsDir, so metaFor can only reach its compose through the
 // directory Docker reports for the project — and the platform's own discovered
 // stacks are exactly the apps this guard exists for. Resolving them with an empty
-// working dir would find no metadata, report "not a system app", and silently
-// drop the guard from the stacks whose removal is fatal.
-func (r *Registry) viewOf(id string) string {
-	if v, ok := r.cachedView(id); ok {
-		return v
+// working dir would find no metadata, report "no declaration", and silently drop
+// the guard from the stacks whose removal is fatal.
+func (r *Registry) lifecycleOf(id string) lifecycle {
+	if l, ok := r.cachedLifecycle(id); ok {
+		return l
 	}
 	workingDir := ""
 	if !r.isManaged(id) {
 		workingDir = r.workingDirOf(id)
 	}
 	_, ca := r.metaFor(id, workingDir)
-	if ca == nil {
-		return xcomposeapp.ViewApps
-	}
-	return xcomposeapp.NormalizeView(ca.View)
+	return lifecycleOf(ca)
 }
 
 // workingDirOf returns the directory Docker reports for a project's containers,

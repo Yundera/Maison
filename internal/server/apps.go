@@ -67,9 +67,10 @@ func (s *Server) handleAppAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown action"})
 		return
 	}
-	// A stop aimed at a system app is refused, not failed: the UI withholds the
-	// menu entry, and the API says why for anything that asks anyway.
-	if errors.Is(err, apps.ErrProtected) {
+	// A stop aimed at an app that declares itself not stoppable is refused, not
+	// failed: the UI withholds the menu entry, and the API says why for anything
+	// that asks anyway.
+	if errors.Is(err, apps.ErrNotStoppable) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		return
 	}
@@ -225,10 +226,11 @@ func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 		s.installer.ClearInstall(id)
 	}
 	err := s.apps.StartUninstall(id, zip)
-	// Both refusals, not failures: the app is the platform's own (ErrProtected), or its
-	// folder is where every archive on the box lives (ErrHoldsBackups). The UI withholds
-	// the menu entry for the first and the API says why for anything that asks anyway.
-	if errors.Is(err, apps.ErrProtected) || errors.Is(err, apps.ErrHoldsBackups) {
+	// Both refusals, not failures: the app declares it cannot be uninstalled
+	// (ErrNotUninstallable), or its folder is where every archive on the box lives
+	// (ErrHoldsBackups). The UI withholds the menu entry for the first and the API says
+	// why for anything that asks anyway.
+	if errors.Is(err, apps.ErrNotUninstallable) || errors.Is(err, apps.ErrHoldsBackups) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		return
 	}

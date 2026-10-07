@@ -8,30 +8,36 @@ import (
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
-// Protection is derived from the view in exactly one place, so a tile can never
-// be shown in the System grid while the API still lets it be stopped.
-func TestBuildAppDerivesProtectedFromView(t *testing.T) {
+// The view is a grid and nothing else: what the operator may do to an app comes
+// from its own `lifecycle` declaration, whatever grid it sits in.
+func TestBuildAppTakesLifecycleFromTheDeclarationNotTheView(t *testing.T) {
+	no := false
+	locked := xcomposeapp.LifecycleSpec{Stoppable: &no, Uninstallable: &no}
 	cases := []struct {
-		name      string
-		view      string
-		wantView  string
-		protected bool
+		name                     string
+		view                     string
+		lc                       xcomposeapp.LifecycleSpec
+		wantView                 string
+		stoppable, uninstallable bool
 	}{
-		{"system app", "system", xcomposeapp.ViewSystem, true},
-		{"retired hidden view falls back", "hidden", xcomposeapp.ViewApps, false},
-		{"service app", "service", xcomposeapp.ViewService, false},
-		{"ordinary app", "", xcomposeapp.ViewApps, false},
-		{"unknown view falls back", "platform", xcomposeapp.ViewApps, false},
+		{"system view alone", "system", xcomposeapp.LifecycleSpec{}, xcomposeapp.ViewSystem, true, true},
+		{"system view, locked", "system", locked, xcomposeapp.ViewSystem, false, false},
+		{"ordinary app, locked", "", locked, xcomposeapp.ViewApps, false, false},
+		{"only uninstall refused", "system", xcomposeapp.LifecycleSpec{Uninstallable: &no}, xcomposeapp.ViewSystem, true, false},
+		{"service app", "service", xcomposeapp.LifecycleSpec{}, xcomposeapp.ViewService, true, true},
+		{"ordinary app", "", xcomposeapp.LifecycleSpec{}, xcomposeapp.ViewApps, true, true},
+		{"unknown view falls back", "platform", xcomposeapp.LifecycleSpec{}, xcomposeapp.ViewApps, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ca := &xcomposeapp.App{View: tc.view, WebUIHost: "x-${domain}"}
+			ca := &xcomposeapp.App{View: tc.view, WebUIHost: "x-${domain}", Lifecycle: tc.lc}
 			app := buildApp("x", nil, ca, "", true, StatusRunning, nil)
 			if app.View != tc.wantView {
 				t.Errorf("view = %q, want %q", app.View, tc.wantView)
 			}
-			if app.Protected != tc.protected {
-				t.Errorf("protected = %v, want %v", app.Protected, tc.protected)
+			if app.Stoppable != tc.stoppable || app.Uninstallable != tc.uninstallable {
+				t.Errorf("stoppable/uninstallable = %v/%v, want %v/%v",
+					app.Stoppable, app.Uninstallable, tc.stoppable, tc.uninstallable)
 			}
 		})
 	}
@@ -41,8 +47,9 @@ func TestBuildAppDerivesProtectedFromView(t *testing.T) {
 // shape — lands in the ordinary grid and stays uninstallable.
 func TestBuildAppDefaultsToTheAppsView(t *testing.T) {
 	app := buildApp("x", &xcasaos.StoreInfo{WebUIPort: "8080"}, nil, "", false, StatusRunning, nil)
-	if app.View != xcomposeapp.ViewApps || app.Protected {
-		t.Fatalf("view = %q, protected = %v; want %q / false", app.View, app.Protected, xcomposeapp.ViewApps)
+	if app.View != xcomposeapp.ViewApps || !app.Stoppable || !app.Uninstallable {
+		t.Fatalf("view = %q, stoppable = %v, uninstallable = %v; want %q / true / true",
+			app.View, app.Stoppable, app.Uninstallable, xcomposeapp.ViewApps)
 	}
 }
 
@@ -80,8 +87,9 @@ func TestBuildAppDerivesServiceView(t *testing.T) {
 			if app.View != tc.want {
 				t.Errorf("view = %q, want %q", app.View, tc.want)
 			}
-			if app.Protected != (tc.want == xcomposeapp.ViewSystem) {
-				t.Errorf("protected = %v for view %q", app.Protected, app.View)
+			if !app.Stoppable || !app.Uninstallable {
+				t.Errorf("view %q restricted the lifecycle (stoppable %v, uninstallable %v)",
+					app.View, app.Stoppable, app.Uninstallable)
 			}
 		})
 	}

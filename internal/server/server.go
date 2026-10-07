@@ -332,11 +332,11 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 			}
 			return s.apps.EnsureStarted(ctx, project)
 		}
-		// A system app keeps running through its update: stopping the dashboard, or the
-		// gateway in front of it, takes down the process doing the update, and nothing
-		// is left to start it again.
+		// An app that declares itself not stoppable keeps running through its update:
+		// stopping the dashboard, or the gateway in front of it, takes down the process
+		// doing the update, and nothing is left to start it again.
 		s.installer.StopBeforeUpdate = func(ctx context.Context, project string) error {
-			if s.apps.Protected(project) {
+			if !s.apps.Stoppable(project) {
 				return nil
 			}
 			err := s.dx.StopProject(ctx, project)

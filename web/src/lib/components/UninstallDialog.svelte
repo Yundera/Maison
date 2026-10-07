@@ -52,7 +52,8 @@
   // accepted, and from then on the app's tile carries the progress (red bars for
   // backing up, then removing) and any failure. So the dialog closes right away
   // instead of holding the dashboard hostage through a multi-minute upload. `busy`
-  // covers just that hand-off, which is where an up-front refusal (a protected app)
+  // covers just that hand-off, which is where an up-front refusal (an app that declares
+  // it cannot be uninstalled)
   // surfaces.
   async function confirm() {
     busy = true

@@ -377,12 +377,12 @@ func (s *Server) cleanupPlan(ctx context.Context) (cleanup.Plan, error) {
 	if err != nil {
 		return cleanup.Plan{}, err
 	}
-	protected := map[string]bool{}
+	keepProjects := map[string]bool{}
 	if s.apps != nil {
 		list, _ := s.apps.List(ctx)
 		for _, a := range list {
-			if a.Protected {
-				protected[a.ID] = true
+			if !a.Uninstallable {
+				keepProjects[a.ID] = true
 			}
 		}
 	}
@@ -397,7 +397,7 @@ func (s *Server) cleanupPlan(ctx context.Context) (cleanup.Plan, error) {
 		Containers:   containers,
 		Networks:     networks,
 		Referenced:   s.referencedImages(containers),
-		Protected:    protected,
+		KeepProjects: keepProjects,
 		KeepNetworks: keep,
 		FolderGone:   s.folderGone,
 		Self:         selfContainerID(),

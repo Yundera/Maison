@@ -268,3 +268,31 @@ func TestParseBackupSkip(t *testing.T) {
 		t.Fatal("skip = true on an app that declared skip: false")
 	}
 }
+
+func TestParseLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		block                   map[string]any
+		wantStop, wantUninstall bool
+	}{
+		{"absent allows both", map[string]any{"schema_version": 2}, true, true},
+		{"empty block allows both", map[string]any{"schema_version": 2, "lifecycle": map[string]any{}}, true, true},
+		{"system view alone allows both", map[string]any{"schema_version": 2, "view": "system"}, true, true},
+		{"locked", map[string]any{"schema_version": 2, "lifecycle": map[string]any{"stoppable": false, "uninstallable": false}}, false, false},
+		{"stoppable but not uninstallable", map[string]any{"schema_version": 2, "lifecycle": map[string]any{"uninstallable": false}}, true, false},
+		{"explicit true", map[string]any{"schema_version": 2, "lifecycle": map[string]any{"stoppable": true, "uninstallable": true}}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Parse(tc.block)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := a.Lifecycle.CanStop(); got != tc.wantStop {
+				t.Errorf("CanStop = %v, want %v", got, tc.wantStop)
+			}
+			if got := a.Lifecycle.CanUninstall(); got != tc.wantUninstall {
+				t.Errorf("CanUninstall = %v, want %v", got, tc.wantUninstall)
+			}
+		})
+	}
+}

@@ -178,9 +178,9 @@ func TestLocalConsumeSnapshotLeavesTheAppWhereItIs(t *testing.T) {
 	}
 }
 
-// A system app declares itself one, in its own compose — there is no
-// operator-side list any more.
-func TestStartUninstallRefusesSystemApps(t *testing.T) {
+// An app declares itself not uninstallable, in its own compose — there is no
+// operator-side list.
+func TestStartUninstallRefusesAnAppThatDeclaresIt(t *testing.T) {
 	root := t.TempDir()
 	appsDir := filepath.Join(root, "AppData")
 	if err := os.MkdirAll(appsDir, 0o755); err != nil {
@@ -188,39 +188,59 @@ func TestStartUninstallRefusesSystemApps(t *testing.T) {
 	}
 	dir := filepath.Join(appsDir, "maison")
 	seedApp(t, dir)
-	writeCompose(t, dir, "services: {}\nx-compose-app:\n  view: system\n")
+	writeCompose(t, dir, "services: {}\nx-compose-app:\n  view: system\n  lifecycle:\n    uninstallable: false\n")
 	r := New(config.Config{DataRoot: root}, nil)
 
-	if err := r.StartUninstall("maison", false); err != ErrProtected {
-		t.Fatalf("StartUninstall = %v; want ErrProtected", err)
+	if err := r.StartUninstall("maison", false); err != ErrNotUninstallable {
+		t.Fatalf("StartUninstall = %v; want ErrNotUninstallable", err)
 	}
 	if len(r.Uninstalls()) != 0 {
 		t.Errorf("a refused uninstall was tracked: %+v", r.Uninstalls())
 	}
 	if _, err := os.Stat(dir); err != nil {
-		t.Errorf("system app folder was touched: %v", err)
+		t.Errorf("the refused app's folder was touched: %v", err)
 	}
 }
 
-// Stop is refused for the same reason uninstall is — taking the dashboard down
-// from its own tile leaves nothing running to bring it back.
-func TestStopRefusesSystemApps(t *testing.T) {
+// Stop is refused when the app says so — taking the dashboard down from its own
+// tile leaves nothing running to bring it back.
+func TestStopRefusesAnAppThatDeclaresIt(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "AppData", "maison")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	seedApp(t, dir)
-	writeCompose(t, dir, "services: {}\nx-compose-app:\n  view: system\n")
+	writeCompose(t, dir, "services: {}\nx-compose-app:\n  view: system\n  lifecycle:\n    stoppable: false\n")
 	r := New(config.Config{DataRoot: root}, nil)
 
-	if err := r.Stop(context.Background(), "maison"); err != ErrProtected {
-		t.Fatalf("Stop = %v; want ErrProtected", err)
+	if err := r.Stop(context.Background(), "maison"); err != ErrNotStoppable {
+		t.Fatalf("Stop = %v; want ErrNotStoppable", err)
+	}
+	// The two keys are independent: refusing a stop says nothing about uninstall.
+	if !r.Uninstallable("maison") {
+		t.Error("an app that only declared stoppable: false was reported not uninstallable")
 	}
 }
 
-// An ordinary app is neither, whatever else its compose says.
-func TestOrdinaryAppIsNotProtected(t *testing.T) {
+// `view: system` is a grid, not a guard: without a lifecycle declaration the app is
+// stoppable and uninstallable like any other.
+func TestSystemViewAloneDoesNotGuard(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "AppData", "platform")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedApp(t, dir)
+	writeCompose(t, dir, "services: {}\nx-compose-app:\n  view: system\n")
+	r := New(config.Config{DataRoot: root}, nil)
+	if !r.Stoppable("platform") || !r.Uninstallable("platform") {
+		t.Fatal("a `view: system` app with no lifecycle declaration was guarded")
+	}
+}
+
+// An ordinary app allows both, whatever else its compose says.
+func TestOrdinaryAppIsNotGuarded(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "AppData", "nextcloud")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -228,8 +248,9 @@ func TestOrdinaryAppIsNotProtected(t *testing.T) {
 	}
 	seedApp(t, dir)
 	writeCompose(t, dir, "services: {}\nx-compose-app:\n  title: Nextcloud\n")
-	if New(config.Config{DataRoot: root}, nil).Protected("nextcloud") {
-		t.Fatal("an app with no `view: system` was reported protected")
+	r := New(config.Config{DataRoot: root}, nil)
+	if !r.Stoppable("nextcloud") || !r.Uninstallable("nextcloud") {
+		t.Fatal("an app with no lifecycle declaration was guarded")
 	}
 }
 

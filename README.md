@@ -186,8 +186,9 @@ Just the app grid — no global search bar, no promo cards.
 - **App / Services / System.** The section heading is a switch when the box has
   system apps or services. System apps are the platform's own pieces, which declare
   `view: system` in their compose ([`docs/x-compose-app.md`](./docs/x-compose-app.md)):
-  they get their own grid, and their menu withholds **Stop** and **Uninstall** (the
-  API refuses both); **Restart** stays. Services are apps with no web UI (Samba, a
+  that only gives them their own grid. An app that declares `lifecycle.stoppable` or
+  `lifecycle.uninstallable` false — whatever its grid — has **Stop** or **Uninstall**
+  withheld from its menu (the API refuses it too); **Restart** stays. Services are apps with no web UI (Samba, a
   database), sorted there automatically; their tile opens Settings instead of a URL.
   With neither, the heading is a plain "App" and nothing else changes.
 - A tile is **greyed** when stopped, shows a **`…` overlay** while a lifecycle op is in

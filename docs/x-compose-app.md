@@ -72,7 +72,7 @@ x-compose-app:
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
 | `category` | string | no | Store grouping. | `category` |
-| **`view`** | `apps` \| `service` \| `system` | no (default: `apps`, or `service` for an app with no web UI) | Which dashboard grid the app's tile lands in — **not** a store category. `system` also makes the app **protected**. See [Views](#views). | — |
+| **`view`** | `apps` \| `service` \| `system` | no (default: `apps`, or `service` for an app with no web UI) | Which dashboard grid the app's tile lands in — **not** a store category, and not a behaviour. See [Views](#views). | — |
 | **`parent`** | string | no | Compose project name of the app this one **extends**. Its tile nests under that app's instead of standing alone. Unresolvable — absent, misspelled, itself an extension — falls back to an ordinary tile. See [`parent` makes the app an extension of another](#parent-makes-the-app-an-extension-of-another). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
 | `description` | string \| localized | no | Store long description (Markdown). | `description` |
@@ -92,6 +92,7 @@ x-compose-app:
 | **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
 | **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
+| **`lifecycle`** | object | no | `{ stoppable, uninstallable }`, both default `true` — whether Maison may stop or uninstall the app. See [Lifecycle](#lifecycle-what-the-operator-may-do-to-the-app). | — |
 | **`backup`** | object | no | `{ exclude, skip }` — directories of **derived** data to leave out of backups, or the whole app. See [Backup exclusions](#backup-exclusions) and [Skipping an app entirely](#skipping-an-app-entirely). | — |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
@@ -430,13 +431,16 @@ the same reason the matching hooks are.
 ## Views
 
 `view` says which of the dashboard's grids an app's tile belongs to. It is
-presentation, not capability — with one deliberate exception, below.
+presentation, not capability: no value changes what Maison will do to the app.
+Whether it can be stopped, uninstalled or backed up is the app's own
+[`lifecycle`](#lifecycle-what-the-operator-may-do-to-the-app) and
+[`backup.skip`](#skipping-an-app-entirely) declaration, whatever grid it sits in.
 
 | Value | The tile |
 |---|---|
 | `apps` (default) | The ordinary app grid, alongside everything else. |
 | `service` | The **Services** grid: an app with no web UI. Usually [derived](#an-app-with-no-web-ui-is-a-service), not declared. |
-| `system` | The **System** grid, and the app is **protected** (below). |
+| `system` | The **System** grid: the platform's own pieces. A category only. |
 
 The dashboard's section heading becomes an **App / Services / System** switch,
 showing only the grids that have something in them, and is a plain heading when
@@ -451,8 +455,12 @@ x-compose-app:
 `view` does **not** raise `schema_version`. A Maison that predates it ignores the
 key and renders the app in the ordinary grid, which is where the app would have
 been anyway — a version gate would turn a cosmetic hint into a refusal to start
-the app at all. Note the consequence for `system`: on an older build the app is
-also not protected.
+the app at all.
+
+Maison 1.1.5 up to the introduction of `lifecycle` derived a stop/uninstall guard
+and a nightly-backup skip from `view: system`. A platform stack that must stay
+guarded on such a build keeps `view: system` beside its `lifecycle` and
+`backup.skip` keys; a current build reads only the latter.
 
 An unrecognised value counts as no declaration rather than failing the app, in
 keeping with "unknown keys are tolerated and skipped" — the app is sorted as if it
@@ -489,36 +497,58 @@ service.
 A **declared** `view` always wins, `apps` included: that is how a UI-less app stays
 in the ordinary grid. An unrecognised value counts as no declaration.
 
-A service is otherwise an ordinary app — it can be stopped, uninstalled and backed
-up like any other, and it is **not** protected. Its tile is not greyed out: with
+A service is otherwise an ordinary app — like every view, it changes nothing about
+what can be done to the app. Its tile is not greyed out: with
 nothing to open, a click opens its settings. Maison also never turns a service's
 published port into a click URL — that port is the non-HTTP listener the app
 exists for (Samba's `445`), not a web page. A service that *does* resolve a URL
 (an explicit `view: service` with a `webui-host`) opens it like any app.
 
-### `view: system` protects the app
+### Lifecycle: what the operator may do to the app
 
-A system app is the platform itself — the dashboard, the gateway in front of it,
-the host stack. Maison therefore refuses to take it down:
+```yaml
+x-compose-app:
+  view: system            # the grid — independent of the two keys below
+  lifecycle:
+    stoppable: false      # default true
+    uninstallable: false  # default true
+```
 
-| Operation | On a system app |
-|---|---|
-| **Stop** | Refused. The menu entry is withheld and the API answers `403`. Stopping the dashboard from its own tile takes the UI down with the click that asked for it, and leaves nothing running to bring it back. |
-| **Uninstall** | Refused, the same way. |
-| **Restart** | **Allowed** — the stack comes back on its own, so it is how a wedged platform app is recovered without an SSH session. |
-| **Start** | Allowed. |
-| **Scheduled backup** | Skipped. Backing an app up stops it, and taking the gateway down nightly is not a backup strategy (see [`lifecycle.md`](./lifecycle.md)). |
+Some apps take the operator's way back in with them when they go down: the
+dashboard, the gateway in front of it, the login broker. They say so themselves:
 
-This is the only protection mechanism; there is no operator-side list. An app is
-a system app because **its own compose says so** — which is what lets a stack
-Maison merely *discovered* be protected too: Maison reads `x-compose-app` from
-the compose in the directory Docker reports for the project, exactly as it does
-for the tile's icon and name.
+| Operation | `stoppable: false` | `uninstallable: false` |
+|---|---|---|
+| **Stop** | Refused. The menu entry is withheld and the API answers `403`. Stopping the dashboard from its own tile takes the UI down with the click that asked for it, and leaves nothing running to bring it back. | — |
+| **Update** | The app is **not stopped** first, is left out of **Update all**, and is updated only when named on its own (see [`lifecycle.md`](./lifecycle.md#update-all)). | — |
+| **Uninstall** | — | Refused, the same way. |
+| **Cleanup** | — | Its containers are never counted as orphans. |
+| **Restart / Start** | **Allowed** — the stack comes back on its own, so it is how a wedged app is recovered without an SSH session. | Allowed. |
+
+The two are independent: an app may be safe to stop but not to remove, or the
+reverse. Neither says anything about backups — an app that must not be stopped
+nightly also declares [`backup.skip`](#skipping-an-app-entirely), since backing an
+app up stops it.
+
+This is the only guard; there is no operator-side list. An app is guarded because
+**its own compose says so** — which is what lets a stack Maison merely
+*discovered* be guarded too: Maison reads `x-compose-app` from the compose in the
+directory Docker reports for the project, exactly as it does for the tile's icon
+and name, and remembers the answer while the stack is stopped.
 
 Being self-declared, it is a **foot-gun guard, not a security boundary**: Maison
-has no authentication, and for a managed app the operator can edit `view` out
+has no authentication, and for a managed app the operator can edit the keys out
 through Settings → override. That is deliberate — it is also the escape hatch for
-an operator who genuinely means to remove a platform piece.
+an operator who genuinely means to remove a platform piece. Note that the override
+merges `x-compose-app` **one level deep**: an override that declares `lifecycle:`
+replaces the base's whole block, so `lifecycle: {}` there restores both defaults.
+
+Whether a store app may declare either key is a store-review question; Maison does
+not police it.
+
+`lifecycle` does **not** raise `schema_version`, and its polarity is chosen for
+that: a build that predates it ignores a `false` and offers Stop and Uninstall,
+which is the ordinary behaviour of every app.
 
 ### `parent` makes the app an extension of another
 
@@ -563,7 +593,7 @@ changes when that happens.
 
 #### It is presentation, plus warnings
 
-Unlike `view: system`, `parent` buys **no** behaviour. It is a declaration about
+Like `view`, `parent` buys **no** behaviour. It is a declaration about
 someone else's app, and the operations it invites — cascading stop, cascading
 uninstall, a shared backup set — would each turn an unverified string into a way
 to take down or delete data that belongs to a different app. So:
@@ -807,10 +837,16 @@ author's, and on the local engine it is a folder rename that costs nothing.
 
 ### It is not `view: system`
 
-`view: system` also decides that the app tiles with the platform and that Maison
-refuses to stop or uninstall it. Before this field the only way to opt out of backups
-was to claim all three, so an ordinary app with nothing worth keeping had to pose as a
-platform component, and a platform component had no way to ask to *be* backed up.
+`view: system` used to decide, from one value, that the app tiled with the platform,
+that Maison refused to stop or uninstall it, and that the nightly run skipped it. So
+an ordinary app with nothing worth keeping had to pose as a platform component, and a
+platform component had no way to ask to *be* backed up. Now `view` is only the grid,
+[`lifecycle`](#lifecycle-what-the-operator-may-do-to-the-app) is the stop/uninstall
+guard, and this is the backup decision — a platform stack that must not be stopped
+nightly declares `skip` like any other app.
+
+Backing a platform piece up *without* stopping it (a live, single-pass snapshot) is
+not offered yet. It would be one more key in this block, the app's call like the rest.
 
 It is also not the per-app opt-out an owner gets in the UI. This is the author saying
 there is nothing here; that would be the owner saying they do not want it.

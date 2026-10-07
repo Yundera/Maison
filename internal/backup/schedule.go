@@ -364,32 +364,29 @@ func (s *Scheduler) canBackUpUserData() bool { return s.userDataEngine() != nil 
 
 // skip reports whether an app directory must be left out of a scheduled run.
 //
-// Three exclusions. The first two are because backing an app up *stops* it:
+// Two exclusions:
 //
 //   - Maison's own state directory. It sits at AppData/maison and therefore looks
-//     exactly like an app — deliberately, so the dashboard tiles itself. Stopping it
-//     would kill the process running the backup, and the run would end mid-flight
-//     with nothing to report it. It is also where the archive tree lives, so it is the
-//     one folder a nightly run has least business copying.
-//   - System apps: the platform's own pieces, which is what `view: system` names.
-//     Taking the gateway or the dashboard down nightly is not a backup strategy.
-//   - Apps that declare x-compose-app `backup.skip` — the author saying there is
-//     nothing in the folder worth keeping.
+//     exactly like an app — deliberately, so the dashboard tiles itself. Backing an
+//     app up *stops* it, and stopping this one would kill the process running the
+//     backup: the run would end mid-flight with nothing to report it. It is also
+//     where the archive tree lives, so it is the one folder a nightly run has least
+//     business copying. A path, not a declaration, because it is Maison protecting
+//     itself rather than an app's choice.
+//   - Apps that declare x-compose-app `backup.skip` — the author saying the folder
+//     is not to be backed up. The same declaration refuses the manual path
+//     (apps.ErrBackupSkipped).
 //
-// The third is not a third way of saying the first two. `view: system` decides tile
-// grouping and refusal-to-stop as well, so before this field an ordinary app with
-// nothing worth backing up could only opt out by claiming to be a platform piece;
-// and the same conflation is why a skipped app still has to be refused on the manual
-// path, which never consulted Protected at all (apps.ErrBackupSkipped).
-//
-// The cost of the second is that platform state is not backed up by the schedule.
-// That is a deliberate gap, not an oversight: doing it properly means backing these up
-// *without* stopping them, which is a different shape than the app path has.
+// `view: system` is deliberately not a third. It used to be — it decided tile
+// grouping, refusal to stop and skipped-by-backup from one value — and that left a
+// platform piece no way to be backed up and an ordinary app no way to opt out short
+// of claiming to be one. The grid is now only a grid; a platform stack that must not
+// be stopped nightly declares `backup.skip` itself.
 func (s *Scheduler) skip(name string) bool {
 	if filepath.Clean(filepath.Join(s.cfg.AppsDir(), name)) == filepath.Clean(s.cfg.StateDir()) {
 		return true
 	}
-	return s.apps.Protected(name) || s.apps.BackupSkipped(name)
+	return s.apps.BackupSkipped(name)
 }
 
 // RunAll backs up every target, one at a time.

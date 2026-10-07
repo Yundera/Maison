@@ -34,7 +34,9 @@ export interface AppUpdate {
   id: string
   name: string
   icon?: string
-  protected?: boolean
+  /** The app declares itself not stoppable: it is kept running through its update,
+   *  left out of "Update all", and updated on its own. */
+  stays_up?: boolean
   state: UpdateState
   ref?: string
   store_name?: string
@@ -114,7 +116,7 @@ export const runUpdates = (ids: string[] = [], noBackup = false) =>
   api.post('/api/updates/run', noBackup ? { ids, noBackup } : { ids })
 
 /** What the settings rail badges: updates waiting in the ordinary grid, plus checks
- *  that failed. System apps are not counted — they are not in "update all". */
+ *  that failed. Stays-up apps are not counted — they are not in "update all". */
 export const updateCount = derived(updates, ($u) =>
-  ($u?.apps ?? []).filter((a) => (a.state === 'available' && !a.protected) || a.state === 'error').length,
+  ($u?.apps ?? []).filter((a) => (a.state === 'available' && !a.stays_up) || a.state === 'error').length,
 )

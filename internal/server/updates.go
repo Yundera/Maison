@@ -169,7 +169,7 @@ func (s *Server) checkTargets(ctx context.Context, only map[string]bool) ([]inst
 			continue
 		}
 		targets = append(targets, installer.CheckTarget{
-			ID: a.ID, Name: a.Name, Icon: a.Icon, Managed: a.Managed, Protected: a.Protected,
+			ID: a.ID, Name: a.Name, Icon: a.Icon, Managed: a.Managed, StaysUp: !a.Stoppable,
 		})
 	}
 	return s.installer.CheckAll(ctx, targets), nil
@@ -198,14 +198,14 @@ func (s *Server) refreshUpdateRow(ctx context.Context, id string) {
 }
 
 // runQueue resolves which apps a run updates. With no ids: every app with an update
-// available, except system apps — updating the dashboard, or the gateway in front of
-// it, can take down the process running the queue. A system app is updated on its own,
-// by naming it alone.
+// available, except the ones that declare themselves not stoppable (StaysUp) —
+// updating the dashboard, or the gateway in front of it, can take down the process
+// running the queue. Such an app is updated on its own, by naming it alone.
 func runQueue(rows []installer.AppUpdate, ids []string) ([]string, error) {
 	if len(ids) == 0 {
 		var q []string
 		for _, r := range rows {
-			if r.State == installer.StateAvailable && !r.Protected {
+			if r.State == installer.StateAvailable && !r.StaysUp {
 				q = append(q, r.ID)
 			}
 		}
@@ -229,8 +229,8 @@ func runQueue(rows []installer.AppUpdate, ids []string) ([]string, error) {
 		if r.State != installer.StateAvailable && r.State != installer.StateError {
 			continue
 		}
-		if r.Protected && len(ids) > 1 {
-			return nil, errors.New(r.ID + " is a system app and is updated on its own")
+		if r.StaysUp && len(ids) > 1 {
+			return nil, errors.New(r.ID + " stays running through its update and is updated on its own")
 		}
 		seen[id] = true
 		q = append(q, id)

@@ -12,9 +12,13 @@ import (
 	"github.com/yundera/maison/internal/incident"
 )
 
-// ErrProtected is returned when a stop or an uninstall targets a system app —
-// one whose compose declares `view: system` (see Registry.Protected).
-var ErrProtected = errors.New("this is a system app and cannot be stopped or uninstalled")
+// ErrNotStoppable is returned when a stop targets an app whose compose declares
+// x-compose-app `lifecycle.stoppable: false` (see Registry.Stoppable).
+var ErrNotStoppable = errors.New("this app declares it cannot be stopped")
+
+// ErrNotUninstallable is returned when an uninstall targets an app whose compose
+// declares x-compose-app `lifecycle.uninstallable: false` (see Registry.Uninstallable).
+var ErrNotUninstallable = errors.New("this app declares it cannot be uninstalled")
 
 // ErrHoldsBackups is returned when an uninstall or a restore targets the app whose
 // folder CONTAINS the local archive tree (see Registry.ownsBackupsDir). It is a
@@ -76,15 +80,16 @@ type UninstallState struct {
 // progress so it rides the live app list — the confirmation dialog can close
 // immediately and the tile carries the (red) progress bars to the end.
 //
-// It returns only the errors that are knowable up front: a system app. The
+// It returns only the errors that are knowable up front: an app that declares it
+// cannot be uninstalled. The
 // uninstall itself runs on a background context, so it is NOT cancelled when the
 // caller goes away; its failure lands in the tracked state (Phase == error) and
 // stays on the tile until it is retried or dismissed.
 //
 // Idempotent: a second call while the same app is being uninstalled is a no-op.
 func (r *Registry) StartUninstall(id string, zip bool) error {
-	if r.Protected(id) {
-		return ErrProtected
+	if !r.Uninstallable(id) {
+		return ErrNotUninstallable
 	}
 	if _, ok := r.ownsBackupsDir(id); ok {
 		return ErrHoldsBackups
@@ -228,8 +233,8 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 	if emit == nil {
 		emit = func(UninstallEvent) {}
 	}
-	if r.Protected(id) {
-		return "", ErrProtected
+	if !r.Uninstallable(id) {
+		return "", ErrNotUninstallable
 	}
 	if _, ok := r.ownsBackupsDir(id); ok {
 		return "", ErrHoldsBackups

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -259,6 +260,40 @@ func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []str
 	}
 	resp.Sources = orEmpty(s.store.Sources())
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ensureStoreSource adds the store a reference names to the configured sources
+// when it is not there yet, persists the list and rebuilds the catalog in the
+// background. It is what keeps an app pointed at a store by hand (Touchstone,
+// Newsdesk) from tracking a store the Store page knows nothing about.
+//
+// Only a reference into the default apps folder registers its store: a source has
+// no apps folder of its own, so a store laid out elsewhere would be added as an
+// empty entry. A merged-catalog reference names no store at all.
+func (s *Server) ensureStoreSource(ref appstore.Ref) {
+	if s.store == nil || ref.Merged() || ref.Apps() != appstore.DefaultAppsPath {
+		return
+	}
+	urls := s.store.URLs()
+	for _, u := range urls {
+		if u == ref.URL {
+			return
+		}
+	}
+	urls = append(urls, ref.URL)
+	s.store.SetURLs(urls)
+	cur := s.settings.Get()
+	cur.StoreSources = urls
+	if err := s.settings.Set(cur); err != nil {
+		log.Printf("store: adding source %s: %v", ref.URL, err)
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), storeSyncTimeout)
+		defer cancel()
+		if err := s.store.Refresh(ctx); err != nil {
+			log.Printf("store: refresh after adding %s: %v", ref.URL, err)
+		}
+	}()
 }
 
 // handleStoreApp returns one store app. The optional ?store= pins the lookup to

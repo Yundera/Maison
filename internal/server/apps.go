@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/yundera/maison/internal/apps"
+	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/installer"
 )
 
@@ -132,6 +133,11 @@ func (s *Server) handleSetUpdateRef(w http.ResponseWriter, r *http.Request) {
 	}
 	// The app moved to another group on the Updates page (untracked → tracked).
 	go s.refreshUpdateRow(context.Background(), chi.URLParam(r, "id"))
+	// The ref resolved, so its store is real: list it among the sources if it is
+	// not already, or the app tracks a store the Store page never shows.
+	if ref, err := appstore.ParseUserRef(body.Ref); err == nil {
+		s.ensureStoreSource(ref)
+	}
 	writeJSON(w, http.StatusOK, st)
 }
 

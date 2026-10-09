@@ -89,6 +89,8 @@ func (s *Server) checkOnce(ctx context.Context, d *detector) {
 	// mailed at the next restart, which may be months away. One attempt per pass, so a
 	// relay that is down costs a log line every five minutes rather than a retry loop.
 	s.ensureKeyEmailedOnce(ctx)
+	// After the send, so a pass that just mailed a secret does not report it unsent.
+	s.checkBackupSecrets(ctx, d)
 	d.prune()
 }
 

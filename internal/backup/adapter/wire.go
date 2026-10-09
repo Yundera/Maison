@@ -73,6 +73,7 @@ type wireCaps struct {
 	ConsumesSource    bool `json:"consumesSource"`
 	Retention         bool `json:"retention"`
 	Recover           bool `json:"recover"`
+	ChangeSecret      bool `json:"changeSecret"`
 
 	RetentionModel string `json:"retentionModel"`
 }
@@ -88,6 +89,7 @@ func (c wireCaps) caps() apps.Caps {
 		Encrypted:       c.Encrypted,
 		KeyEscrow:       c.KeyEscrow,
 		Recover:         c.Recover,
+		ChangeSecret:    c.ChangeSecret,
 	}
 }
 

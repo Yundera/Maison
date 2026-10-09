@@ -82,6 +82,8 @@ var (
 	_ backup.UserDataRestoreEngine = (*adapter.Provider)(nil)
 	_ backup.RetentionEngine       = (*adapter.Provider)(nil)
 	_ apps.Recoverer               = (*adapter.Provider)(nil)
+	_ apps.SecretChanger           = (*adapter.Provider)(nil)
+	_ apps.SecretHolder            = (*adapter.Provider)(nil)
 	_ statusInvalidator            = (*adapter.Provider)(nil)
 )
 
@@ -215,15 +217,6 @@ type engineStatus struct {
 	Config  backupconfig.Config `json:"config"`
 	Targets []string            `json:"targets"`
 
-	// HasKey is whether this box has an encryption key at all — false on a box whose
-	// repository has never been provisioned, where offering to show or mail a key
-	// would be offering something that does not exist.
-	HasKey bool `json:"has_key"`
-	// KeySent is the receipt: when a copy of the key last left the box by mail, and
-	// where to. Absent means no copy has ever been mailed, which is what the page
-	// says out loud rather than leaving the user to wonder.
-	KeySent *keySentRecord `json:"key_sent,omitempty"`
-
 	// LastRun and NextRun are the two facts the settings page leads with, and neither
 	// can be derived from Run above: RunState is in memory, is wiped at the start of
 	// the next run, and knows nothing about the schedule. Absent means "never run" and
@@ -295,6 +288,20 @@ type engineInfo struct {
 	// "not encrypted" is the wrong thing to say about it.
 	HasKey bool `json:"has_key"`
 
+	// SecretLabel is the engine's own name for that key ("Kopia repository password"),
+	// empty when it declared none and the page uses its generic wording. See
+	// apps.SecretSpec.
+	SecretLabel string `json:"secret_label,omitempty"`
+	// Escrow is whether the key exists nowhere but this box, so a copy has to be taken.
+	Escrow bool `json:"escrow"`
+	// SecretSent is this engine's receipt: when a copy of the key last left the box by
+	// mail and where to, or that the user typed it in themselves. Absent means no copy
+	// is known to exist, which the page says out loud rather than leaving the user to
+	// wonder.
+	SecretSent *keySentRecord `json:"secret_sent,omitempty"`
+	// CanChangeSecret is whether the page may offer to replace the key.
+	CanChangeSecret bool `json:"can_change_secret"`
+
 	// Retention is what this engine has been told to keep, resolved for it alone.
 	Retention *retentionView `json:"retention,omitempty"`
 
@@ -348,15 +355,6 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	if w := s.engines.Writers(apps.TriggerSchedule); len(w) > 0 {
 		out.Active = w[0].ID()
 	}
-	if _, _, err := s.escrowKey(); err == nil {
-		out.HasKey = true
-	}
-	// A receipt the user earned by typing the key in carries no send date, and is shown
-	// all the same: "you entered this key yourself" is the honest replacement for "no
-	// copy has ever been mailed", which would be true and misleading.
-	if rec, sent := readKeySent(s.cfg); sent && (!rec.SentAt.IsZero() || rec.HeldByUser) {
-		out.KeySent = &rec
-	}
 	for _, id := range s.engines.IDs() {
 		p, _ := s.engines.Get(id)
 		info := engineInfo{ID: id, Offsite: p.Caps().Offsite}
@@ -384,8 +382,21 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		info.Retention = resolvedView(conf.Effective(id, backupconfig.Provisioned{}), caps)
 		info.Encrypted = caps.Encrypted
-		_, err := readEnginePassword(s.cfg, id)
-		info.HasKey = err == nil
+		if es, ok := s.secretOf(id); ok {
+			pw, err := es.read()
+			info.HasKey = err == nil
+			info.SecretLabel, info.Escrow = es.Spec.Label, es.Spec.Escrow
+			// A receipt the user earned by typing the key in carries no send date, and
+			// is shown all the same: "you entered this key yourself" is the honest
+			// replacement for "no copy has ever been mailed", which would be true and
+			// misleading. A receipt for a key that has since changed is not shown: it
+			// describes a copy that no longer opens anything.
+			if rec, sent := readKeySent(s.cfg, id); sent && (!rec.SentAt.IsZero() || rec.HeldByUser) &&
+				(rec.Fingerprint == "" || (err == nil && rec.Fingerprint == keyFingerprint(pw))) {
+				info.SecretSent = &rec
+			}
+		}
+		info.CanChangeSecret = canChangeSecret(p)
 		out.Engines = append(out.Engines, info)
 	}
 	if s.backupSched != nil {
@@ -466,6 +477,12 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// canChangeSecret is canRecover's twin for the change form.
+func canChangeSecret(p apps.Provider) bool {
+	_, ok := p.(apps.SecretChanger)
+	return ok && p.Caps().ChangeSecret
 }
 
 // canRecover is whether an engine both declares the recover capability and implements
@@ -552,6 +569,7 @@ func (s *Server) handleRecoverEngine(w http.ResponseWriter, r *http.Request) {
 	// The user just typed this key, so they hold a copy: record that instead of letting
 	// the automatic send mail it straight back to them.
 	s.recordKeyHeldByUser(id)
+	s.resolveSecretIncident(id)
 	// A connected offsite engine is what the legacy fallback writes to, so the write
 	// sets are recomputed now rather than at the next restart.
 	if s.backupConf != nil {

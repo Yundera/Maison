@@ -44,8 +44,10 @@
     fetchBackupStatus,
     saveBackupConfig,
     runBackupNow,
-    emailBackupKey,
-    showBackupKey,
+    emailEngineSecret,
+    showEngineSecret,
+    changeEngineSecret,
+    generateSecret,
     recoverBackupEngine,
     type BackupStatus,
     type RecoverResult,
@@ -268,21 +270,32 @@
   // Shown on demand rather than with the rest of the page: this is the one secret on
   // the box that has no recovery path, and it has no business being on screen behind
   // whoever walks past while its owner is reading about retention tiers.
+  //
+  // Each engine holds its own key, so what is on screen is tagged with the engine it
+  // came from: switching tabs must never leave one engine's key under another's name.
   let key = $state('')
+  let keyFor = $state('')
   let copied = $state(false)
   let keyBusy = $state(false)
   let keyNote = $state('')
 
-  async function toggleKey() {
-    if (key) {
-      key = ''
-      copied = false
+  function hideKey() {
+    key = ''
+    keyFor = ''
+    copied = false
+  }
+
+  async function toggleKey(id: string) {
+    if (key && keyFor === id) {
+      hideKey()
       return
     }
     keyBusy = true
     error = ''
     try {
-      key = (await showBackupKey()).key
+      key = (await showEngineSecret(id)).key
+      keyFor = id
+      copied = false
     } catch (e) {
       error = (e as Error).message
     } finally {
@@ -290,12 +303,12 @@
     }
   }
 
-  async function sendKey() {
+  async function sendKey(id: string) {
     keyBusy = true
     error = ''
     keyNote = ''
     try {
-      await emailBackupKey()
+      await emailEngineSecret(id)
       keyNote = $t('backup_key_sent')
       await loadStatus()
     } catch (e) {
@@ -319,10 +332,71 @@
     }
   }
 
-  /** When a copy of the key was last mailed, for the line under the buttons. */
-  const keySentAt = $derived(
-    status?.key_sent ? new Date(status.key_sent.sent_at).toLocaleString() : '',
+  // --- changing the key ---------------------------------------------------------------
+  // Replaces the key that opens the repository. Every existing backup stays readable
+  // with the new one; the old one — including any copy that was emailed — stops working.
+  //
+  // The new key is NOT emailed: retiring a copy that travelled through a mail relay is
+  // the usual reason to change it, and mailing the replacement the same way would undo
+  // that. So the user takes the copy here, proves it by entering it a second time, and
+  // says they have saved it before anything is sent.
+  let changeOpen = $state(false)
+  let newSecret = $state('')
+  let newSecretRepeat = $state('')
+  let secretSaved = $state(false)
+  let changing = $state(false)
+  let changeError = $state('')
+  let newCopied = $state(false)
+
+  function resetChange() {
+    newSecret = ''
+    newSecretRepeat = ''
+    secretSaved = false
+    changeError = ''
+    newCopied = false
+  }
+
+  function generate() {
+    newSecret = generateSecret()
+    newSecretRepeat = ''
+    newCopied = false
+  }
+
+  async function copyNewSecret() {
+    try {
+      await navigator.clipboard.writeText(newSecret)
+      newCopied = true
+    } catch {
+      newCopied = false
+    }
+  }
+
+  const newSecretTooShort = $derived(newSecret.trim().length > 0 && newSecret.trim().length < 16)
+  const newSecretMismatch = $derived(newSecretRepeat.length > 0 && newSecretRepeat.trim() !== newSecret.trim())
+  const canChange = $derived(
+    !changing && newSecret.trim().length >= 16 && newSecretRepeat.trim() === newSecret.trim() && secretSaved,
   )
+
+  async function changeSecret(id: string) {
+    changing = true
+    changeError = ''
+    keyNote = ''
+    try {
+      await changeEngineSecret(id, newSecret.trim())
+      resetChange()
+      changeOpen = false
+      hideKey()
+      keyNote = $t('backup_secret_changed')
+      await loadStatus()
+    } catch (e) {
+      // 409 is a run in progress or a repository in no state to change; 400 here is
+      // the box's own key no longer opening the repository. Both carry the server's
+      // sentence, which is the useful one.
+      changeError = (e as Error).message
+    } finally {
+      changing = false
+    }
+  }
 
   // --- recovery -------------------------------------------------------------------
   // The rebuilt box. Its storage already holds the backups a previous installation
@@ -505,6 +579,15 @@
   const active = $derived(engines.find((e) => e.engine === tab) ?? engines[0] ?? null)
   /** …and the same engine's status, which carries retention, encryption and health. */
   const activeInfo = $derived(active ? engineInfo[active.engine] : undefined)
+
+  /** The active engine's name for its key, in the engine's own words when it has them. */
+  const secretName = $derived(activeInfo?.secret_label || $t('backup_key'))
+
+  /** When a copy of the active engine's key was last mailed, for the line under the
+   *  buttons. */
+  const keySentAt = $derived(
+    activeInfo?.secret_sent?.sent_at ? new Date(activeInfo.secret_sent.sent_at).toLocaleString() : '',
+  )
 
   const label = (id: string, name?: string) => engineLabel(id, name, (k) => $t(k))
 
@@ -890,9 +973,9 @@
       {/if}
     {/if}
 
-    <!-- The encryption key belongs to the engine that has a repository, not to the box:
-         it is AppDataShared/backup/<engine>/repository.password, and the local engine
-         has none because its archives are not encrypted at all. -->
+    <!-- The key belongs to the engine that has a repository, not to the box: each engine
+         declares its own (adapter.json "secret"), and the local engine has none because
+         its archives are not encrypted at all. -->
     {#if activeInfo?.needs_recovery}
       <!-- In place of the key block, not beside it: there is no key on this box to show
            or mail, and the only useful thing to do with this engine is give it one. -->
@@ -933,16 +1016,16 @@
         {/if}
       </div>
     {:else if activeInfo?.encrypted}
-      <h4>{$t('backup_key')}</h4>
+      <h4>{secretName}</h4>
       <p class="hint">{$t('backup_key_hint')}</p>
       <div class="actions">
         <!-- Showing it first, mailing it second: reading the key off the screen keeps
              it on the box, where mailing it puts a plaintext secret in an inbox. Both
              are offered because the mail is the copy that survives losing the box. -->
-        <button onclick={toggleKey} disabled={keyBusy || !activeInfo.has_key}>
-          {key ? $t('backup_key_hide') : $t('backup_key_show')}
+        <button onclick={() => toggleKey(activeInfo.id)} disabled={keyBusy || !activeInfo.has_key}>
+          {key && keyFor === activeInfo.id ? $t('backup_key_hide') : $t('backup_key_show')}
         </button>
-        <button onclick={sendKey} disabled={keyBusy || !activeInfo.has_key}>
+        <button onclick={() => sendKey(activeInfo.id)} disabled={keyBusy || !activeInfo.has_key}>
           {$t('backup_key_send')}
         </button>
       </div>
@@ -951,7 +1034,7 @@
         <p class="hint quiet">{$t('backup_key_absent')}</p>
       {/if}
 
-      {#if key}
+      {#if key && keyFor === activeInfo.id}
         <div class="key">
           <code>{key}</code>
           <button onclick={copyKey}>{copied ? $t('copied') : $t('copy')}</button>
@@ -962,11 +1045,64 @@
            it is stated either way rather than only when reassuring. -->
       <p class="hint key-state">
         {#if keyNote}{keyNote}
-        {:else if status?.key_sent?.held_by_user}{$t('backup_key_held_by_user')}
-        {:else if status?.key_sent}
-          {$t('backup_key_sent_on', { when: keySentAt, to: status.key_sent.to ?? '' })}
+        {:else if activeInfo.secret_sent?.held_by_user}{$t('backup_key_held_by_user')}
+        {:else if activeInfo.secret_sent}
+          {$t('backup_key_sent_on', { when: keySentAt, to: activeInfo.secret_sent.to ?? '' })}
         {:else if activeInfo.has_key}{$t('backup_key_never_sent')}{/if}
       </p>
+
+      {#if activeInfo.can_change_secret && activeInfo.has_key}
+        <details class="change-secret" bind:open={changeOpen} ontoggle={() => !changeOpen && resetChange()}>
+          <summary>{$t('backup_secret_change', { name: secretName })}</summary>
+          <!-- Said plainly, because both halves surprise people: nothing old is lost, and
+               the copy they were emailed stops working. And what it is not: the backups
+               are not re-encrypted. -->
+          <p class="hint">{$t('backup_secret_change_explain', { name: secretName })}</p>
+          <form
+            class="recover-form change-form"
+            onsubmit={(e) => {
+              e.preventDefault()
+              changeSecret(activeInfo.id)
+            }}
+          >
+            <div class="key">
+              <input
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder={$t('backup_secret_new_placeholder')}
+                aria-label={$t('backup_secret_new_placeholder')}
+                bind:value={newSecret}
+                oninput={() => (newCopied = false)}
+                disabled={changing}
+              />
+              <button type="button" onclick={generate} disabled={changing}>{$t('backup_secret_generate')}</button>
+              <button type="button" onclick={copyNewSecret} disabled={changing || !newSecret}>
+                {newCopied ? $t('copied') : $t('copy')}
+              </button>
+            </div>
+            {#if newSecretTooShort}<p class="err at-form">{$t('backup_secret_too_short')}</p>{/if}
+            <input
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder={$t('backup_secret_repeat_placeholder')}
+              aria-label={$t('backup_secret_repeat_placeholder')}
+              bind:value={newSecretRepeat}
+              disabled={changing}
+            />
+            {#if newSecretMismatch}<p class="err at-form">{$t('backup_secret_mismatch')}</p>{/if}
+            <label class="check">
+              <input type="checkbox" bind:checked={secretSaved} disabled={changing} />
+              {$t('backup_secret_saved', { name: secretName })}
+            </label>
+            <button class="go" type="submit" disabled={!canChange}>
+              {changing ? $t('backup_secret_changing') : $t('backup_secret_change_submit')}
+            </button>
+          </form>
+          {#if changeError}<p class="err at-form">{changeError}</p>{/if}
+        </details>
+      {/if}
     {/if}
   </section>
 
@@ -1514,6 +1650,40 @@
   }
   .err.at-form {
     margin: 0 0 0.6rem;
+  }
+  /* Changing the key: folded away by default, because it is rare and irreversible in
+     the one sense that matters — the old copy stops working. */
+  .change-secret {
+    margin-top: 0.9rem;
+  }
+  .change-secret summary {
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: var(--text);
+  }
+  .change-secret .hint {
+    margin-top: 0.5rem;
+  }
+  .change-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .change-form .key {
+    margin: 0;
+    padding: 0;
+    background: none;
+    border: 0;
+    flex-wrap: wrap;
+  }
+  .change-form .check input {
+    flex: none;
+    min-width: 0;
+  }
+  .change-form .go {
+    align-self: flex-start;
+  }
+  .change-form .err.at-form {
+    margin: 0;
   }
   .recovery a {
     color: var(--primary);

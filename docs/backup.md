@@ -425,10 +425,25 @@ already draws, and the adapter does not move it:
 path from an app name would be a second definition of the disk layout, and the two would
 disagree at restore time.
 
-**Key escrow reads the file, never the engine.** `repository.password` is read from
-`AppDataShared/backup/<engine>/` directly, because the moment the key matters most is the
-moment the box is broken — an escrow path that needs a working engine container is an
-escrow path that fails exactly when it is needed. The adapter is not consulted.
+**Key escrow reads the file, never the engine.** Each engine's secret is read from its engine
+directory directly, because the moment the key matters most is the moment the box is broken —
+an escrow path that needs a working engine container is an escrow path that fails exactly when
+it is needed. The adapter is not consulted, and neither are its capabilities: *which* file holds
+the secret, what the engine calls it and whether it needs escrow are declared in `adapter.json`
+(below), which is a file too.
+
+**The secret is the engine's to describe.** `adapter.json` carries an optional block:
+
+```json
+"secret": {"label": "Kopia repository password", "file": "repository.password", "escrow": true}
+```
+
+`label` is the engine's own word for it, and reaches the page, the mail and the incident
+unchanged — whoever restores with kopia on another machine is asked for a "repository password",
+and that is what the mail should have called it. `file` is a bare name inside the engine directory
+(anything with a path in it is refused). `escrow` says the file is the only copy. A descriptor
+without the block — every one written before it — means what such boxes always meant:
+`repository.password`, escrowed when `Caps.KeyEscrow` says so, and the generic wording.
 
 ---
 
@@ -752,7 +767,7 @@ assuming the flags.
 
 > **The master password is generated on the PCS and never reaches Yundera.**
 
-It lives at `AppDataShared/backup/<engine>/repository.password`, mode 0600. It has to
+It lives in the engine directory — `repository.password` for kopia — mode 0600. It has to
 stay on the box — an unattended nightly backup cannot prompt for it.
 
 The user takes their own copy: the dashboard shows the key on demand, and Maison
@@ -766,6 +781,37 @@ The consequence is accepted rather than mitigated: a user who keeps no copy lose
 the backups, and no support path exists. Any future softening has to preserve the
 first line — client-side wrapping under a user credential with only ciphertext stored
 server-side is the shape that does; server-side derivation is the shape that does not.
+
+### Changing the repository password
+
+`POST /api/backup/engines/{id}/secret` with `{key, confirmed: true}` replaces the secret, for an
+engine that declares `Caps.ChangeSecret` (kopia's adapter from 1.2.0). The usual reason is the one the
+automatic mail creates: a copy of the key has travelled in plaintext through a relay, and changing it
+is how that copy is retired.
+
+**What it is, and is not.** kopia re-wraps the repository's master key under the new password
+(`repository change-password`). Nothing is re-encrypted, every existing snapshot stays readable with
+the new key, and the old one stops opening the repository at once — the mailed copy included. Anyone
+who already copied the repository's key material *together with* the old password keeps access; a
+clean break needs a new repository, which this is not. The page says so in those words.
+
+**The new key is not mailed.** Mailing it the way the old one went would undo the point. The page
+generates one (33 random bytes, base64 — the host's own shape) or takes a typed one of at least 16
+characters, has the user enter it a second time and tick that they have saved it, and the receipt
+records it as held by the user. The mail button still works for anyone who wants it anyway.
+
+**Who writes what.** Maison writes `repository.password.next` (0600) and runs the adapter's
+`change-secret` verb; the adapter asks the repository to accept the new key, then promotes the file.
+Unlike the recovery candidate, **Maison never removes `.next`**: between the repository accepting the
+new key and the file being swapped, `.next` is the only working copy. The adapter removes it once the
+outcome is known, and when it is not (a deadline, a killed container) its next invocation asks the
+repository which key it takes and promotes or drops `.next` accordingly. See the adapter's
+`docs/protocol.md`.
+
+Refused while a backup run or a user-data restore is in progress (409), on an engine waiting for
+recovery or not configured (409), and with a 400 when the box's own key no longer opens the
+repository. kopia's own UI container holds the old key from its environment and has to be restarted
+afterwards, as it does after a credential rotation.
 
 ---
 
@@ -804,12 +850,21 @@ that matters is the day the disk is gone — at which point a plaintext secret s
 the difference between a restore and nothing. Where the relay is Yundera's, the caveat above applies
 in full and is the accepted cost; a deployment that supplies its own SMTP credentials avoids it.
 
-The mail is sent **once per box**, and "once" is anchored on a receipt file rather than on anyone
-remembering:
+The mail is sent **once per engine and per key**, and "once" is anchored on a receipt file per
+engine rather than on anyone remembering:
 
 ```
-${StateDir}/backup-key-sent.json     0600   {"sent_at":…, "to":…, "engine":…, "auto":true, "fingerprint":…}
+${StateDir}/backup-secret/<engine>.json   0600   {"sent_at":…, "to":…, "engine":…, "auto":true, "fingerprint":…}
 ```
+
+Every engine whose secret needs escrow is covered, not the first one found: a second engine with a
+key only this box holds is exactly as unrecoverable as the first. The routes are per engine too —
+`POST /api/backup/engines/{id}/secret/show`, `…/secret/email`.
+
+The receipt was box-wide before (`${StateDir}/backup-key-sent.json`). That file is **read, never
+moved or written**: an engine with no receipt of its own inherits it when it names that engine or
+names none (kopia was the only engine with a key), and the first per-engine receipt supersedes it.
+So an upgrade mails nothing, and there is no migration step that could lose a receipt.
 
 `fingerprint` names *which* key the receipt covers: the first 16 hex digits of the password's
 SHA-256 — enough to notice the key changed, nothing that gives it back. A space reset from the
@@ -818,9 +873,15 @@ deployment's dashboard makes the box mint a new key, and without this the receip
 key on disk no longer matches the receipt, and the check runs from the five-minute detector loop as
 well as at boot, once per pass, so a key that changes while Maison is running is mailed without a
 restart. A receipt **without** a fingerprint — every receipt written before it existed — counts as
-matching, so an upgrade mails nothing. A key the user typed into the recovery form is recorded as
-`"held_by_user": true` with its fingerprint and no `sent_at`: they demonstrably hold a copy, and
-mailing it back would only add a second plaintext one to an inbox.
+matching, so an upgrade mails nothing. A key the user typed in — into the recovery form, or as the
+new one when [changing it](#changing-the-repository-password) — is recorded as `"held_by_user": true`
+with its fingerprint and no `sent_at`: they demonstrably hold a copy, and mailing it back would only
+add a second plaintext one to an inbox.
+
+While an escrowed secret has no receipt matching the key on disk, a **warning** incident
+`backup.secret:<engine>` says it exists only on this server. It waits for two detector passes, so a
+fresh box waiting for its relay before the first mail does not flash it, and is skipped while the
+engine waits for recovery — `backup.recovery` already says what is wrong there.
 
 Written *after* a successful send, so a crash mid-send costs a duplicate mail rather than a key that
 is never handed over — the right way round. A malformed receipt reads as *already sent*, for the

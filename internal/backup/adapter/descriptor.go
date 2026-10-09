@@ -69,6 +69,23 @@ type Descriptor struct {
 	// networking, and "default" for one that has to reach a bucket. It describes the
 	// container the host deployed; Maison only restates it for the one-shot path.
 	Network string `json:"network,omitempty"`
+
+	// Secret is the engine's declaration of the key that opens its backups — see
+	// apps.SecretSpec. It lives here rather than in the adapter's capabilities for the
+	// reason escrow reads the key from disk: the descriptor is a file, readable on a box
+	// whose engine container is down, and capabilities are not.
+	//
+	// Absent on a descriptor written before it existed. That is not "no secret": the
+	// caller falls back to repository.password and Caps.KeyEscrow, which is what every
+	// such box has always meant.
+	Secret *SecretDescriptor `json:"secret,omitempty"`
+}
+
+// SecretDescriptor is the "secret" block of adapter.json.
+type SecretDescriptor struct {
+	Label  string `json:"label,omitempty"`
+	File   string `json:"file"`
+	Escrow bool   `json:"escrow"`
 }
 
 const defaultEntrypoint = "/usr/local/bin/maison-engine"
@@ -97,6 +114,15 @@ func (d Descriptor) validate() error {
 	}
 	if d.Image == "" {
 		return fmt.Errorf("descriptor for %q names no image", d.EngineID)
+	}
+	if d.Secret != nil {
+		// A bare file name, so the secret cannot be declared to live anywhere but the
+		// engine's own directory: what Maison shows and mails is what that directory
+		// holds, never a path someone else chose.
+		f := d.Secret.File
+		if f == "" || f != filepath.Base(f) || f == "." || f == ".." {
+			return fmt.Errorf("descriptor for %q declares secret file %q, which is not a plain file name", d.EngineID, f)
+		}
 	}
 	return nil
 }

@@ -63,6 +63,16 @@ type Fake struct {
 	RecoverResult apps.RecoverResult
 	RecoverErr    error
 
+	// Declared is the secret this fake declares through apps.SecretHolder. Nil declares
+	// nothing, which is how a fake stands in for an adapter.json written before the
+	// declaration existed — the caller then falls back to what Cap implies.
+	Declared *apps.SecretSpec
+	// SecretPath, when set, is where a successful ChangeSecret writes the new key — what
+	// the real adapter's promotion does to repository.password. ChangeErr, when set,
+	// fails every change with it.
+	SecretPath string
+	ChangeErr  error
+
 	mu    sync.Mutex
 	store map[string][]apps.Backup // app -> committed backups
 	// ListCalls counts per-app listings, and ListAllCalls bulk ones. They are counters
@@ -119,6 +129,41 @@ func NewRecovering(id, key string) *Fake {
 	f.Stat = &apps.EngineStatus{NeedsRecovery: true, Detail: "storage holds a repository this box has no key for"}
 	f.RecoverKey = key
 	return f
+}
+
+// Secret reports Declared. See apps.SecretHolder.
+func (f *Fake) Secret() (apps.SecretSpec, bool) {
+	if f.Declared == nil {
+		return apps.SecretSpec{}, false
+	}
+	return *f.Declared, true
+}
+
+// NewChanging builds an offsite engine whose repository secret is held in path and can
+// be changed — the shape of a provisioned kopia box.
+func NewChanging(id, path string) *Fake {
+	f := NewFake(id, apps.Caps{Offsite: true, InPlaceRestore: true, Retention: true,
+		Encrypted: true, KeyEscrow: true, Recover: true, ChangeSecret: true})
+	f.SecretPath = path
+	return f
+}
+
+// ChangeSecret installs key at SecretPath. Recorded as "change-secret" alone, for the
+// reason Recover does not record its key.
+func (f *Fake) ChangeSecret(ctx context.Context, key string) error {
+	f.record("change-secret")
+	if f.ChangeErr != nil {
+		return f.ChangeErr
+	}
+	if key == "" {
+		return apps.ErrWrongKey
+	}
+	if f.SecretPath != "" {
+		if err := os.WriteFile(f.SecretPath, []byte(key), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Recover checks the key against RecoverKey. Recorded as "recover" alone: the key is a

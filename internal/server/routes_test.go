@@ -108,8 +108,10 @@ func TestBackupEngineRoutesAreReachableWithoutDockerOrARepository(t *testing.T) 
 		{"GET", "/api/backups", "", http.StatusOK, `"apps"`},
 		{"PUT", "/api/backup/config", `{"enabled":false,"hour":4,"minute":15}`, http.StatusOK, `"hour":4`},
 		{"PUT", "/api/backup/config", `{"engine":"nosuchengine"}`, http.StatusBadRequest, "unknown backup engine"},
-		{"POST", "/api/backup/email-key", "", http.StatusBadRequest, "no mail server configured"},
-		{"POST", "/api/backup/key", "", http.StatusBadRequest, "no repository password on this box"},
+		{"POST", "/api/backup/engines/local/secret/email", "", http.StatusBadRequest, "no mail server configured"},
+		{"POST", "/api/backup/engines/local/secret/show", "", http.StatusBadRequest, "this backup engine holds no secret"},
+		{"POST", "/api/backup/engines/nope/secret/show", "", http.StatusNotFound, "unknown backup engine"},
+		{"POST", "/api/backup/engines/local/secret", `{"key":"0123456789abcdef","confirmed":true}`, http.StatusNotImplemented, "cannot change its secret"},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 		rec := httptest.NewRecorder()

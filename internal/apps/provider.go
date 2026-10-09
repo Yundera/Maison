@@ -250,6 +250,42 @@ type Recoverer interface {
 	Recover(ctx context.Context, key string) (RecoverResult, error)
 }
 
+// SecretSpec is an engine's own account of the secret that opens its backups: what the
+// engine calls it, which file in its directory holds it, and whether that file is the
+// only copy — in which case Maison has to get a copy off the box (escrow).
+//
+// Declared by the engine so the words reach the user unchanged. Whoever ends up
+// restoring with the engine's own tools on another machine is asked for a "repository
+// password", not for whatever Maison would have called it.
+//
+// **It is read from disk, never from a running engine.** Escrow matters most when the
+// box is broken, and a secret whose location had to be asked of a working engine
+// container would be unreachable exactly then.
+type SecretSpec struct {
+	// Label is the engine's name for the secret, e.g. "Kopia repository password".
+	// Empty means the engine did not say, and the page uses its generic wording.
+	Label string
+	// File is the secret's basename inside the engine directory.
+	File string
+	// Escrow is whether the secret exists nowhere but this box.
+	Escrow bool
+}
+
+// SecretHolder is an engine that declares its secret. ok is false when it declares
+// nothing, and the caller falls back to what the capabilities imply.
+type SecretHolder interface {
+	Secret() (spec SecretSpec, ok bool)
+}
+
+// SecretChanger is implemented by an engine that can replace its repository secret
+// in place (Caps.ChangeSecret). Existing backups stay readable with the new key; the
+// old one stops opening anything.
+//
+// The key is the user's own secret. An implementation must never log it.
+type SecretChanger interface {
+	ChangeSecret(ctx context.Context, key string) error
+}
+
 // Caps describes an engine's abilities. Zero values are the conservative answer,
 // so a new field defaults to "this engine cannot", not "this engine can".
 type Caps struct {
@@ -315,6 +351,11 @@ type Caps struct {
 	// the user types (see Recoverer). An engine built before the verb existed answers
 	// false, which is what hides the form rather than offering a button that fails.
 	Recover bool
+
+	// ChangeSecret is true when this engine can replace the key that opens its
+	// repository, on a box that holds the current one (see SecretChanger). False for an
+	// engine built before the verb, which hides the change form.
+	ChangeSecret bool
 }
 
 // Trigger is what caused a backup, and therefore which engines receive it.

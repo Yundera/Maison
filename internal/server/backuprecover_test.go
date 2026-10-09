@@ -105,14 +105,14 @@ func TestARecoveredKeyIsRecordedAsHeldNotMailed(t *testing.T) {
 	if rec := postRecover(t, s, "kopia", `{"key":"k"}`); rec.Code != http.StatusOK {
 		t.Fatalf("recover: %d (%s)", rec.Code, rec.Body.String())
 	}
-	rec, sent := readKeySent(cfg)
+	rec, sent := readKeySent(cfg, "kopia")
 	if !sent || !rec.HeldByUser || !rec.SentAt.IsZero() {
 		t.Fatalf("receipt = %+v, want held-by-user with no send date", rec)
 	}
 	if rec.Fingerprint != keyFingerprint("k") {
 		t.Errorf("receipt fingerprint = %q, want the recovered key's", rec.Fingerprint)
 	}
-	if keyNeedsMail(cfg, "k") {
+	if keyNeedsMail(cfg, "kopia", "k") {
 		t.Error("the recovered key still reads as needing a mail")
 	}
 }
@@ -121,33 +121,33 @@ func TestARecoveredKeyIsRecordedAsHeldNotMailed(t *testing.T) {
 // an upgrade from mailing every box's key a second time.
 func TestKeyNeedsMailFollowsTheFingerprint(t *testing.T) {
 	cfg := config.Config{DataRoot: t.TempDir()}
-	if !keyNeedsMail(cfg, "k1") {
+	if !keyNeedsMail(cfg, "kopia", "k1") {
 		t.Error("no receipt: want a send")
 	}
 
 	// A receipt from before fingerprints existed covers whatever key is there.
-	if err := writeKeySent(cfg, keySentRecord{SentAt: time.Now(), To: "u@example.com"}); err != nil {
+	if err := writeKeySent(cfg, "kopia", keySentRecord{SentAt: time.Now(), To: "u@example.com"}); err != nil {
 		t.Fatal(err)
 	}
-	if keyNeedsMail(cfg, "k1") {
+	if keyNeedsMail(cfg, "kopia", "k1") {
 		t.Error("an old receipt without a fingerprint triggered a re-send on upgrade")
 	}
 
-	if err := writeKeySent(cfg, keySentRecord{SentAt: time.Now(), Fingerprint: keyFingerprint("k1")}); err != nil {
+	if err := writeKeySent(cfg, "kopia", keySentRecord{SentAt: time.Now(), Fingerprint: keyFingerprint("k1")}); err != nil {
 		t.Fatal(err)
 	}
-	if keyNeedsMail(cfg, "k1") {
+	if keyNeedsMail(cfg, "kopia", "k1") {
 		t.Error("the key that was mailed reads as needing another mail")
 	}
-	if !keyNeedsMail(cfg, "k2") {
+	if !keyNeedsMail(cfg, "kopia", "k2") {
 		t.Error("a changed key — a reset space — was not re-sent")
 	}
 
 	// Malformed still reads as sent.
-	if err := os.WriteFile(keySentPath(cfg), []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(keySentPath(cfg, "kopia"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if keyNeedsMail(cfg, "k2") {
+	if keyNeedsMail(cfg, "kopia", "k2") {
 		t.Error("a malformed receipt triggered a send")
 	}
 }
@@ -160,7 +160,7 @@ func TestTheDetectorPassMailsAChangedKeyOnce(t *testing.T) {
 	sealed := backuptest.NewFake("kopia", apps.Caps{Encrypted: true, KeyEscrow: true, Offsite: true})
 	s := recoveringServer(t, cfg, sealed)
 	writeEnginePassword(t, cfg, "kopia", "new key")
-	if err := writeKeySent(cfg, keySentRecord{SentAt: time.Now(), Fingerprint: keyFingerprint("old key")}); err != nil {
+	if err := writeKeySent(cfg, "kopia", keySentRecord{SentAt: time.Now(), Fingerprint: keyFingerprint("old key")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -168,7 +168,7 @@ func TestTheDetectorPassMailsAChangedKeyOnce(t *testing.T) {
 		t.Errorf("changed key, no relay: outcome %d, want a retry on the next pass", got)
 	}
 
-	if err := writeKeySent(cfg, keySentRecord{SentAt: time.Now(), Fingerprint: keyFingerprint("new key")}); err != nil {
+	if err := writeKeySent(cfg, "kopia", keySentRecord{SentAt: time.Now(), Fingerprint: keyFingerprint("new key")}); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.tryMailKey(context.Background()); got != keyMailNothing {
@@ -177,7 +177,7 @@ func TestTheDetectorPassMailsAChangedKeyOnce(t *testing.T) {
 
 	// The same box, but its engine says the storage is someone else's repository: any
 	// password lying in its directory is not the user's key.
-	if err := os.Remove(keySentPath(cfg)); err != nil {
+	if err := os.Remove(keySentPath(cfg, "kopia")); err != nil {
 		t.Fatal(err)
 	}
 	sealed.Stat = &apps.EngineStatus{NeedsRecovery: true}

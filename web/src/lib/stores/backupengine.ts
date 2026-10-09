@@ -28,6 +28,17 @@ export interface EngineInfo {
    *  `encrypted`: a repository engine on a box that has never been provisioned still
    *  encrypts, it just has nothing to encrypt with yet. */
   has_key: boolean
+  /** The engine's own name for that key ("Kopia repository password"), so the words
+   *  on the page are the ones the engine's own tools use. Absent when the engine did
+   *  not say, and the page falls back to its generic wording. */
+  secret_label?: string
+  /** Whether the key exists nowhere but this box, so the user has to take a copy. */
+  escrow: boolean
+  /** When a copy of this engine's key last left the box, or that the user typed it in
+   *  themselves. Absent means no copy is known to exist. */
+  secret_sent?: KeySentRecord
+  /** Whether the page may offer to replace the key. */
+  can_change_secret: boolean
   /** What this engine has been told to keep, resolved for it alone. */
   retention?: EngineRetention
   /** Whether the rollback point an update takes lands here. Always and only the local
@@ -231,8 +242,9 @@ export interface KeySentRecord {
   engine?: string
   /** True when Maison sent it on its own at boot rather than the user asking. */
   auto?: boolean
-  /** True when nothing was mailed because the user typed this key in themselves, to
-   *  reconnect a rebuilt box. `sent_at` is the zero time then. */
+  /** True when nothing was mailed because the user typed this key in themselves — to
+   *  reconnect a rebuilt box, or as the new one when changing it. `sent_at` is the zero
+   *  time then. */
   held_by_user?: boolean
 }
 
@@ -243,10 +255,6 @@ export interface BackupStatus {
   run: RunState
   config: BackupConfig
   targets?: string[]
-  /** False on a box whose repository has never been provisioned: there is no key to
-   *  show or mail, and the page offers neither. */
-  has_key: boolean
-  key_sent?: KeySentRecord
 
   /** When the schedule last ran, and whether it was failing. Absent on a box that
    *  has never run one.
@@ -274,18 +282,35 @@ export function runBackupNow(): Promise<unknown> {
   return api.post('/api/backup/run')
 }
 
-/** Mails the repository encryption key. The only copy that exists off the box —
- *  see the warning the settings page shows next to it. */
-export function emailBackupKey(): Promise<unknown> {
-  return api.post('/api/backup/email-key')
+const secretPath = (id: string) => `/api/backup/engines/${encodeURIComponent(id)}/secret`
+
+/** Mails one engine's key. The only copy that exists off the box — see the warning the
+ *  settings page shows next to it. */
+export function emailEngineSecret(id: string): Promise<unknown> {
+  return api.post(`${secretPath(id)}/email`)
 }
 
-/** Reads the repository encryption key for display.
+/** Reads one engine's key for display.
  *
  *  A POST although it only reads: the response body is the key itself, and a GET
  *  would leave it in history, prefetches and anything that shares a URL. */
-export function showBackupKey(): Promise<{ key: string }> {
-  return api.post<{ key: string }>('/api/backup/key')
+export function showEngineSecret(id: string): Promise<{ key: string }> {
+  return api.post<{ key: string }>(`${secretPath(id)}/show`)
+}
+
+/** Replaces one engine's key. Existing backups stay readable with the new one; the old
+ *  one — and every copy of it, mailed or not — stops opening anything. `confirmed` is
+ *  the user's statement that they have saved the new key: it is not mailed. */
+export function changeEngineSecret(id: string, key: string): Promise<unknown> {
+  return api.post(secretPath(id), { key, confirmed: true })
+}
+
+/** A new key for the change form: 33 random bytes, base64 — the same shape the host
+ *  side generates, so a key made here is no weaker than the one it replaces. */
+export function generateSecret(): string {
+  const bytes = new Uint8Array(33)
+  crypto.getRandomValues(bytes)
+  return btoa(String.fromCharCode(...bytes))
 }
 
 /** What reconnecting to an existing repository found there. `pinned` can fall short of

@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -341,8 +342,8 @@ func (p *Provider) Recover(ctx context.Context, key string) (apps.RecoverResult,
 	if key == "" {
 		return apps.RecoverResult{}, fmt.Errorf("%w: no key was given", ErrWrongKey)
 	}
-	p.recoverMu.Lock()
-	defer p.recoverMu.Unlock()
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
 
 	// Whatever happens next, the cached status is wrong afterwards — connected on
 	// success, and on failure still worth asking again rather than serving a probe
@@ -360,6 +361,54 @@ func (p *Provider) Recover(ctx context.Context, key string) (apps.RecoverResult,
 		return apps.RecoverResult{}, err
 	}
 	return apps.RecoverResult{Snapshots: rr.Snapshots, Pinned: rr.Pinned}, nil
+}
+
+// nextFile is where a replacement key waits while the adapter installs it. Named by the
+// protocol, and — unlike the candidate — the adapter's alone to remove: between the
+// repository accepting the new key and the file being swapped, it is the only copy of a
+// key that works. See ChangeSecret.
+const nextFile = "repository.password.next"
+
+// ChangeSecret replaces the key that opens the repository with the one given.
+//
+// Maison writes the key to repository.password.next and the adapter does the rest:
+// asks the repository to accept it, then promotes the file. Everything already in the
+// repository stays readable with the new key; the old one stops opening anything.
+//
+// **.next is never removed here**, which is the opposite of Recover and deliberate. A
+// change cut short — the deadline, a killed container — may have reached the repository
+// and not the file, and then .next is the one key that still works. The adapter removes
+// it when the outcome is known and settles it on its next invocation when it is not. The
+// one exception is an engine that answered "not supported": it never looked at the
+// file, and nothing else ever will.
+func (p *Provider) ChangeSecret(ctx context.Context, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("%w: no key was given", ErrWrongKey)
+	}
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	defer p.Invalidate()
+
+	path := filepath.Join(p.dir(), nextFile)
+	if err := writeSecret(path, key); err != nil {
+		return fmt.Errorf("%s: could not hand the key to the engine: %w", p.ID(), err)
+	}
+	err := p.call(ctx, changeSecretTimeout, nil, nil, "change-secret")
+	if errors.Is(err, apps.ErrNotSupported) {
+		_ = os.Remove(path)
+	}
+	return err
+}
+
+// Secret is the engine's declared secret, from its descriptor. ok is false for a
+// descriptor that declares none; see Descriptor.Secret.
+func (p *Provider) Secret() (apps.SecretSpec, bool) {
+	if p.desc.Secret == nil {
+		return apps.SecretSpec{}, false
+	}
+	s := p.desc.Secret
+	return apps.SecretSpec{Label: s.Label, File: s.File, Escrow: s.Escrow}, true
 }
 
 // writeSecret writes a file only its owner can read, through a temporary in the same

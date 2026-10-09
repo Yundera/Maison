@@ -29,7 +29,10 @@ const (
 	// because a user is watching a spinner; generous, because a space with years of
 	// nightly history is thousands of pins.
 	recoverTimeout = 15 * time.Minute
-	unbounded      = 0
+	// changeSecretTimeout covers one rewrite of the repository's key blob — seconds —
+	// and, after an ambiguous failure, the two probes that settle which key it took.
+	changeSecretTimeout = 3 * time.Minute
+	unbounded           = 0
 )
 
 // engineCaps is the root this engine runs as, narrowed.
@@ -59,9 +62,10 @@ type Provider struct {
 	statusAt time.Time
 	caps     *apps.Caps
 
-	// recoverMu serialises Recover. There is one candidate file per engine directory,
-	// and two attempts racing would have one test the other's key.
-	recoverMu sync.Mutex
+	// secretMu serialises Recover and ChangeSecret. There is one candidate and one .next
+	// file per engine directory, and two attempts racing would have one install or test
+	// the other's key.
+	secretMu sync.Mutex
 }
 
 // New builds a provider from a descriptor. It performs no I/O: a provider is

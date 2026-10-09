@@ -80,6 +80,10 @@ const (
 	// than nothing, because a pause is meant to end and the one way it goes wrong is
 	// being forgotten.
 	KindBackupPaused = "backup.paused"
+	// KindBackupSecret is an engine secret that exists only on this box — never mailed,
+	// never taken by the user. Nothing is failing, but losing the server would lose every
+	// backup with it. One per engine, "backup.secret:<engine>".
+	KindBackupSecret = "backup.secret"
 	KindDiskFull     = "disk.full"
 	KindDiskUnseen   = "disk.unseen"
 	KindAppUnhealthy = "app.unhealthy"

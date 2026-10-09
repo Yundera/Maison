@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backup/backuptest"
@@ -27,39 +29,52 @@ const escrowEngine = "sealed"
 // sealedServer is a box provisioned with one encrypting engine.
 //
 // It builds the Server directly rather than through New() because what these tests are
-// about is what escrowKey finds in the SET, and a Server built by New() under a temp
+// about is what the escrow finds in the SET, and a Server built by New() under a temp
 // root discovers no engines at all. The fake stands in for the adapter a provisioned
-// box would have registered; what it has to get right is the one thing escrowKey asks
-// of an engine, which is Caps.KeyEscrow.
-func sealedServer(t *testing.T, cfg config.Config) *Server {
+// box would have registered.
+func sealedServer(t *testing.T, cfg config.Config, engines ...apps.Provider) *Server {
 	t.Helper()
+	if len(engines) == 0 {
+		engines = []apps.Provider{backuptest.NewFake(escrowEngine, apps.Caps{Encrypted: true, KeyEscrow: true, Offsite: true})}
+	}
 	return &Server{
 		cfg:        cfg,
-		engines:    backup.New(apps.NewLocalProvider(cfg), backuptest.NewFake(escrowEngine, apps.Caps{Encrypted: true, KeyEscrow: true, Offsite: true})),
+		engines:    backup.New(append([]apps.Provider{apps.NewLocalProvider(cfg)}, engines...)...),
 		backupConf: backupconfig.New(filepath.Join(cfg.StateDir(), "backup.json")),
 	}
 }
 
 // writePassword renders the repository password the host-side script would have put
 // there — the only thing that makes a box "provisioned" as far as this code is
-// concerned. Which engine the escrow *chooses* is a capability question, asserted
-// separately in TestEscrowKeyPicksTheEngineByCapability.
+// concerned.
 func writePassword(t *testing.T, cfg config.Config, pw string) {
 	t.Helper()
 	writeEnginePassword(t, cfg, escrowEngine, pw)
 }
 
+// secretRoute serves one per-engine secret route the way the router does.
+func secretRoute(t *testing.T, pattern string, h http.HandlerFunc, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := chi.NewRouter()
+	r.Post(pattern, h)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(body)))
+	return rec
+}
+
+func showSecret(t *testing.T, s *Server, engine string) *httptest.ResponseRecorder {
+	t.Helper()
+	return secretRoute(t, "/api/backup/engines/{id}/secret/show", s.handleShowSecret,
+		"/api/backup/engines/"+engine+"/secret/show", "")
+}
+
 // The key has to be reachable from the dashboard, because showing it there is the copy
 // path that keeps the secret on the box — the whole reason it sits next to the mail.
-func TestShowKeyReturnsTheRepositoryPassword(t *testing.T) {
-	root := t.TempDir()
-	cfg := config.Config{DataRoot: root}
+func TestShowSecretReturnsTheRepositoryPassword(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
 	writePassword(t, cfg, "correct horse battery staple")
 
-	srv := sealedServer(t, cfg)
-	rec := httptest.NewRecorder()
-	srv.handleShowKey(rec, httptest.NewRequest("POST", "/api/backup/key", nil))
-
+	rec := showSecret(t, sealedServer(t, cfg), escrowEngine)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -77,37 +92,63 @@ func TestShowKeyReturnsTheRepositoryPassword(t *testing.T) {
 	}
 }
 
-// The status page decides what to offer from these two facts, so both have to be
-// true for the right reasons: has_key is what hides a button that would show
-// something that does not exist, and key_sent is what lets the page say whether a
-// copy has ever left the box.
-func TestStatusReportsWhetherAKeyExistsAndHasBeenMailed(t *testing.T) {
-	root := t.TempDir()
-	cfg := config.Config{DataRoot: root}
+// Each engine answers for its own secret: an unknown engine is a 404, one that holds no
+// secret (the local engine) and one not yet provisioned are a 400.
+func TestShowSecretIsPerEngine(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	s := sealedServer(t, cfg)
+	for _, tc := range []struct {
+		engine string
+		want   int
+	}{{"nope", http.StatusNotFound}, {apps.EngineLocal, http.StatusBadRequest}, {escrowEngine, http.StatusBadRequest}} {
+		if rec := showSecret(t, s, tc.engine); rec.Code != tc.want {
+			t.Errorf("%s: %d, want %d (%s)", tc.engine, rec.Code, tc.want, rec.Body.String())
+		}
+	}
+}
 
-	get := func() string {
+// The status page decides what to offer from these facts, so each has to be true for
+// the right reasons, and per engine: has_key hides a button that would show something
+// that does not exist, secret_sent says whether a copy has ever left the box, and the
+// label is the engine's own name for the secret.
+func TestStatusReportsEachEnginesSecret(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	sealed := backuptest.NewFake(escrowEngine, apps.Caps{Encrypted: true, KeyEscrow: true, Offsite: true})
+	sealed.Declared = &apps.SecretSpec{Label: "Kopia repository password", File: "repository.password", Escrow: true}
+
+	engine := func() engineInfo {
 		rec := httptest.NewRecorder()
-		sealedServer(t, cfg).handleBackupStatus(rec, httptest.NewRequest("GET", "/api/backup/status", nil))
-		return rec.Body.String()
+		sealedServer(t, cfg, sealed).handleBackupStatus(rec, httptest.NewRequest("GET", "/api/backup/status", nil))
+		var out engineStatus
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range out.Engines {
+			if e.ID == escrowEngine {
+				return e
+			}
+		}
+		t.Fatalf("no %s engine in %s", escrowEngine, rec.Body.String())
+		return engineInfo{}
 	}
 
-	if body := get(); !strings.Contains(body, `"has_key":false`) {
-		t.Errorf("unprovisioned box reports %s, want has_key false", body)
+	if e := engine(); e.HasKey || !e.Escrow || e.SecretLabel != "Kopia repository password" {
+		t.Errorf("unprovisioned engine = %+v, want no key, escrow, and the declared label", e)
 	}
 	writePassword(t, cfg, "s3cret")
-	body := get()
-	if !strings.Contains(body, `"has_key":true`) {
-		t.Errorf("provisioned box reports %s, want has_key true", body)
+	if e := engine(); !e.HasKey || e.SecretSent != nil {
+		t.Errorf("provisioned engine = %+v, want a key and no receipt yet", e)
 	}
-	if strings.Contains(body, `"key_sent"`) {
-		t.Errorf("reports %s, want no receipt before anything has been mailed", body)
-	}
-
-	if err := writeKeySent(cfg, keySentRecord{SentAt: time.Now(), To: "u@example.com", Auto: true}); err != nil {
+	if err := writeKeySent(cfg, escrowEngine, keySentRecord{SentAt: time.Now(), To: "u@example.com", Fingerprint: keyFingerprint("s3cret")}); err != nil {
 		t.Fatal(err)
 	}
-	if body := get(); !strings.Contains(body, `"to":"u@example.com"`) {
-		t.Errorf("reports %s, want the receipt once a copy has been mailed", body)
+	if e := engine(); e.SecretSent == nil || e.SecretSent.To != "u@example.com" {
+		t.Errorf("engine = %+v, want the receipt once a copy has been mailed", e)
+	}
+	// A receipt for a key that has since changed describes a copy that opens nothing.
+	writePassword(t, cfg, "changed")
+	if e := engine(); e.SecretSent != nil {
+		t.Errorf("engine = %+v, want no receipt for a key that is no longer the one on disk", e)
 	}
 }
 
@@ -115,17 +156,62 @@ func TestStatusReportsWhetherAKeyExistsAndHasBeenMailed(t *testing.T) {
 // restart", so its read has to fail towards silence.
 func TestAMalformedReceiptCountsAsAlreadySent(t *testing.T) {
 	cfg := config.Config{DataRoot: t.TempDir()}
-	if _, sent := readKeySent(cfg); sent {
+	if _, sent := readKeySent(cfg, escrowEngine); sent {
 		t.Fatal("no receipt file reads as sent")
 	}
-	if err := os.MkdirAll(cfg.StateDir(), 0o755); err != nil {
+	path := keySentPath(cfg, escrowEngine)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(keySentPath(cfg), []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, sent := readKeySent(cfg); !sent {
+	if _, sent := readKeySent(cfg, escrowEngine); !sent {
 		t.Error("a truncated receipt reads as never sent — which mails the key again every boot")
+	}
+}
+
+// The box-wide receipt from before receipts were per engine still counts, so an upgrade
+// mails nothing: for the engine it names, for every engine when it names none (written
+// before the engine field), and — malformed — for every engine. A receipt naming another
+// engine says nothing about this one, and the engine's own receipt wins once written.
+func TestTheLegacyReceiptStillCounts(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	writeLegacy := func(body string) {
+		t.Helper()
+		if err := os.MkdirAll(cfg.StateDir(), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(legacyKeySentPath(cfg), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeLegacy(`{"sent_at":"2026-01-01T00:00:00Z","engine":"kopia","fingerprint":"` + keyFingerprint("k") + `"}`)
+	if keyNeedsMail(cfg, "kopia", "k") {
+		t.Error("the legacy receipt for this engine and key did not count — an upgrade would re-mail it")
+	}
+	if !keyNeedsMail(cfg, "other", "k") {
+		t.Error("a legacy receipt naming another engine covered this one")
+	}
+
+	writeLegacy(`{"sent_at":"2026-01-01T00:00:00Z"}`)
+	if keyNeedsMail(cfg, "kopia", "anything") {
+		t.Error("a legacy receipt from before the engine field did not count")
+	}
+	writeLegacy(`{not json`)
+	if keyNeedsMail(cfg, "kopia", "anything") {
+		t.Error("a malformed legacy receipt triggered a send")
+	}
+
+	if err := writeKeySent(cfg, "kopia", keySentRecord{SentAt: time.Now(), Fingerprint: keyFingerprint("old")}); err != nil {
+		t.Fatal(err)
+	}
+	if !keyNeedsMail(cfg, "kopia", "new") {
+		t.Error("the engine's own receipt for an older key was overridden by the legacy one")
+	}
+	if _, err := os.Stat(legacyKeySentPath(cfg)); err != nil {
+		t.Errorf("the legacy receipt was moved or removed: %v", err)
 	}
 }
 
@@ -139,7 +225,7 @@ func TestEnsureKeyEmailedReturnsWhenThereIsNothingToSend(t *testing.T) {
 		{"no repository on the box", func(config.Config) {}},
 		{"a copy has already been mailed", func(cfg config.Config) {
 			writePassword(t, cfg, "s3cret")
-			if err := writeKeySent(cfg, keySentRecord{SentAt: time.Now()}); err != nil {
+			if err := writeKeySent(cfg, escrowEngine, keySentRecord{SentAt: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -147,7 +233,7 @@ func TestEnsureKeyEmailedReturnsWhenThereIsNothingToSend(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{DataRoot: t.TempDir()}
 			tc.setup(cfg)
-			s := &Server{cfg: cfg, backupConf: backupconfig.New(filepath.Join(cfg.StateDir(), "backup.json"))}
+			s := sealedServer(t, cfg)
 
 			done := make(chan struct{})
 			go func() { s.EnsureKeyEmailed(); close(done) }()
@@ -160,43 +246,58 @@ func TestEnsureKeyEmailedReturnsWhenThereIsNothingToSend(t *testing.T) {
 	}
 }
 
-// Which engine's key gets escrowed comes from Caps.KeyEscrow, not from a named engine.
-//
-// This is what makes a second encrypting engine work without another call site
-// learning its name — and what stops an engine that encrypts with a key the
-// deployment already holds being mailed a secret nobody needed.
-func TestEscrowKeyPicksTheEngineByCapability(t *testing.T) {
+// Which engines' secrets get escrowed comes from what each engine declares — or, for one
+// that declares nothing, from Caps.KeyEscrow — never from a named engine, and never just
+// the first: a second engine with a key only this box holds is exactly as unrecoverable.
+func TestEscrowCoversEveryEngineThatNeedsIt(t *testing.T) {
 	cfg := config.Config{DataRoot: t.TempDir()}
 
-	// The escrowing engine is registered SECOND on purpose: picking the first engine
-	// that happens to have a password file would pass a test where it is first.
 	plain := backuptest.NewFake("plain", apps.Caps{})
 	sealed := backuptest.NewFake("sealed", apps.Caps{Encrypted: true, KeyEscrow: true})
-	srv := &Server{cfg: cfg, engines: backup.New(plain, sealed)}
+	declared := backuptest.NewFake("declared", apps.Caps{Encrypted: true})
+	declared.Declared = &apps.SecretSpec{Label: "Restic repository password", File: "restic.key", Escrow: true}
+	held := backuptest.NewFake("held", apps.Caps{Encrypted: true, KeyEscrow: true})
+	held.Declared = &apps.SecretSpec{File: "repository.password", Escrow: false}
+	srv := &Server{cfg: cfg, engines: backup.New(plain, sealed, declared, held)}
 
-	// A key sitting in the non-escrowing engine's directory must be ignored: it is not
-	// the secret that is lost with the box.
-	writeEnginePassword(t, cfg, "plain", "not the one")
-	if _, _, err := srv.escrowKey(); err == nil {
-		t.Fatal("escrowKey returned a key from an engine that declares no escrow")
+	got := map[string]engineSecret{}
+	for _, es := range srv.escrowSecrets() {
+		got[es.Engine] = es
+	}
+	if len(got) != 2 {
+		t.Fatalf("escrowed %v, want exactly sealed and declared", got)
+	}
+	if es := got["sealed"]; es.Path != filepath.Join(cfg.BackupEngineDir("sealed"), "repository.password") {
+		t.Errorf("sealed: path %q, want the default repository.password", es.Path)
+	}
+	if es := got["declared"]; es.Path != filepath.Join(cfg.BackupEngineDir("declared"), "restic.key") || es.Spec.Label == "" {
+		t.Errorf("declared: %+v, want the declared file and label", es)
 	}
 
 	writeEnginePassword(t, cfg, "sealed", "correct horse battery staple")
-	engine, pw, err := srv.escrowKey()
-	if err != nil {
-		t.Fatalf("escrowKey: %v", err)
+	if pw, err := got["sealed"].read(); err != nil || pw != "correct horse battery staple" {
+		t.Errorf("read = %q, %v", pw, err)
 	}
-	if engine != "sealed" {
-		t.Errorf("engine = %q, want the engine that declares KeyEscrow", engine)
+}
+
+// The mail carries the engine's own name for its secret, so whoever restores with the
+// engine's tools on another machine recognises what they are being asked for.
+func TestTheMailUsesTheEnginesName(t *testing.T) {
+	spec := apps.SecretSpec{Label: "Kopia repository password"}
+	if got := keyMailSubject(spec); got != "Your Kopia repository password" {
+		t.Errorf("subject = %q", got)
 	}
-	if pw != "correct horse battery staple" {
-		t.Errorf("key = %q, want the sealed engine's password", pw)
+	if body := keyMailBody(spec, "pw"); !strings.Contains(body, "Kopia repository password") || !strings.Contains(body, "pw") {
+		t.Errorf("body = %q", body)
+	}
+	if got := keyMailSubject(apps.SecretSpec{}); got != "Your backup encryption key" {
+		t.Errorf("undeclared subject = %q, want the generic one", got)
 	}
 }
 
 // writeEnginePassword renders one engine's password the way the host-side script would,
-// with the trailing newline a shell writes — readEnginePassword's trim is what stops
-// that newline becoming part of the key.
+// with the trailing newline a shell writes — the read's trim is what stops that newline
+// becoming part of the key.
 func writeEnginePassword(t *testing.T, cfg config.Config, engine, pw string) {
 	t.Helper()
 	dir := cfg.BackupEngineDir(engine)

@@ -338,3 +338,58 @@ func TestRecoverRefusesAnEmptyKeyWithoutWritingIt(t *testing.T) {
 		t.Error("a blank key left a candidate file behind")
 	}
 }
+
+// The secret block names a file inside the engine directory and nothing else: what
+// Maison shows and mails must be what that directory holds.
+func TestDescriptorSecretIsAPlainFileName(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		ok   bool
+	}{{"repository.password", true}, {"", false}, {"../escape", false}, {"sub/key", false}, {"..", false}, {".", false}} {
+		d := Descriptor{EngineID: "kopia", Image: "img:1", Secret: &SecretDescriptor{File: tc.file}}
+		if err := d.validate(); (err == nil) != tc.ok {
+			t.Errorf("secret file %q: validate = %v, want ok=%v", tc.file, err, tc.ok)
+		}
+	}
+}
+
+// A descriptor that declares its secret hands it over verbatim; one written before the
+// block existed declares nothing, and the caller falls back.
+func TestProviderReportsTheDeclaredSecret(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	if _, ok := New(cfg, Descriptor{EngineID: "kopia", Image: "img:1"}).Secret(); ok {
+		t.Error("a descriptor without a secret block declared one")
+	}
+	p := New(cfg, Descriptor{EngineID: "kopia", Image: "img:1",
+		Secret: &SecretDescriptor{Label: "Kopia repository password", File: "repository.password", Escrow: true}})
+	spec, ok := p.Secret()
+	if !ok || spec.Label != "Kopia repository password" || spec.File != "repository.password" || !spec.Escrow {
+		t.Errorf("Secret = %+v, %v", spec, ok)
+	}
+}
+
+// Caps.ChangeSecret decides whether the page offers the change form, so an adapter that
+// predates the verb must come out false.
+func TestCapsCarryChangeSecret(t *testing.T) {
+	if c := (wireCaps{ChangeSecret: true}).caps(); !c.ChangeSecret {
+		t.Error("changeSecret was not carried through")
+	}
+	if c := (wireCaps{Recover: true}).caps(); c.ChangeSecret {
+		t.Error("an adapter that never said changeSecret was taken to support it")
+	}
+}
+
+// A blank key never reaches the engine directory.
+func TestChangeSecretRefusesAnEmptyKeyWithoutWritingIt(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	p := New(cfg, Descriptor{EngineID: "kopia", Image: "img:1"})
+	if err := os.MkdirAll(p.dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ChangeSecret(context.Background(), " \n"); !errors.Is(err, ErrWrongKey) {
+		t.Errorf("ChangeSecret(blank) = %v, want the wrong-key sentinel", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.dir(), nextFile)); !os.IsNotExist(err) {
+		t.Error("a blank key left a .next file behind")
+	}
+}

@@ -437,11 +437,12 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/backup/status", s.handleBackupStatus)
 		r.Put("/backup/config", s.handlePutBackupConfig)
 		r.Post("/backup/run", s.handleRunBackup)
-		r.Post("/backup/email-key", s.handleEmailKey)
-		// POST rather than GET although it only reads: the response body is the
-		// encryption key, and a GET would park it in history and prefetches. See
-		// handleShowKey.
-		r.Post("/backup/key", s.handleShowKey)
+		// Each engine's own secret. show is a POST rather than a GET although it only
+		// reads: the response body is the secret, and a GET would park it in history and
+		// prefetches. See handleShowSecret. A POST to the bare path changes it.
+		r.Post("/backup/engines/{id}/secret/show", s.handleShowSecret)
+		r.Post("/backup/engines/{id}/secret/email", s.handleEmailSecret)
+		r.Post("/backup/engines/{id}/secret", s.handleChangeSecret)
 		// The rebuilt box: the user types the key they were mailed and the engine
 		// reattaches to the repository already in its space. The body is that key, so
 		// it is a POST for the same reason as the one above. See handleRecoverEngine.

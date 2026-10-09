@@ -11,6 +11,7 @@
   import MonitorPanel from './lib/components/MonitorPanel.svelte'
   import UninstallDialog from './lib/components/UninstallDialog.svelte'
   import InstallHelpModal from './lib/components/InstallHelpModal.svelte'
+  import FeedbackModal from './lib/components/FeedbackModal.svelte'
   import { get } from 'svelte/store'
   import { live } from './lib/live/ws'
   import { subscribeSystem } from './lib/stores/system'
@@ -24,6 +25,7 @@
     monitorOpen,
   } from './lib/stores/ui'
   import { installHelp } from './lib/stores/pwa'
+  import { feedbackOpen } from './lib/stores/feedback'
   import { openStore, start as startRouter } from './lib/route'
   import { loadSettings } from './lib/stores/settings'
 
@@ -120,6 +122,10 @@
 
 {#if $installHelp}
   <InstallHelpModal />
+{/if}
+
+{#if $feedbackOpen}
+  <FeedbackModal />
 {/if}
 
 <style>

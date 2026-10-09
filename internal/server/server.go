@@ -25,6 +25,7 @@ import (
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/feedback"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
@@ -76,6 +77,10 @@ type Server struct {
 	// storage is Settings › Resources › Storage: the data-root scan and the Docker
 	// cleanup (storage.go).
 	storage *storageState
+
+	// feedback is the operator's feedback sink (feedback.go). nil — the normal state
+	// of a stock box — is the feature switched off.
+	feedback *feedback.Client
 }
 
 // New builds the root HTTP handler. A nil-Docker environment still serves the
@@ -108,6 +113,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		hub:       live.NewHub(collector),
 		settings:  settings,
 		incidents: incidents,
+		feedback:  feedback.New(cfg.Feedback),
 	}
 	s.hub.ResourcesSnapshot = s.resourcesSnapshot
 	// The same transport the backup alerts use, resolved on every send rather than
@@ -481,6 +487,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Post("/incidents/{id}/ack", s.handleAckIncident)
 		r.Delete("/incidents/{id}", s.handleResolveIncident)
 		r.Post("/notifications/test", s.handleTestNotification)
+
+		// Top-level for the same reason. See feedback.go.
+		r.Get("/feedback", s.handleGetFeedback)
+		r.Post("/feedback", s.handleSendFeedback)
 
 		r.Get("/settings", s.handleGetSettings)
 		r.Put("/settings", s.handlePutSettings)

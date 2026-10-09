@@ -463,5 +463,18 @@
   "install_ios_step_confirm": "点击“添加”。{app} 会出现在其他应用旁边。",
   "install_ios_note": "Safari 是 iPhone 和 iPad 上唯一能做到这一点的浏览器。",
   "install_host": "将为 {host} 安装。",
-  "install_host_fallback": "{host} 是此服务器的备用地址，而非其自有域名。从该地址安装的应用会在服务器地址变更后失效。请先在域名上打开 {app} 再安装。"
+  "install_host_fallback": "{host} 是此服务器的备用地址，而非其自有域名。从该地址安装的应用会在服务器地址变更后失效。请先在域名上打开 {app} 再安装。",
+  "feedback_send_menu": "发送反馈",
+  "feedback_title": "发送反馈",
+  "feedback_lead": "告诉 {operator} 哪些好用、哪些不好用，或者您希望看到什么。您的消息将发送给运营此服务器的团队。",
+  "feedback_category": "反馈类型",
+  "feedback_category_idea": "建议",
+  "feedback_category_bug": "问题",
+  "feedback_category_other": "其他",
+  "feedback_placeholder": "您想说些什么？",
+  "feedback_attached": "随消息一起发送：{app} 版本 {version} 以及您所在的页面（{page}）。",
+  "feedback_support_instead": "遇到故障需要帮助？请改为联系支持。",
+  "feedback_send": "发送",
+  "feedback_sending": "正在发送…",
+  "feedback_sent": "谢谢 —— 您的反馈已发送给 {operator}。"
 }

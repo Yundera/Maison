@@ -10,6 +10,7 @@ import (
 
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/feedback"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/notify"
 )
@@ -112,6 +113,12 @@ type Config struct {
 	// Read once, unlike Domains and AppEnv, because these are process environment
 	// rather than a file the deployment rewrites while Maison runs.
 	SMTP notify.SMTP
+
+	// Feedback is where the dashboard's "Send feedback" goes, read from FEEDBACK_URL
+	// and FEEDBACK_TOKEN at boot. Both empty is the normal state of a stock box: the
+	// feature then does not exist, rather than showing a form nothing will read. See
+	// internal/feedback and docs/feedback.md.
+	Feedback feedback.Sink
 }
 
 // ReportIncident is Report, tolerating a Config that never wired it.
@@ -166,6 +173,7 @@ func FromEnv() Config {
 			"https://github.com/Yundera/AppStore/archive/refs/heads/main.zip")),
 		BackupEngineContainer: envOr("BACKUP_ENGINE_CONTAINER", "backup-engine"),
 		SMTP:                  smtpFromEnv(),
+		Feedback:              feedbackFromEnv(),
 	}
 	return c
 }
@@ -197,6 +205,19 @@ func smtpFromEnv() notify.SMTP {
 		From:     os.Getenv("SMTP_FROM"),
 		To:       os.Getenv("SMTP_TO"),
 		Security: os.Getenv("SMTP_SECURITY"),
+	}
+}
+
+// feedbackFromEnv reads the deployment's feedback sink.
+//
+// Like SMTP_HOST, FEEDBACK_URL has no default: Maison does not know who operates the
+// box, so there is nobody to guess. A URL without a token is kept as given, and
+// feedback.Sink.Configured refuses it — the boot log says so (cmd/maison) instead of
+// the feature silently not appearing.
+func feedbackFromEnv() feedback.Sink {
+	return feedback.Sink{
+		URL:   strings.TrimSpace(os.Getenv("FEEDBACK_URL")),
+		Token: strings.TrimSpace(os.Getenv("FEEDBACK_TOKEN")),
 	}
 }
 

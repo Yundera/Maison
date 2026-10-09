@@ -68,6 +68,7 @@ The README is the overview. These are **authoritative** and win on any conflict:
 | [`docs/FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md) | Row-by-row scope table vs `casa-img`. |
 | [`docs/backup.md`](./docs/backup.md) | **Design, not yet implemented.** Offsite backup and disaster recovery: the two backup sets, the pluggable engine, scheduling, retention, encryption, and recovery mode. |
 | [`docs/resources.md`](./docs/resources.md) | The **Resources** page: live host breakdown, 30 days of history in a fixed-size ring file, the `HOST_PROC` mount, and the disk / network benchmarks. |
+| [`docs/feedback.md`](./docs/feedback.md) | **Send feedback**: off unless the deployment names a sink (`FEEDBACK_URL` + `FEEDBACK_TOKEN`), and the sink's GET/POST contract. |
 
 > **Reference implementation:** the full CasaOS bundle Maison slims down lives at
 > `D:\workspace\yundera\yundera-root\packages\casa-img` (container path

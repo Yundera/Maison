@@ -463,5 +463,18 @@
   "install_ios_step_confirm": "Tippen Sie auf Hinzufügen. {app} erscheint neben Ihren anderen Apps.",
   "install_ios_note": "Safari ist der einzige Browser auf iPhone und iPad, der das kann.",
   "install_host": "Wird für {host} installiert.",
-  "install_host_fallback": "{host} ist eine Ausweichadresse für diesen Server, nicht seine eigene Domain. Eine von dort installierte App funktioniert nicht mehr, wenn sich die Adresse des Servers ändert. Öffnen Sie {app} zuerst unter seiner Domain und installieren Sie dann."
+  "install_host_fallback": "{host} ist eine Ausweichadresse für diesen Server, nicht seine eigene Domain. Eine von dort installierte App funktioniert nicht mehr, wenn sich die Adresse des Servers ändert. Öffnen Sie {app} zuerst unter seiner Domain und installieren Sie dann.",
+  "feedback_send_menu": "Feedback senden",
+  "feedback_title": "Feedback senden",
+  "feedback_lead": "Sagen Sie {operator}, was funktioniert, was nicht, oder was Sie sich wünschen. Ihre Nachricht geht an die Betreiber dieses Servers.",
+  "feedback_category": "Art des Feedbacks",
+  "feedback_category_idea": "Idee",
+  "feedback_category_bug": "Problem",
+  "feedback_category_other": "Sonstiges",
+  "feedback_placeholder": "Was möchten Sie uns sagen?",
+  "feedback_attached": "Mit Ihrer Nachricht gesendet: {app} Version {version} und die Seite, auf der Sie waren ({page}).",
+  "feedback_support_instead": "Etwas funktioniert nicht? Wenden Sie sich stattdessen an den Support.",
+  "feedback_send": "Senden",
+  "feedback_sending": "Wird gesendet…",
+  "feedback_sent": "Danke — Ihr Feedback wurde an {operator} gesendet."
 }

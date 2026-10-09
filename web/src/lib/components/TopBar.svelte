@@ -5,6 +5,7 @@
   import { openSettings } from '../route'
   import { incidents, loadIncidents, subscribeIncidents } from '../stores/incidents'
   import { canInstall, installed, installHelp, isIOSSafari, promptInstall } from '../stores/pwa'
+  import { feedback, feedbackOpen, loadFeedback } from '../stores/feedback'
 
   let open = $state(false)
 
@@ -69,6 +70,15 @@
   function toggleNewTab() {
     settings.update((s) => ({ ...s, open_in_new_tab: !s.open_in_new_tab }))
   }
+  // Feedback goes to whoever operates this box, and only exists when they asked for
+  // it (internal/feedback). It sits in this menu because it is about the dashboard
+  // the user is looking at, not a setting of the box.
+  loadFeedback()
+  function openFeedback() {
+    open = false
+    feedbackOpen.set(true)
+  }
+
   function toggleWidget(key: string) {
     settings.update((s) => ({ ...s, widgets: { ...s.widgets, [key]: !s.widgets[key] } }))
   }
@@ -132,6 +142,15 @@
               <span>{$t('install_app')}</span>
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 4v10M8 11l4 4 4-4M5 19h14" />
+              </svg>
+            </button>
+          {/if}
+
+          {#if $feedback.enabled}
+            <button class="action" onclick={openFeedback}>
+              <span>{$t('feedback_send_menu')}</span>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 5h14v10H9l-4 4z" />
               </svg>
             </button>
           {/if}

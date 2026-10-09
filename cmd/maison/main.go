@@ -26,6 +26,12 @@ func main() {
 
 	cfg := config.FromEnv()
 
+	// Half a feedback sink is a deployment mistake, not a choice: say so, rather than
+	// let the feature quietly not appear.
+	if (cfg.Feedback.URL == "") != (cfg.Feedback.Token == "") {
+		log.Printf("feedback: FEEDBACK_URL and FEEDBACK_TOKEN must be set together — feedback disabled")
+	}
+
 	// .env.app states what every app receives (see internal/appenv). Create it with
 	// the documented default when the deployment has none, then read it live: it is
 	// the deployment's file, and an edit to it must reach the next app start without
@@ -42,7 +48,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("listening on %s (data root %s)", cfg.Addr, cfg.DataRoot)
+		log.Printf("%s listening on %s (data root %s)", brand.Version, cfg.Addr, cfg.DataRoot)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server error: %v", err)
 		}

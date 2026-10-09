@@ -550,5 +550,18 @@
   "install_ios_step_confirm": "Touchez Ajouter. {app} apparaît parmi vos autres applications.",
   "install_ios_note": "Safari est le seul navigateur sur iPhone et iPad à pouvoir le faire.",
   "install_host": "S'installe pour {host}.",
-  "install_host_fallback": "{host} est une adresse de secours pour ce serveur, pas son propre domaine. Une application installée depuis cette adresse cesse de fonctionner si l'adresse du serveur change. Ouvrez d'abord {app} sur son domaine, puis installez."
+  "install_host_fallback": "{host} est une adresse de secours pour ce serveur, pas son propre domaine. Une application installée depuis cette adresse cesse de fonctionner si l'adresse du serveur change. Ouvrez d'abord {app} sur son domaine, puis installez.",
+  "feedback_send_menu": "Envoyer un avis",
+  "feedback_title": "Envoyer un avis",
+  "feedback_lead": "Dites à {operator} ce qui fonctionne, ce qui ne fonctionne pas, ou ce que vous aimeriez voir. Votre message est transmis aux personnes qui gèrent ce serveur.",
+  "feedback_category": "Type d'avis",
+  "feedback_category_idea": "Idée",
+  "feedback_category_bug": "Problème",
+  "feedback_category_other": "Autre",
+  "feedback_placeholder": "Qu'avez-vous en tête ?",
+  "feedback_attached": "Envoyé avec votre message : {app} version {version} et la page où vous étiez ({page}).",
+  "feedback_support_instead": "Besoin d'aide pour un problème ? Contactez plutôt le support.",
+  "feedback_send": "Envoyer",
+  "feedback_sending": "Envoi…",
+  "feedback_sent": "Merci — votre avis a été envoyé à {operator}."
 }

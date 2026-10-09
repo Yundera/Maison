@@ -40,3 +40,8 @@ const (
 	// collide with a real path on the app host it is standing in for.
 	GateRoot = "/__" + Slug
 )
+
+// Version is the release this binary was built from, stamped by the image build
+// (`-ldflags -X …/brand.Version=<tag>`, see Dockerfile). A local `go build` leaves it
+// "dev". It is reported, never compared: nothing may branch on it.
+var Version = "dev"

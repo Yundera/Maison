@@ -550,5 +550,18 @@
   "install_ios_step_confirm": "Tap Add. {app} appears alongside your other apps.",
   "install_ios_note": "Safari is the only browser on iPhone and iPad that can do this.",
   "install_host": "Installs for {host}.",
-  "install_host_fallback": "{host} is a fallback address for this server, not its own domain. An app installed from it stops working if the server's address changes. Open {app} on its domain first, then install."
+  "install_host_fallback": "{host} is a fallback address for this server, not its own domain. An app installed from it stops working if the server's address changes. Open {app} on its domain first, then install.",
+  "feedback_send_menu": "Send feedback",
+  "feedback_title": "Send feedback",
+  "feedback_lead": "Tell {operator} what works, what doesn't, or what you'd like to see. Your message goes to the people who run this server.",
+  "feedback_category": "Kind of feedback",
+  "feedback_category_idea": "Idea",
+  "feedback_category_bug": "Problem",
+  "feedback_category_other": "Other",
+  "feedback_placeholder": "What's on your mind?",
+  "feedback_attached": "Sent with your message: {app} version {version} and the page you were on ({page}).",
+  "feedback_support_instead": "Need help with something broken? Contact support instead.",
+  "feedback_send": "Send",
+  "feedback_sending": "Sending…",
+  "feedback_sent": "Thank you — your feedback was sent to {operator}."
 }

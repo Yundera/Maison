@@ -17,7 +17,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=ui /src/internal/ui/dist ./internal/ui/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /maison ./cmd/maison
+# The release tag, reported in feedback context (internal/brand.Version). The CI
+# passes docker/metadata-action's version; a hand build stays "dev".
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w -X github.com/yundera/maison/internal/brand.Version=${VERSION}" \
+      -o /maison ./cmd/maison
 
 # 3) Minimal runtime: the binary + the docker compose plugin (installs shell out
 #    to `docker compose`) + bash (for x-casaos pre/post-install hooks).

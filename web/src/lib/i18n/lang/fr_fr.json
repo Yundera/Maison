@@ -563,5 +563,7 @@
   "feedback_support_instead": "Besoin d'aide pour un problème ? Contactez plutôt le support.",
   "feedback_send": "Envoyer",
   "feedback_sending": "Envoi…",
-  "feedback_sent": "Merci — votre avis a été envoyé à {operator}."
+  "feedback_sent": "Merci — votre avis a été envoyé à {operator}.",
+  "settings_managed_by": "Géré par {owner}. Ce réglage est défini et tenu à jour par le déploiement du serveur : il ne peut pas être modifié ici.",
+  "notifications_smtp_pass_saved": "Enregistré — saisissez pour le remplacer"
 }

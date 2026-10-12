@@ -209,15 +209,19 @@ the variables **apps receive**.
 |-----|---------|---------|
 | `DATA_ROOT` | `/DATA` | The data folder's path **inside** the container. |
 | `DATA_HOST_PATH` | = `DATA_ROOT` | The same folder's path **on the host**. Must equal the bind `source`. |
-| `APPSTORE_URL` | Yundera AppStore zip | Store zip URL(s), comma-separated. |
+| `APPSTORE_URL` | Yundera AppStore zip | Store zip URL(s), comma-separated. The boot default for the store list; a deployment adds its store with `maison stores ensure` instead. |
 | `PUID` / `PGID` | `1000` / `1000` | Owner applied to app folders, and passed to apps. |
 | `TZ` | (none) | Timezone for the dashboard and the apps. |
 | `HTTP_ADDR` | `:8080` | Listen address. |
 | `HOST_PROC` | (none) | Where the host's `/proc` is mounted (e.g. `/host/proc`). With it, the Resources page shows the host's network, processes and mounts, not the container's. |
 | `STATE_DIR` | `${DATA_ROOT}/AppData/maison` | Where Maison keeps everything it owns. |
 | `SHARED_DIR` | `${DATA_ROOT}/AppDataShared` | State that belongs to the deployment, not to any one app. |
-| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` `SMTP_TO` `SMTP_SECURITY` | (none) | Default mail transport for notifications. Unset means no mail. Can also be set in *Settings → Notifications*. See [`docs/incidents.md`](./docs/incidents.md). |
-| `FEEDBACK_URL` / `FEEDBACK_TOKEN` | (none) | Where *Send feedback* goes. Unset means the feature is hidden. See [`docs/feedback.md`](./docs/feedback.md). |
+| `ADMIN_SOCKET` | `/run/maison/admin.sock` | The container-local socket the `maison` CLI talks to. See [`docs/config.md`](./docs/config.md). |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` `SMTP_TO` `SMTP_SECURITY` | (none) | *Transition.* Default mail transport while the `smtp` setting is not managed. A deployment now manages it with `maison settings set smtp`. See [`docs/config.md`](./docs/config.md). |
+| `FEEDBACK_URL` / `FEEDBACK_TOKEN` | (none) | *Transition.* Where *Send feedback* goes while no `feedback` setting exists. See [`docs/feedback.md`](./docs/feedback.md). |
+
+Everything else Maison does is configured in `settings.json`, some of it managed by the
+deployment through the `maison` CLI: see [`docs/config.md`](./docs/config.md).
 
 The repo's compose also reads `HOST_PORT` (published port) and `DOCKER_GID` from `.env`.
 

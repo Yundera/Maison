@@ -563,5 +563,7 @@
   "feedback_support_instead": "Need help with something broken? Contact support instead.",
   "feedback_send": "Send",
   "feedback_sending": "Sending…",
-  "feedback_sent": "Thank you — your feedback was sent to {operator}."
+  "feedback_sent": "Thank you — your feedback was sent to {operator}.",
+  "settings_managed_by": "Managed by {owner}. This is set and kept up to date by the server's deployment, so it cannot be changed here.",
+  "notifications_smtp_pass_saved": "Saved — type to replace"
 }

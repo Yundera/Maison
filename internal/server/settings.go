@@ -15,8 +15,10 @@ import (
 	"github.com/yundera/maison/internal/usersettings"
 )
 
+// handleGetSettings returns the settings, with every secret masked (publicSettings)
+// and the deployment-owned settings named in `managed`.
 func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.settings.Get())
+	writeJSON(w, http.StatusOK, publicSettings(s.settings.Get()))
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
@@ -25,11 +27,15 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
+	if err := s.prepareUserEdit(&in); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := s.settings.Set(in); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.settings.Get())
+	writeJSON(w, http.StatusOK, publicSettings(s.settings.Get()))
 }
 
 // domainsView is the domains editor's payload.
@@ -52,6 +58,10 @@ type domainsView struct {
 
 	// Domains is the operator's list of additional domains.
 	Domains []domains.Domain `json:"domains"`
+
+	// ManagedBy names the deployment that owns the list, when one does: the editor
+	// is then read-only (PUT answers 409).
+	ManagedBy string `json:"managedBy,omitempty"`
 
 	// Vars are the .env.app variables a domain template may interpolate, so the
 	// editor can preview the host a template resolves to before it is saved onto
@@ -84,10 +94,13 @@ func (s *Server) domainsView() domainsView {
 			}
 		}
 	}
+	cur := s.settings.Get()
+	owner, _ := cur.IsManaged("domains")
 	return domainsView{
 		PrimaryToken: routes.PrimaryToken,
 		PrimaryHost:  env["APP_DOMAIN"],
-		Domains:      s.settings.Get().Domains,
+		Domains:      cur.Domains,
+		ManagedBy:    owner,
 		Vars:         vars,
 	}
 }
@@ -107,47 +120,19 @@ func (s *Server) handleGetDomains(w http.ResponseWriter, _ *http.Request) {
 // compose up per app, the tiles carry their own busy state, and the operator
 // shouldn't be staring at a hung request while it happens.
 func (s *Server) handlePutDomains(w http.ResponseWriter, r *http.Request) {
+	if owner, managed := s.settings.Get().IsManaged("domains"); managed {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "the domain list is managed by " + owner})
+		return
+	}
 	var in []domains.Domain
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	seen := map[string]bool{}
-	for i := range in {
-		in[i].Name = strings.TrimSpace(in[i].Name)
-		in[i].Domain = strings.TrimSpace(in[i].Domain)
-		if in[i].Name == "" || in[i].Domain == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "each domain needs a name and a host"})
-			return
-		}
-		if strings.ContainsAny(in[i].Domain, " \t") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a host cannot contain spaces: " + in[i].Domain})
-			return
-		}
-		// The editor keys its rows on the host, generation skips a host that is
-		// already routed, and two rows on one host would fight over the same
-		// generated route. One entry per host.
-		if seen[in[i].Domain] {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "that host is already in the list: " + in[i].Domain})
-			return
-		}
-		seen[in[i].Domain] = true
-
-		// Labels come from a key/value editor, which is free to hand back the blank
-		// row someone opened and did not fill in. Drop those rather than writing an
-		// empty label into every app's override.
-		clean := map[string]string{}
-		for k, v := range in[i].Labels {
-			k = strings.TrimSpace(k)
-			if k == "" {
-				continue
-			}
-			clean[k] = strings.TrimSpace(v)
-		}
-		if len(clean) == 0 {
-			clean = nil
-		}
-		in[i].Labels = clean
+	in, err := domains.Normalize(in)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
 	}
 
 	cur := s.settings.Get()

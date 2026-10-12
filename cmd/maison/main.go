@@ -21,6 +21,13 @@ import (
 )
 
 func main() {
+	// `maison <command> …` is the CLI (cli.go), which talks to the running server over
+	// its admin socket. It branches off before anything below: the server's
+	// construction starts samplers and schedulers that a one-shot command must not.
+	if len(os.Args) > 1 {
+		os.Exit(runCLI(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix(brand.Slug + ": ")
 

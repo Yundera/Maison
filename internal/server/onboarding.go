@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/yundera/maison/internal/brand"
-	"github.com/yundera/maison/internal/onboarding"
 )
 
 // The onboarding gate stands in front of the dashboard while the deployment
@@ -33,7 +32,7 @@ import (
 // the document replaced, nothing is left to call them.
 func (s *Server) onboardingGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		setupURL, pending := onboarding.Pending(s.cfg)
+		setupURL, pending := s.onboardingURL()
 		if !pending || !isNavigation(r) {
 			next.ServeHTTP(w, r)
 			return

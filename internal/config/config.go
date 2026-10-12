@@ -46,6 +46,12 @@ type Config struct {
 	PGID string
 	TZ   string
 
+	// AdminSocket is the container-local unix socket the deployment manages settings
+	// and secrets through (internal/server/admin.go, the `maison` CLI). Deliberately
+	// not on the /DATA mount and not on the network. ADMIN_SOCKET overrides it; the
+	// CLI reads the same variable, so the two always agree.
+	AdminSocket string
+
 	StoreURLs []string // app-store zip URLs (multi-store)
 
 	// Domains returns the additional domains every app is published on, beyond the
@@ -154,6 +160,7 @@ func FromEnv() Config {
 		PUID:          envOr("PUID", "1000"),
 		PGID:          envOr("PGID", "1000"),
 		TZ:            os.Getenv("TZ"),
+		AdminSocket:   AdminSocketPath(),
 		StoreURLs: splitList(envOr("APPSTORE_URL",
 			"https://github.com/Yundera/AppStore/archive/refs/heads/main.zip")),
 		SMTP:     smtpFromEnv(),
@@ -228,6 +235,17 @@ func (c Config) ProvisionedSMTP() notify.SMTP {
 		s.To = c.appEnv()["APP_EMAIL"]
 	}
 	return s
+}
+
+// MailIdentity is the deployment's own sender and recipient, from .env.app:
+// noreply@APP_DOMAIN and APP_EMAIL, read live. It is what fills a transport's
+// From/To when no setting named one — whoever provides the relay, env or a managed
+// setting — so a box that changes owner or domain mails the new one.
+func (c Config) MailIdentity() (from, to string) {
+	if d := c.AppDomain(); d != "" {
+		from = "noreply@" + d
+	}
+	return from, c.appEnv()["APP_EMAIL"]
 }
 
 // AppsDir is the flat root that holds one directory per app
@@ -369,6 +387,12 @@ func (c Config) StateDir() string {
 	}
 	return filepath.Join(c.DataRoot, "AppData", brand.Slug)
 }
+
+// DefaultAdminSocket is where the admin socket lives when ADMIN_SOCKET is unset.
+const DefaultAdminSocket = "/run/maison/admin.sock"
+
+// AdminSocketPath is the admin socket's path, for the server and the CLI alike.
+func AdminSocketPath() string { return envOr("ADMIN_SOCKET", DefaultAdminSocket) }
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

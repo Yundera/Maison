@@ -174,7 +174,7 @@ func (s *Server) handleTestNotification(w http.ResponseWriter, _ *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "incidents unavailable"})
 		return
 	}
-	if !s.settings.EffectiveSMTP(s.cfg.ProvisionedSMTP()).Configured() {
+	if !s.mailTransport().Configured() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no mail server configured"})
 		return
 	}

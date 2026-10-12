@@ -10,7 +10,11 @@
 // this deployment's gateway, behind someone else's, or behind nothing at all.
 package domains
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+)
 
 // Domain is one domain every app is published on.
 type Domain struct {
@@ -62,4 +66,48 @@ func (d *Domain) UnmarshalJSON(b []byte) error {
 		d.Labels = raw.Directives
 	}
 	return nil
+}
+
+// Normalize trims and checks a domain list before it is stored, and returns the
+// cleaned copy. It is the one set of rules for every writer — the dashboard's
+// editor and a deployment managing the list — so neither can store a list the
+// other would have refused.
+//
+// Each entry needs a name and a host, a host has no spaces, and a host appears
+// once: generation skips a host that is already routed, so two entries on one host
+// would fight over the same generated route. Labels come from a key/value editor,
+// which is free to hand back the blank row someone opened and did not fill in;
+// those are dropped rather than written as an empty label into every app.
+func Normalize(in []Domain) ([]Domain, error) {
+	if in == nil {
+		return nil, nil // absent stays absent: only an explicit [] clears the list
+	}
+	out := make([]Domain, len(in))
+	seen := map[string]bool{}
+	for i, d := range in {
+		d.Name = strings.TrimSpace(d.Name)
+		d.Domain = strings.TrimSpace(d.Domain)
+		if d.Name == "" || d.Domain == "" {
+			return nil, errors.New("each domain needs a name and a host")
+		}
+		if strings.ContainsAny(d.Domain, " \t") {
+			return nil, errors.New("a host cannot contain spaces: " + d.Domain)
+		}
+		if seen[d.Domain] {
+			return nil, errors.New("that host is already in the list: " + d.Domain)
+		}
+		seen[d.Domain] = true
+		clean := map[string]string{}
+		for k, v := range d.Labels {
+			if k = strings.TrimSpace(k); k != "" {
+				clean[k] = strings.TrimSpace(v)
+			}
+		}
+		if len(clean) == 0 {
+			clean = nil
+		}
+		d.Labels = clean
+		out[i] = d
+	}
+	return out, nil
 }

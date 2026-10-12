@@ -924,6 +924,11 @@ The deployment's layer is the environment, read at boot into `config.Config.SMTP
 | `SMTP_TO` | Defaults to `${APP_EMAIL}` — the box's owner. |
 | `SMTP_SECURITY` | `starttls` (default, opportunistic), `tls`, or `none`. |
 
+**That env layer is the transition path.** A deployment now manages the transport as the
+`smtp` setting through the `maison` CLI ([`config.md`](./config.md)). A managed `smtp` is the whole
+answer, not a layer: the env transport is ignored, and only the `From`/`To` fallbacks below apply.
+The table above describes a box whose `smtp` is not managed.
+
 `From` and `To` fall back to `.env.app`, read **live** like every other value from that file: a box
 that changes owner or domain must not keep mailing the previous one until someone restarts the
 dashboard. Those two fallbacks are why a PCS only has to name its relay.

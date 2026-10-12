@@ -30,7 +30,7 @@ import (
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
 	"github.com/yundera/maison/internal/metrics"
-	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/secrets"
 	"github.com/yundera/maison/internal/system"
 	"github.com/yundera/maison/internal/usersettings"
 )
@@ -78,9 +78,16 @@ type Server struct {
 	// cleanup (storage.go).
 	storage *storageState
 
-	// feedback is the operator's feedback sink (feedback.go). nil — the normal state
-	// of a stock box — is the feature switched off.
-	feedback *feedback.Client
+	// secrets is the box's secret store (internal/secrets): the values settings
+	// reference as ${secret:name}.
+	secrets *secrets.Store
+
+	// The operator's feedback sink, rebuilt whenever its configuration changes (see
+	// feedbackClient). A nil client — the normal state of a stock box — is the
+	// feature switched off.
+	feedbackMu   sync.Mutex
+	feedbackSink feedback.Sink
+	feedbackC    *feedback.Client
 }
 
 // New builds the root HTTP handler. A nil-Docker environment still serves the
@@ -113,12 +120,12 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		hub:       live.NewHub(collector),
 		settings:  settings,
 		incidents: incidents,
-		feedback:  feedback.New(cfg.Feedback),
+		secrets:   secrets.New(filepath.Join(cfg.StateDir(), secrets.FileName)),
 	}
 	s.hub.ResourcesSnapshot = s.resourcesSnapshot
 	// The same transport the backup alerts use, resolved on every send rather than
 	// captured, so a relay changed in the settings takes effect without a restart.
-	s.incidents.Mail = func() notify.SMTP { return s.settings.EffectiveSMTP(cfg.ProvisionedSMTP()) }
+	s.incidents.Mail = s.mailTransport
 	s.incidents.Where = cfg.AppDomain
 	s.incidents.OnChange = throttle(300*time.Millisecond, s.broadcastIncidents)
 	s.hub.IncidentsSnapshot = s.incidentsSnapshot
@@ -204,6 +211,8 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 			log.Printf("backup: clearing the adopted mail configuration: %v", err)
 		}
 	}
+	// After the move above, which may have brought a literal password with it.
+	s.adoptLiteralSecrets()
 	// The two must not write the same tree at once, in either order: a restore during a
 	// run would be restoring under a snapshot, and a run during a restore would snapshot
 	// a half-restored state. Each refuses while the other is working.
@@ -389,6 +398,11 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// Last, because a pass reads the app registry, the engine set and the schedule.
 	// See detect.go for what it looks at and why the list is as short as it is.
 	go s.runDetectors(context.Background())
+
+	// The deployment's own way in (admin.go): the socket the `maison` CLI talks to.
+	if cfg.AdminSocket != "" {
+		s.startAdmin(cfg.AdminSocket)
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)

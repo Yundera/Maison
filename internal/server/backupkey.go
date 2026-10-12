@@ -378,7 +378,7 @@ func (s *Server) tryMailSecret(ctx context.Context, es engineSecret) keyMailOutc
 	if s.settings == nil {
 		return keyMailRetry
 	}
-	smtp := s.settings.EffectiveSMTP(s.cfg.ProvisionedSMTP())
+	smtp := s.mailTransport()
 	if !smtp.Configured() {
 		return keyMailRetry
 	}
@@ -462,7 +462,7 @@ func (s *Server) handleEmailSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "backups unavailable"})
 		return
 	}
-	smtp := s.settings.EffectiveSMTP(s.cfg.ProvisionedSMTP())
+	smtp := s.mailTransport()
 	if !smtp.Configured() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no mail server configured"})
 		return

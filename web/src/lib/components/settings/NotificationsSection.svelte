@@ -11,7 +11,7 @@
    * page and the badge are the surface that cannot silently fail.
    */
   import { t } from '../../i18n'
-  import { settings } from '../../stores/settings'
+  import { settings, isStoredSecret } from '../../stores/settings'
   import {
     incidents,
     subscribeIncidents,
@@ -59,6 +59,12 @@
   const smtp = $derived(
     $settings.smtp ?? { host: '', port: 587, from: '', to: '', user: '', pass: '', security: '' },
   )
+
+  // Owned by the deployment: shown, never editable (the server drops an edit anyway).
+  const smtpOwner = $derived($settings.managed?.smtp ?? '')
+  // The server never sends a stored password back, only a reference to it; the field
+  // then shows empty with a "saved" placeholder, and typing replaces it.
+  const passSaved = $derived(isStoredSecret(smtp.pass))
 
   function setSmtp(patch: Partial<typeof smtp>) {
     settings.update((s) => ({ ...s, smtp: { ...smtp, ...patch } }))
@@ -160,12 +166,15 @@
   {#if !$incidents.mail_configured}
     <p class="warn">{$t('notifications_mail_unconfigured')}</p>
   {/if}
+  {#if smtpOwner}
+    <p class="hint">{$t('settings_managed_by', { owner: smtpOwner })}</p>
+  {/if}
 
   <label class="row">
     <span>{$t('notifications_smtp_host')}</span>
     <input
       value={smtp.host}
-      disabled={busy}
+      disabled={busy || !!smtpOwner}
       placeholder={$t('notifications_smtp_host_placeholder')}
       oninput={(e) => setSmtp({ host: e.currentTarget.value })}
     />
@@ -178,13 +187,13 @@
       min="1"
       max="65535"
       value={smtp.port || 587}
-      disabled={busy}
+      disabled={busy || !!smtpOwner}
       oninput={(e) => setSmtp({ port: Number(e.currentTarget.value) })}
     />
   </label>
   <label class="row">
     <span>{$t('notifications_smtp_security')}</span>
-    <select value={smtp.security || 'starttls'} disabled={busy} onchange={(e) => setSmtp({ security: e.currentTarget.value })}>
+    <select value={smtp.security || 'starttls'} disabled={busy || !!smtpOwner} onchange={(e) => setSmtp({ security: e.currentTarget.value })}>
       <option value="starttls">STARTTLS</option>
       <option value="tls">TLS</option>
       <option value="none">{$t('notifications_smtp_security_none')}</option>
@@ -192,26 +201,27 @@
   </label>
   <label class="row">
     <span>{$t('notifications_smtp_user')}</span>
-    <input value={smtp.user ?? ''} disabled={busy} oninput={(e) => setSmtp({ user: e.currentTarget.value })} />
+    <input value={smtp.user ?? ''} disabled={busy || !!smtpOwner} oninput={(e) => setSmtp({ user: e.currentTarget.value })} />
   </label>
   <label class="row">
     <span>{$t('notifications_smtp_pass')}</span>
     <input
       type="password"
-      value={smtp.pass ?? ''}
-      disabled={busy}
+      value={passSaved ? '' : (smtp.pass ?? '')}
+      placeholder={passSaved ? $t('notifications_smtp_pass_saved') : ''}
+      disabled={busy || !!smtpOwner}
       oninput={(e) => setSmtp({ pass: e.currentTarget.value })}
     />
   </label>
   <label class="row">
     <span>{$t('notifications_smtp_to')}</span>
-    <input value={smtp.to ?? ''} disabled={busy} oninput={(e) => setSmtp({ to: e.currentTarget.value })} />
+    <input value={smtp.to ?? ''} disabled={busy || !!smtpOwner} oninput={(e) => setSmtp({ to: e.currentTarget.value })} />
   </label>
   <label class="row">
     <span>{$t('notifications_smtp_from')}</span>
-    <input value={smtp.from ?? ''} disabled={busy} oninput={(e) => setSmtp({ from: e.currentTarget.value })} />
+    <input value={smtp.from ?? ''} disabled={busy || !!smtpOwner} oninput={(e) => setSmtp({ from: e.currentTarget.value })} />
   </label>
-  <p class="hint">{$t('notifications_smtp_inherit_hint')}</p>
+  {#if !smtpOwner}<p class="hint">{$t('notifications_smtp_inherit_hint')}</p>{/if}
 
   <div class="actions">
     <button disabled={busy} onclick={test}>{$t('notifications_test')}</button>

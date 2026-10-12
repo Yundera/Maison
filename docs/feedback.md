@@ -15,6 +15,19 @@ sink does:
 One without the other is a deployment mistake: Maison logs it at boot and the feature
 stays off.
 
+**These two variables are the transition path.** A deployment now configures the sink as
+the managed `feedback` setting, with the token in the secret store, and releases it to
+turn the feature off; the setting is read live, so no restart is needed. See
+[`config.md`](./config.md):
+
+```sh
+docker exec -i maison-app maison secret set feedback_token <<<"$FEEDBACK_TOKEN"
+docker exec -i maison-app maison settings set feedback --owner yundera \
+  <<<'{"url":"'"$FEEDBACK_URL"'","token":"${secret:feedback_token}"}'
+```
+
+The env variables are read only while no `feedback` setting exists.
+
 ---
 
 ## What the user sees

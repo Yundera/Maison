@@ -31,7 +31,7 @@ type feedbackState struct {
 // disabled — the user cannot do anything about it, and a form they cannot send is
 // the outcome the feature is designed not to have.
 func (s *Server) handleGetFeedback(w http.ResponseWriter, r *http.Request) {
-	d, err := s.feedback.Descriptor(r.Context())
+	d, err := s.feedbackClient().Descriptor(r.Context())
 	if err != nil {
 		if !errors.Is(err, feedback.ErrDisabled) {
 			log.Printf("feedback: %v", err)
@@ -61,7 +61,8 @@ type feedbackInput struct {
 
 // handleSendFeedback forwards the form to the sink.
 func (s *Server) handleSendFeedback(w http.ResponseWriter, r *http.Request) {
-	if s.feedback == nil {
+	client := s.feedbackClient()
+	if client == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feedback is not configured"})
 		return
 	}
@@ -70,7 +71,7 @@ func (s *Server) handleSendFeedback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	err := s.feedback.Send(r.Context(), feedback.Submission{
+	err := client.Send(r.Context(), feedback.Submission{
 		Message:  in.Message,
 		Category: in.Category,
 		Context: feedback.Context{

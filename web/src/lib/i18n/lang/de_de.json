@@ -476,5 +476,7 @@
   "feedback_support_instead": "Etwas funktioniert nicht? Wenden Sie sich stattdessen an den Support.",
   "feedback_send": "Senden",
   "feedback_sending": "Wird gesendet…",
-  "feedback_sent": "Danke — Ihr Feedback wurde an {operator} gesendet."
+  "feedback_sent": "Danke — Ihr Feedback wurde an {operator} gesendet.",
+  "settings_managed_by": "Verwaltet von {owner}. Diese Einstellung wird von der Bereitstellung des Servers gesetzt und aktuell gehalten und kann hier nicht geändert werden.",
+  "notifications_smtp_pass_saved": "Gespeichert — zum Ersetzen eingeben"
 }

@@ -63,5 +63,9 @@ RUN mkdir -p /opt/maison/hookbin && \
     ln -s /bin/sh /opt/maison/hookbin/sh
 
 COPY --from=backend /maison /maison
+# `maison` on PATH, for the deployment's CLI: `docker exec -i maison-app maison
+# settings set …` (cmd/maison/cli.go). Not in /opt/maison/hookbin — that allowlist
+# is what an app's hook may run, and a hook must never manage the dashboard.
+RUN ln -s /maison /usr/local/bin/maison
 EXPOSE 8080
 ENTRYPOINT ["/maison"]

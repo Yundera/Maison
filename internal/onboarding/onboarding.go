@@ -65,7 +65,13 @@ func Pending(cfg config.Config) (string, bool) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return "", false
 	}
-	raw := strings.TrimSpace(c.URL)
+	return Valid(c.URL)
+}
+
+// Valid applies Pending's rules to a setup URL from any source — the file above,
+// or the managed `onboarding` setting that replaces it. Fail open, as there.
+func Valid(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", false
 	}

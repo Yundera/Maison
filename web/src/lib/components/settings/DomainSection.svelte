@@ -37,6 +37,9 @@
   let primaryToken = $state('')
   let primaryHost = $state('')
   let vars = $state<Record<string, string>>({})
+  // The deployment that owns the list, if any: the editor is then read-only (the
+  // server answers 409 to a save).
+  let managedBy = $state('')
 
   let loading = $state(true)
   let busy = $state(false)
@@ -81,6 +84,7 @@
     primaryToken = v.primaryToken || '${APP_DOMAIN}'
     primaryHost = v.primaryHost || ''
     vars = v.vars ?? {}
+    managedBy = v.managedBy ?? ''
     list = (v.domains ?? []).map(toDraft)
     saved = JSON.stringify(v.domains ?? [])
   }
@@ -151,7 +155,11 @@
       {#each Object.keys(vars) as v (v)}<code class="var">$&#123;{v}&#125;</code>{/each}
     </p>
     <p class="hint">{$t('directives_hint')}</p>
+    {#if managedBy}
+      <p class="hint">{$t('settings_managed_by', { owner: managedBy })}</p>
+    {/if}
 
+    <fieldset class="lock" disabled={!!managedBy}>
     {#if list.length}
       <ul class="rows">
         {#each list as d, i (i)}
@@ -236,6 +244,8 @@ caddy_N.reverse_proxy: "&#123;&#123;upstreams 80&#125;&#125;"{#if d.host && reso
       {/if}
     </footer>
 
+    </fieldset>
+
     {#if duplicate}<p class="err">{$t('domains_duplicate')}</p>{/if}
     {#if error}<p class="err">{error}</p>{/if}
   {/if}
@@ -269,6 +279,13 @@ caddy_N.reverse_proxy: "&#123;&#123;upstreams 80&#125;&#125;"{#if d.host && reso
     color: var(--grey-600);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+  /* Only there to disable every control at once when the list is managed. */
+  .lock {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
   }
   .hint {
     margin: 0;

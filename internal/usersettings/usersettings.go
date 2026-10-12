@@ -3,7 +3,6 @@
 package usersettings
 
 import (
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"log"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/secrets"
 )
 
 // Settings is the persisted preference set.
@@ -71,6 +71,16 @@ type Settings struct {
 	// "not supplied", so a plain bool could be turned on and then never off again —
 	// `false` would be indistinguishable from an absent field. See merge.
 	MetricsHistory *bool `json:"metrics_history,omitempty"`
+
+	// Feedback and Onboarding are the deployment's: set only through Manage (see
+	// managed.go), never by a user edit. Nil is the normal state of a standalone box.
+	Feedback   *Feedback   `json:"feedback,omitempty"`
+	Onboarding *Onboarding `json:"onboarding,omitempty"`
+
+	// Managed names the settings the deployment owns, and who that is, by setting
+	// name. It is the API's view of ownership: on disk the flag sits inside each
+	// wrapped field instead (managed.go), and an incoming edit never sets it.
+	Managed map[string]string `json:"managed,omitempty"`
 }
 
 // Defaults returns the initial settings.
@@ -131,10 +141,14 @@ func New(path string) *Store {
 		}
 		return s
 	}
-	var loaded Settings
-	if json.Unmarshal(b, &loaded) == nil {
-		s.cur = merge(Defaults(), loaded)
+	loaded, err := decodeFile(b)
+	if err != nil {
+		log.Printf("usersettings: %s unparseable: %v (running on defaults)", path, err)
+		return s
 	}
+	owners := loaded.Managed
+	s.cur = merge(Defaults(), loaded)
+	s.cur.Managed = owners
 	return s
 }
 
@@ -160,13 +174,23 @@ func (s *Store) Domains() []domains.Domain { return s.Get().Domains }
 // dropped the store source. Clearing a field still works, by sending it as an
 // explicit empty value ([] rather than absent), which is how the domains editor
 // removes the last domain.
+//
+// A field the deployment manages is dropped from n before the merge (see
+// dropManaged): only Manage and Release change a managed setting.
+//
+// The write happens under the lock, so two edits land on disk in the order they
+// were applied in memory.
 func (s *Store) Set(n Settings) error {
 	s.mu.Lock()
-	s.cur = merge(s.cur, n)
-	cur := s.cur
-	s.mu.Unlock()
-
-	return s.write(cur)
+	defer s.mu.Unlock()
+	dropManaged(&n, s.cur.Managed)
+	next := merge(s.cur, n)
+	next.Managed = s.cur.Managed
+	if err := s.write(next); err != nil {
+		return err
+	}
+	s.cur = next
+	return nil
 }
 
 // seed writes the empty document that says "this box has no opinion about anything".
@@ -190,16 +214,20 @@ func (s *Store) seed() error {
 	return err
 }
 
-// write renders one settings document to disk.
+// write renders one settings document to disk: atomically (temp file + rename, so
+// a crash mid-write never leaves half a document) and 0600, since it can hold an
+// SMTP login. Secrets themselves live in secrets.env; this file holds references
+// to them, but a box upgraded from before that may still carry a literal password
+// until the server moves it across.
 func (s *Store) write(v Settings) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(v, "", "  ")
+	b, err := encodeFile(v)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, b, 0o644)
+	return secrets.WriteFileAtomic(s.path, append(b, '\n'), 0o600)
 }
 
 // merge overlays the fields in carries onto base, leaving the rest of base alone.
@@ -236,6 +264,12 @@ func merge(base, in Settings) Settings {
 	if in.SMTP != nil {
 		base.SMTP = in.SMTP
 	}
+	if in.Feedback != nil {
+		base.Feedback = in.Feedback
+	}
+	if in.Onboarding != nil {
+		base.Onboarding = in.Onboarding
+	}
 	return base
 }
 
@@ -250,7 +284,22 @@ func merge(base, in Settings) Settings {
 // inherited from the deployment is a login sent to the wrong server. From and To
 // resolve on their own, because "mail from somewhere else" and "mail someone else"
 // are independent choices, and the recipient is the one a user actually changes.
+//
+// A MANAGED transport is not layered at all: the deployment's value is the whole
+// answer, and the env-provided one (prov) contributes only the From/To it would
+// fill in for an address the managed value left empty. The layering below is the
+// transition path for a deployment that still provides its relay through SMTP_*.
 func (s Settings) EffectiveSMTP(prov notify.SMTP) notify.SMTP {
+	if _, managed := s.Managed["smtp"]; managed && s.SMTP != nil {
+		out := *s.SMTP
+		if out.From == "" {
+			out.From = prov.From
+		}
+		if out.To == "" {
+			out.To = prov.To
+		}
+		return out
+	}
 	out := prov
 	if s.SMTP == nil {
 		return out

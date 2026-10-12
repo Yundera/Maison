@@ -44,7 +44,15 @@ export interface Settings {
   /** Mail transport. It lived under the backup configuration until it moved here,
    *  because it is a property of the box rather than of the backup schedule. */
   smtp?: SmtpConfig
+  /** Settings the deployment owns, by name → owner (e.g. `{ smtp: 'mesh' }`). A
+   *  managed setting is read-only here: the server drops any edit of it, and the
+   *  deployment re-asserts it on every self-check. */
+  managed?: Record<string, string>
 }
+
+/** A password or token the server holds for us: the API returns `${secret:name}`
+ *  (or a mask) in its place, and sending it back unchanged keeps it. */
+export const isStoredSecret = (v?: string) => !!v && (/^\$\{secret:[a-z][a-z0-9_]*\}$/.test(v) || v === '********')
 
 const DEFAULTS: Settings = {
   wallpaper: '/wallpapers/default_wallpaper.jpg',
@@ -97,6 +105,8 @@ export interface DomainsView {
   /** What that placeholder resolves to on this box; '' when the box has no domain. */
   primaryHost: string
   domains: Domain[]
+  /** The deployment that owns the list, when one does — the editor is read-only. */
+  managedBy?: string
   /** The .env.app routing variables a host template may interpolate, so the
    *  editor can resolve a preview before the value is written onto every app. */
   vars: Record<string, string>

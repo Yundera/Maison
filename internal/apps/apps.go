@@ -21,6 +21,7 @@ import (
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/stackup"
 	"github.com/yundera/maison/internal/xcasaos"
 	"github.com/yundera/maison/internal/xcomposeapp"
@@ -506,6 +507,10 @@ func (r *Registry) metaFor(project, workingDir string) (*xcasaos.StoreInfo, *xco
 		}
 	}
 	if workingDir != "" {
+		// Docker reports the working dir as the HOST spells it; open it through this
+		// container's data mount, which is only the same path when DATA_HOST_PATH
+		// equals DATA_ROOT.
+		workingDir = envinject.ContainerPath(workingDir, r.cfg)
 		for _, path := range []string{
 			filepath.Join(workingDir, "docker-compose.yml"),
 			filepath.Join(workingDir, "docker-compose.yaml"),

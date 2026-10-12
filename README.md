@@ -218,7 +218,6 @@ the variables **apps receive**.
 | `SHARED_DIR` | `${DATA_ROOT}/AppDataShared` | State that belongs to the deployment, not to any one app. |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` `SMTP_TO` `SMTP_SECURITY` | (none) | Default mail transport for notifications. Unset means no mail. Can also be set in *Settings → Notifications*. See [`docs/incidents.md`](./docs/incidents.md). |
 | `FEEDBACK_URL` / `FEEDBACK_TOKEN` | (none) | Where *Send feedback* goes. Unset means the feature is hidden. See [`docs/feedback.md`](./docs/feedback.md). |
-| `BACKUP_ENGINE_CONTAINER` | `backup-engine` | An already-running backup-engine container to run commands in. If it can't be used, Maison starts a one-off container instead. |
 
 The repo's compose also reads `HOST_PORT` (published port) and `DOCKER_GID` from `.env`.
 

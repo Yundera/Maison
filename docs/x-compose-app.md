@@ -880,6 +880,11 @@ fire:
 | `pre_up` | Before **every** `docker compose up` — first install, every later start, update, and config save. |
 | `post_up` | After every `docker compose up`. |
 
+`pre_install` sets up a **fresh** install only — it never re-runs on update, so a
+change to what it produces never reaches existing installs. Carrying that change to
+them is what a data migration is for; see [`migrations.md`](./migrations.md) (design)
+for which of the two runs when.
+
 ```yaml
 x-compose-app:
   schema_version: 2

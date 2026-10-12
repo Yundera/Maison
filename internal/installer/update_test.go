@@ -18,7 +18,7 @@ import (
 
 func TestRollBackReportsBothFailures(t *testing.T) {
 	in := &Installer{
-		RollBack: func(context.Context, string, string) error { return errors.New("disk is full") },
+		RollBack: func(context.Context, string, string) (string, error) { return "", errors.New("disk is full") },
 	}
 	cause := errors.New("compose up failed")
 
@@ -45,7 +45,7 @@ func TestRollBackReportsBothFailures(t *testing.T) {
 func TestRollBackSucceedsAndStillReportsTheCause(t *testing.T) {
 	var restored string
 	in := &Installer{
-		RollBack: func(_ context.Context, _, name string) error { restored = name; return nil },
+		RollBack: func(_ context.Context, _, name string) (string, error) { restored = name; return "", nil },
 	}
 	cause := errors.New("compose up failed")
 
@@ -71,7 +71,7 @@ func TestRollBackSucceedsAndStillReportsTheCause(t *testing.T) {
 // bare "compose up failed" that leaves the operator wondering what state the app is
 // in.
 func TestRollBackWithoutABackupPointSaysSo(t *testing.T) {
-	in := &Installer{RollBack: func(context.Context, string, string) error { return nil }}
+	in := &Installer{RollBack: func(context.Context, string, string) (string, error) { return "", nil }}
 	_, err := in.rollBack(context.Background(), "jellyfin", UpdateResult{}, errors.New("compose up failed"))
 	if err == nil || !strings.Contains(err.Error(), "could not be undone") {
 		t.Fatalf("err = %v, want it to say the update could not be undone", err)

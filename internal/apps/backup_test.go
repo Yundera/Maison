@@ -222,6 +222,91 @@ func TestRestoreArchivesTheStateItReplaces(t *testing.T) {
 	}
 }
 
+// The archive a swap makes of the state it replaces is a backup like any other, so it
+// leaves out what the app declares derived. A rename takes everything, and on
+// watch.nsl.sh (2026-10-04) a failed metashare update's rollback filed its whole
+// 110 GB cache away as "the state it replaced", where nothing ever looked at it again.
+func TestRestoreArchiveLeavesOutDeclaredExclusions(t *testing.T) {
+	r, appsDir, backupsDir := newTestRegistry(t)
+	app := seedExcluded(t, appsDir, "jellyfin", "cache/", "**/thumbs/")
+
+	name, err := backupOnce(t, r, "jellyfin", false)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "db", "data.sqlite"), []byte("newer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var trashed []string
+	orig := removeTrash
+	removeTrash = func(p string) {
+		trashed = append(trashed, p)
+		if err := os.RemoveAll(p); err != nil {
+			t.Errorf("remove %s: %v", p, err)
+		}
+	}
+	t.Cleanup(func() { removeTrash = orig })
+
+	time.Sleep(time.Second) // one-second stamps, see TestRestoreArchivesTheStateItReplaces
+	archived, err := r.RestoreForRollback(context.Background(), "jellyfin", name)
+	if err != nil {
+		t.Fatalf("RestoreForRollback: %v", err)
+	}
+
+	got := ListBackups(backupsDir, "jellyfin")
+	if len(got) != 1 || got[0].Name != archived {
+		t.Fatalf("ListBackups = %+v; want the one archive RestoreForRollback named (%q)", got, archived)
+	}
+	arch := filepath.Join(backupsDir, "jellyfin", archived)
+	if s := read(t, filepath.Join(arch, "db", "data.sqlite")); s != "newer" {
+		t.Errorf("archive holds %q, want the replaced state %q", s, "newer")
+	}
+	for _, sub := range []string{"cache", filepath.Join("media", "thumbs")} {
+		if _, err := os.Stat(filepath.Join(arch, sub)); !os.IsNotExist(err) {
+			t.Errorf("archive still holds the declared-derived %s", sub)
+		}
+	}
+	// Taken out through the trash, so a restart mid-removal is finished at boot, and
+	// gone from disk once the removal ran.
+	if len(trashed) != 1 || !strings.HasPrefix(filepath.Base(trashed[0]), trashPrefix) {
+		t.Errorf("trashed = %v; want one %s entry", trashed, trashPrefix)
+	}
+	entries, _ := os.ReadDir(filepath.Join(backupsDir, "jellyfin"))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), trashPrefix) {
+			t.Errorf("%s left behind", e.Name())
+		}
+	}
+}
+
+// With nothing declared there is nothing to take out, and the archive is the whole
+// replaced folder, as before.
+func TestRestoreArchiveWithoutADeclarationKeepsEverything(t *testing.T) {
+	r, appsDir, backupsDir := newTestRegistry(t)
+	app := filepath.Join(appsDir, "jellyfin")
+	seedApp(t, app)
+	if err := os.MkdirAll(filepath.Join(app, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name, err := backupOnce(t, r, "jellyfin", false)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(app, "cache", "blob"), []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(time.Second)
+	archived, err := r.RestoreForRollback(context.Background(), "jellyfin", name)
+	if err != nil {
+		t.Fatalf("RestoreForRollback: %v", err)
+	}
+	if s := read(t, filepath.Join(backupsDir, "jellyfin", archived, "cache", "blob")); s != "kept" {
+		t.Errorf("undeclared cache/blob = %q, want it archived", s)
+	}
+}
+
 func TestMirrorCopiesOnlyTheDelta(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	seedApp(t, src)

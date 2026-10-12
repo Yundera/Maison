@@ -258,7 +258,8 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 	// Deliberately not the request's context: it may already be cancelled by the
 	// failure, and abandoning a rollback half-done is the worst available outcome.
 	in.setUpdate(project, UpdateState{Phase: UpdatePhaseRollback, Message: "Putting the previous version back", Pct: 100})
-	if err := in.RollBack(context.WithoutCancel(ctx), project, res.Backup); err != nil {
+	leftover, err := in.RollBack(context.WithoutCancel(ctx), project, res.Backup)
+	if err != nil {
 		res.Warning = "the update failed AND rolling back failed: " + err.Error()
 		log.Printf("update %s: %s", project, res.Warning)
 		// The worst state Maison can leave an app in: neither the old version nor the
@@ -286,6 +287,15 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 				Args:   map[string]string{"app": project, "reason": "not_running"},
 			})
 			return res, fmt.Errorf("update failed and was rolled back, but %s is not running (%v): %w", project, err, cause)
+		}
+		// Confirmed up, so what the failed update left behind has no further use. Only
+		// here: without VerifyRunning nothing confirmed it, and it stays.
+		if leftover != "" && in.DiscardLeftover != nil {
+			if err := in.DiscardLeftover(context.WithoutCancel(ctx), project, leftover); err != nil {
+				log.Printf("update %s: keeping %s, the failed update's leftover: %v", project, leftover, err)
+			} else {
+				log.Printf("update %s: rolled back and running; discarded %s, the failed update's leftover", project, leftover)
+			}
 		}
 	}
 	// Rolled back and running is still a failed update: the app is on the old version,

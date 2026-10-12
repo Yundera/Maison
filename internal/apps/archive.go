@@ -260,6 +260,58 @@ var removeTrash = func(path string) {
 	}()
 }
 
+// dropExcluded takes out of an archive the directories its app declares derived, so an
+// archive made by renaming a live folder holds what a copied one would: the
+// declaration, honoured. A rename cannot skip anything, which is how a failed update's
+// rollback left watch.nsl.sh's 110 GB metashare cache in a "backup" (2026-10-04) that
+// no budget or sweep could see, until the disk filled a week later.
+//
+// The trees are renamed into one trash entry beside the archive and removed in the
+// background, like a deleted archive: instant on any size, and a restart mid-removal
+// is finished by SweepBackupTrash. It reports how many trees it took out.
+//
+// A tree that cannot be moved is left in the archive and logged. An archive holding
+// more than declared is a cost in disk, never a loss of data.
+func dropExcluded(archive string, skip *exclude.Set) int {
+	if skip.Empty() {
+		return 0
+	}
+	var found []string
+	_ = filepath.WalkDir(archive, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == archive {
+			return nil //nolint:nilerr // best effort: an unreadable entry stays in the archive
+		}
+		rel, rerr := filepath.Rel(archive, p)
+		if rerr != nil || !skip.Match(filepath.ToSlash(rel)) {
+			return nil
+		}
+		found = append(found, p)
+		if d.IsDir() {
+			return fs.SkipDir
+		}
+		return nil
+	})
+	if len(found) == 0 {
+		return 0
+	}
+	trash := filepath.Join(filepath.Dir(archive),
+		fmt.Sprintf("%s%s-excluded-%d", trashPrefix, filepath.Base(archive), time.Now().UnixNano()))
+	if err := os.Mkdir(trash, 0o755); err != nil {
+		log.Printf("backup: archive %s keeps its excluded paths: %v", archive, err)
+		return 0
+	}
+	moved := 0
+	for i, p := range found {
+		if err := os.Rename(p, filepath.Join(trash, fmt.Sprint(i))); err != nil {
+			log.Printf("backup: archive %s keeps excluded %s: %v", archive, p, err)
+			continue
+		}
+		moved++
+	}
+	removeTrash(trash)
+	return moved
+}
+
 // SweepBackupTrash removes what a previous run trashed but did not finish removing —
 // the process stopped mid-removal. Called once at boot; the entries it finds are
 // already invisible, so this only gives the disk space back.

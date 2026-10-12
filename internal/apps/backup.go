@@ -988,20 +988,34 @@ func (r *Registry) locate(ctx context.Context, id, engine, name string) (Provide
 //	remote, no room    write it over the live folder. Not atomic; the undo is a
 //	                   snapshot taken first. See restoreInPlace.
 func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit func(BackupEvent)) error {
+	_, err := r.restore(ctx, id, engine, name, emit)
+	return err
+}
+
+// RestoreForRollback is Restore from the local engine for a failed update, and also
+// returns the name of the archive the swap made of the state it replaced — what the
+// failed update left behind — so the caller can discard it once the put-back version
+// is confirmed running. "" when the restore made no archive (no live folder, or a
+// path that does not archive by rename).
+func (r *Registry) RestoreForRollback(ctx context.Context, id, name string) (string, error) {
+	return r.restore(ctx, id, "", name, nil)
+}
+
+func (r *Registry) restore(ctx context.Context, id, engine, name string, emit func(BackupEvent)) (string, error) {
 	if emit == nil {
 		emit = func(BackupEvent) {}
 	}
 	if !projectRe.MatchString(id) {
-		return fmt.Errorf("invalid app name: %s", id)
+		return "", fmt.Errorf("invalid app name: %s", id)
 	}
 	// Refused before the app is stopped: none of the three paths below can run on the
 	// folder that holds the archives. See ErrHoldsBackups.
 	if _, ok := r.ownsBackupsDir(id); ok {
-		return ErrHoldsBackups
+		return "", ErrHoldsBackups
 	}
 	src, _, err := r.locate(ctx, id, engine, name)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	r.enter(id)
@@ -1015,7 +1029,7 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 	if wasRunning {
 		emit(BackupEvent{Phase: PhaseRestore, Message: "Stopping " + id})
 		if err := r.dx.StopProject(ctx, id); err != nil {
-			return fmt.Errorf("stop app: %w", err)
+			return "", fmt.Errorf("stop app: %w", err)
 		}
 		defer func() {
 			emit(BackupEvent{Phase: PhaseStart, Message: "Starting " + id})
@@ -1053,7 +1067,7 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 	// the live folder instead.
 	est, err := r.EstimateRestore(id, engine, name)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if est.Enough {
 		emit(BackupEvent{Phase: PhaseRestore, Message: "Fetching " + name})
@@ -1061,15 +1075,15 @@ func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit fu
 			emit(BackupEvent{Phase: PhaseRestore, Message: ev.Message, Copy: ev.Pct,
 				Done: ev.Done, Total: ev.Total})
 		}); err != nil {
-			return fmt.Errorf("fetch backup: %w", err)
+			return "", fmt.Errorf("fetch backup: %w", err)
 		}
 		return r.restoreBySwap(downCtx, id, name, live, emit)
 	}
 	if !src.Caps().InPlaceRestore {
-		return fmt.Errorf("not enough free space to restore %s: %s needed, %s available, and %s cannot restore in place",
+		return "", fmt.Errorf("not enough free space to restore %s: %s needed, %s available, and %s cannot restore in place",
 			id, humanBytes(est.Needed), humanBytes(est.Free), src.ID())
 	}
-	return r.restoreInPlace(downCtx, src, id, name, appDir, emit)
+	return "", r.restoreInPlace(downCtx, src, id, name, appDir, emit)
 }
 
 // RestoreForInstall puts a backup back as the app's folder for an app that is **not
@@ -1143,25 +1157,37 @@ func (r *Registry) RestoreForInstall(ctx context.Context, id, engine, name strin
 // restoreBySwap is the original restore: archive the live folder by renaming it —
 // instantaneous, and what makes a mis-clicked restore undoable — then move the
 // archive into its place.
-func (r *Registry) restoreBySwap(ctx context.Context, id, name string, live bool, emit func(BackupEvent)) error {
+//
+// The archive it makes honours the app's backup.exclude like any other archive: a
+// rename moves everything, so the declared trees are taken back out of it (see
+// dropExcluded). The set is read before the rename, while the app's compose is still
+// where exclusionsFor looks for it. It returns that archive's name, "" when there was
+// no live folder to archive.
+func (r *Registry) restoreBySwap(ctx context.Context, id, name string, live bool, emit func(BackupEvent)) (string, error) {
 	backupsDir := r.cfg.BackupsDir()
+	var archived string
 	if live {
 		emit(BackupEvent{Phase: PhaseRestore, Message: "Archiving current state"})
 		dir := AppBackupDir(backupsDir, id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create backup dir: %w", err)
+			return "", fmt.Errorf("create backup dir: %w", err)
 		}
-		safety := filepath.Join(dir, time.Now().Format(StampLayout))
+		skip := r.excludeSet(id)
+		archived = time.Now().Format(StampLayout)
+		safety := filepath.Join(dir, archived)
 		if err := os.Rename(filepath.Join(r.cfg.AppsDir(), id), safety); err != nil {
-			return fmt.Errorf("archive current state: %w", err)
+			return "", fmt.Errorf("archive current state: %w", err)
+		}
+		if n := dropExcluded(safety, skip); n > 0 {
+			log.Printf("restore %s: archived the state it replaced as %s, without its %d excluded path(s)", id, archived, n)
 		}
 	}
 	emit(BackupEvent{Phase: PhaseRestore, Message: "Restoring " + name})
 	if err := RestoreBackup(backupsDir, r.cfg.AppsDir(), id, name); err != nil {
-		return err
+		return archived, err
 	}
 	emit(BackupEvent{Phase: PhaseDone, Message: "Restored", Copy: 100, Sync: 100, Compress: 100})
-	return nil
+	return archived, nil
 }
 
 // restoreInPlace writes the backup over the live app folder, for an app too large

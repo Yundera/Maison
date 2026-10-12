@@ -325,18 +325,24 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 			}
 			return &installer.RoomError{Needed: est.Needed, Free: est.Free}
 		}
-		s.installer.RollBack = func(ctx context.Context, project, name string) error {
-			if err := s.apps.Restore(ctx, project, "", name, nil); err != nil {
-				return err
+		s.installer.RollBack = func(ctx context.Context, project, name string) (string, error) {
+			leftover, err := s.apps.RestoreForRollback(ctx, project, name)
+			if err != nil {
+				return leftover, err
 			}
 			// Restore restarts only an app it found running, and a failed update has
 			// usually left it stopped: StopBeforeUpdate took it down before the converge
 			// that failed. Started here, and its failure returned rather than logged — an
 			// app that does not come back is a rollback that did not work.
 			if s.apps.Running(ctx, project) {
-				return nil
+				return leftover, nil
 			}
-			return s.apps.EnsureStarted(ctx, project)
+			return leftover, s.apps.EnsureStarted(ctx, project)
+		}
+		// The failed update's leftover goes the way any deleted archive does: renamed
+		// into the trash, its bytes removed in the background.
+		s.installer.DiscardLeftover = func(_ context.Context, project, name string) error {
+			return apps.DeleteBackup(cfg.BackupsDir(), project, name)
 		}
 		// An app that declares itself not stoppable keeps running through its update:
 		// stopping the dashboard, or the gateway in front of it, takes down the process

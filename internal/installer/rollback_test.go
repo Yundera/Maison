@@ -30,7 +30,7 @@ var initFailed = errors.New(`init "add-admin": exit status 1`)
 // the store keeps offering the one that just failed.
 func TestARolledBackUpdateIsStillAnIncident(t *testing.T) {
 	in := &Installer{
-		RollBack:      func(context.Context, string, string) error { return nil },
+		RollBack:      func(context.Context, string, string) (string, error) { return "", nil },
 		VerifyRunning: func(context.Context, string) error { return nil },
 	}
 	got := recordReports(in)
@@ -54,7 +54,7 @@ func TestARolledBackUpdateIsStillAnIncident(t *testing.T) {
 // could not open its own data, and that is the worst outcome short of losing it.
 func TestARollBackThatDoesNotComeBackUpIsCritical(t *testing.T) {
 	in := &Installer{
-		RollBack: func(context.Context, string, string) error { return nil },
+		RollBack: func(context.Context, string, string) (string, error) { return "", nil },
 		VerifyRunning: func(context.Context, string) error {
 			return errors.New("filebrowser keeps restarting (last exit code 1)")
 		},
@@ -76,6 +76,51 @@ func TestARollBackThatDoesNotComeBackUpIsCritical(t *testing.T) {
 	}
 	if len(*got) != 1 || (*got)[0].Severity != incident.Critical || !strings.Contains((*got)[0].Detail, "keeps restarting") {
 		t.Errorf("reports = %+v, want one critical naming why the app is down", *got)
+	}
+}
+
+// What the failed update left behind is discarded once the put-back version is
+// confirmed running. Kept, it sat in the backups for good: watch.nsl.sh, 2026-10-04,
+// a 110 GB metashare leftover that filled the disk a week later.
+func TestARolledBackRunningAppDiscardsTheLeftover(t *testing.T) {
+	var discarded []string
+	in := &Installer{
+		RollBack:      func(context.Context, string, string) (string, error) { return "2026-10-04_143559", nil },
+		VerifyRunning: func(context.Context, string) error { return nil },
+		DiscardLeftover: func(_ context.Context, project, name string) error {
+			discarded = append(discarded, project+"/"+name)
+			return nil
+		},
+	}
+	recordReports(in)
+
+	if _, err := in.rollBack(context.Background(), "metashare", UpdateResult{Backup: "2026-10-04_143520"}, initFailed); err == nil {
+		t.Fatal("a rolled-back update reported success")
+	}
+	if len(discarded) != 1 || discarded[0] != "metashare/2026-10-04_143559" {
+		t.Errorf("discarded = %v; want the leftover RollBack named, not the rollback point", discarded)
+	}
+}
+
+// Down after the rollback, the leftover is the evidence of what failed, and the
+// incident points the owner at it. It stays. So does one nothing confirmed running.
+func TestALeftoverIsKeptUnlessThePutBackAppIsConfirmedRunning(t *testing.T) {
+	for name, verify := range map[string]func(context.Context, string) error{
+		"down":       func(context.Context, string) error { return errors.New("keeps restarting") },
+		"unverified": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := &Installer{
+				RollBack:      func(context.Context, string, string) (string, error) { return "2026-10-04_143559", nil },
+				VerifyRunning: verify,
+				DiscardLeftover: func(context.Context, string, string) error {
+					t.Error("discarded the leftover of an app not confirmed running")
+					return nil
+				},
+			}
+			recordReports(in)
+			_, _ = in.rollBack(context.Background(), "metashare", UpdateResult{Backup: "2026-10-04_143520"}, initFailed)
+		})
 	}
 }
 
@@ -111,9 +156,9 @@ func updateFixture(t *testing.T) (*Installer, string, string, *[]string) {
 		*steps = append(*steps, "stop")
 		return nil
 	}
-	in.RollBack = func(context.Context, string, string) error {
+	in.RollBack = func(context.Context, string, string) (string, error) {
 		*steps = append(*steps, "rollback")
-		return nil
+		return "", nil
 	}
 	in.VerifyRunning = func(context.Context, string) error { return nil }
 	return in, dir, installed, steps

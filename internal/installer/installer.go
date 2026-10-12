@@ -102,10 +102,21 @@ type Installer struct {
 	// stopped (see StopBeforeUpdate), so putting the files back is not the whole of it,
 	// and an app that does not start again is a rollback that did not work.
 	//
+	// RollBack returns the name of the archive it made of what the failed update left
+	// behind ("" for none). See DiscardLeftover.
+	//
 	// report, called as the copy moves, feeds the tile's progress bar during the
 	// backup phase (Pct, byte counts, rate, ETA); Phase is set by the caller.
 	BackupBeforeUpdate func(ctx context.Context, project string, report func(UpdateState)) (string, error)
-	RollBack           func(ctx context.Context, project, name string) error
+	RollBack           func(ctx context.Context, project, name string) (leftover string, err error)
+
+	// DiscardLeftover deletes the archive RollBack made of the failed update's state,
+	// once VerifyRunning has confirmed the put-back version stays up. That archive is
+	// the evidence of what failed while the app is down, and dead weight once it runs:
+	// nothing ever offers it, and kept forever it pins the app's disk use at two copies
+	// (a 110 GB one filled watch.nsl.sh's disk a week after a failed update, 2026-10).
+	// It is kept when the app does not come back. Nil keeps it.
+	DiscardLeftover func(ctx context.Context, project, name string) error
 
 	// RollbackRoom checks, before anything else of an update happens, that the
 	// rollback point BackupBeforeUpdate would take fits on its disk. A non-nil error

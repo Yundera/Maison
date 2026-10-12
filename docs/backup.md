@@ -568,6 +568,17 @@ Three consequences worth stating plainly:
   rename, where an exclusion would cost work rather than save it; a repository engine's
   uninstall snapshot honours the declaration like any other backup. The local superset
   is free, so it is not worth an exception to remove.
+- **The archive a restore makes of the state it replaces does not.** It is a rename
+  too, but the app is still installed and refills what was declared derived, so a
+  superset is only free on the day it is made. After the rename the declared trees are
+  moved into the trash and removed in the background (`dropExcluded`). Measured cost of
+  the old behaviour: a failed metashare update on watch.nsl.sh (2026-10-04) filed its
+  110 GB cache away as "the state it replaced", the app refilled its cache, and the disk
+  was full a week later with nothing in the UI pointing at the archive.
+- **A failed update's leftover is discarded once the rollback is confirmed.** The
+  update path's rollback is that same swap. Its archive is the failed update's state,
+  kept as evidence while the put-back version is down; once `VerifyRunning` says it
+  stays up, the installer deletes it (`DiscardLeftover`), since nothing ever offers it.
 
 Kopia has no per-run ignore flag, so the rules are policy on the source path, written
 by `EnsureIgnore` before the **live** pass — never inside the app's downtime — and

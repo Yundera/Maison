@@ -31,8 +31,11 @@ import (
 // the dashboard's API — every app on a shared network — must not be able to change
 // who owns a setting.
 //
-// On disk each manageable field is wrapped: {"managed": bool, "owner": "...",
-// "value": ...}. In memory and over the API it stays flat, with the owners in
+// On disk a MANAGED field is wrapped: {"managed": true, "owner": "...", "value": ...}.
+// An unmanaged one keeps its plain shape — a bare domains array, a plain smtp object —
+// which is what every Maison before managed settings reads: a box rolled back to an
+// older image keeps the user's settings instead of failing to parse the file and
+// running on defaults. In memory and over the API it stays flat, with the owners in
 // Settings.Managed, so nothing that reads a setting's value had to change.
 
 // ManagedNames are the settings a deployment may own, in a stable order.
@@ -282,9 +285,9 @@ type wrapped struct {
 }
 
 // decodeFile reads settings.json. Each manageable field may be in the wrapped shape
-// or in its legacy flat shape — a plain smtp object, a bare domains array — which
-// every box written before managed settings existed carries. Either way it comes out
-// flat, with the owners in Managed; the next write stores it wrapped.
+// or in its plain shape — a plain smtp object, a bare domains array. Either way it
+// comes out flat, with the owners in Managed. (Maison 1.1.50 wrapped unmanaged values
+// too, with "managed": false; those still read, and are written back plain.)
 func decodeFile(b []byte) (Settings, error) {
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(b, &doc); err != nil {
@@ -355,8 +358,8 @@ func setRaw(st *Settings, name string, raw json.RawMessage) error {
 	return nil
 }
 
-// encodeFile renders settings.json: plain fields as they are, manageable fields
-// wrapped. A manageable field with no value and no owner is left out, as before.
+// encodeFile renders settings.json: every field in its plain shape, except a managed
+// one, which is wrapped with its owner. A field with no value and no owner is left out.
 func encodeFile(st Settings) ([]byte, error) {
 	owners := st.Managed
 	flat := st
@@ -394,6 +397,10 @@ func encodeFile(st Settings) ([]byte, error) {
 		vb, err := json.Marshal(v) // nil marshals as null
 		if err != nil {
 			return nil, err
+		}
+		if !managed {
+			doc[n] = vb
+			continue
 		}
 		wb, err := json.Marshal(wrapped{Managed: managed, Owner: owner, Value: vb})
 		if err != nil {

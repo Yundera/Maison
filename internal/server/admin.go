@@ -161,7 +161,9 @@ func (s *Server) handleAdminEnsureStore(w http.ResponseWriter, r *http.Request) 
 	url := appstore.CanonicalURL(body.URL)
 	urls := s.store.URLs()
 	for _, u := range urls {
-		if u == url {
+		// The same store under another spelling counts as present: a box whose user
+		// added it as a clone URL must not get the archive URL listed beside it.
+		if appstore.SameStore(u, url) {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "present"})
 			return
 		}

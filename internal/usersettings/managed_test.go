@@ -14,7 +14,7 @@ import (
 
 func hasAll(string) bool { return true }
 
-func TestLegacyFlatShapesLoadAndAreRewrittenWrapped(t *testing.T) {
+func TestUnmanagedValuesStayInTheShapeOlderImagesRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	legacy := `{"wallpaper":"/w.jpg","smtp":{"host":"relay","port":25,"from":"a@b","to":"c@d"},` +
 		`"domains":[{"name":"lan","domain":"{name}.lan"}]}`
@@ -38,9 +38,14 @@ func TestLegacyFlatShapesLoadAndAreRewrittenWrapped(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	var w wrapped
-	if err := json.Unmarshal(doc["smtp"], &w); err != nil || w.Managed || !strings.Contains(string(w.Value), `"relay"`) {
-		t.Fatalf("smtp not rewritten wrapped: %s", doc["smtp"])
+	// Plain, not wrapped: an image before managed settings must still read it.
+	var smtp notify.SMTP
+	if err := json.Unmarshal(doc["smtp"], &smtp); err != nil || smtp.Host != "relay" || strings.Contains(string(doc["smtp"]), `"managed"`) {
+		t.Fatalf("unmanaged smtp not written plain: %s", doc["smtp"])
+	}
+	var doms []domains.Domain
+	if err := json.Unmarshal(doc["domains"], &doms); err != nil || len(doms) != 1 {
+		t.Fatalf("unmanaged domains not written as a bare array: %s", doc["domains"])
 	}
 	if _, ok := doc["managed"]; ok {
 		t.Fatalf("the API's managed map must not be written top-level: %s", b)
@@ -175,5 +180,38 @@ func TestManagedSMTPIsNotLayeredOverTheEnv(t *testing.T) {
 	}
 	if got.From != "noreply@box" || got.To != "owner@box" {
 		t.Fatalf("addresses should still fall back to the deployment identity: %+v", got)
+	}
+}
+
+// Maison 1.1.50 wrote unmanaged values wrapped with "managed": false. A file from it
+// reads back unmanaged, and the next save writes it plain.
+func TestWrappedUnmanagedFrom1150IsReadAndWrittenPlain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	old := `{"domains":{"managed":false,"value":[{"name":"nip","domain":"x.nip.io"}]},` +
+		`"smtp":{"managed":true,"owner":"Yundera","value":{"host":"smtp","port":587}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(path)
+	got := s.Get()
+	if len(got.Domains) != 1 || got.Managed["smtp"] != "Yundera" {
+		t.Fatalf("1.1.50 file misread: %+v", got)
+	}
+	if _, ok := got.IsManaged("domains"); ok {
+		t.Fatal("managed:false read as managed")
+	}
+	if err := s.Set(Settings{Language: "de_de"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(doc["domains"])), "[") {
+		t.Fatalf("domains not rewritten plain: %s", doc["domains"])
+	}
+	if !strings.Contains(string(doc["smtp"]), `"managed":true`) && !strings.Contains(string(doc["smtp"]), `"managed": true`) {
+		t.Fatalf("managed smtp lost its wrapper: %s", doc["smtp"])
 	}
 }

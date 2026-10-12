@@ -43,9 +43,10 @@ On disk each of these is wrapped:
 "smtp": { "managed": true, "owner": "mesh", "value": { "host": "smtp", "port": 587 } }
 ```
 
-An unmanaged value is wrapped the same way with `"managed": false`. Files written before
-managed settings existed (a flat `smtp` object, a bare `domains` array) are read as
-unmanaged values and rewritten wrapped on the next save.
+Only a managed value is wrapped. An unmanaged one keeps its plain shape (a plain `smtp`
+object, a bare `domains` array), which is what Maison before 1.1.50 reads, so a box rolled
+back to an older image keeps the user's settings. (1.1.50 also wrapped unmanaged values,
+with `"managed": false`; those still read, and are written back plain.)
 
 Over the HTTP API settings stay flat, plus `"managed": {"<setting>": "<owner>"}`.
 `PUT /api/settings` silently drops a managed field (the dashboard sends its whole settings

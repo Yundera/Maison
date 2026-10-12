@@ -1084,3 +1084,19 @@ func readRecommend(root string) []string {
 	}
 	return out
 }
+
+// SameStore reports whether two store URLs name the same store: equal once
+// canonicalised, or resolving to the same archive. A GitHub clone URL
+// (`…/AppStore.git`), its repo page and its `…/archive/refs/heads/main.zip` are one
+// store, and listing two of them would download and show the catalog twice.
+//
+// It compares the FIRST candidate of each (storeZipCandidates): for a repo root
+// that is the `main` archive, which is what such a source is fetched as whenever
+// that branch exists.
+func SameStore(a, b string) bool {
+	a, b = CanonicalURL(a), CanonicalURL(b)
+	if a == b {
+		return true
+	}
+	return CanonicalURL(storeZipCandidates(a)[0]) == CanonicalURL(storeZipCandidates(b)[0])
+}

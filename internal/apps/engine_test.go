@@ -732,6 +732,90 @@ func TestUninstallRefusesTwoConsumingEngines(t *testing.T) {
 	}
 }
 
+// A box where nothing is set to receive uninstalls has switched uninstall backups off.
+// Refusing there would hold every app hostage to a setting the user chose, so the app
+// is removed, data and all, and nothing is archived anywhere.
+func TestUninstallWithNoEngineSetRemovesWithoutBackup(t *testing.T) {
+	r, cfg := newRegistry(t)
+	set := backup.New(apps.NewLocalProvider(cfg))
+	if err := set.SetWriters(apps.TriggerUninstall, nil); err != nil {
+		t.Fatal(err)
+	}
+	r.Engines = set
+
+	name, err := r.Uninstall(context.Background(), "jellyfin", false, nil)
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if name != "" {
+		t.Errorf("an uninstall with no engine named an archive %q", name)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin")); !os.IsNotExist(statErr) {
+		t.Errorf("the app folder survived the uninstall: %v", statErr)
+	}
+	if got := apps.ListBackups(cfg.BackupsDir(), "jellyfin"); len(got) != 0 {
+		t.Errorf("an uninstall with no engine set archived %d backup(s): %+v", len(got), got)
+	}
+}
+
+// An engine that is ticked for uninstalls but not installed is a FAILING destination,
+// not an absent one: the user asked for a backup and it cannot be written. That refuses,
+// whether it is the only destination or one of several.
+func TestUninstallRefusesWhenADestinationIsMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		writers []string
+	}{
+		{"only destination", nil},
+		{"beside a working one", []string{apps.EngineLocal}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, cfg := newRegistry(t)
+			set := backup.New(apps.NewLocalProvider(cfg))
+			if err := set.SetWriters(apps.TriggerUninstall, tc.writers); err != nil {
+				t.Fatal(err)
+			}
+			set.SetMissing(apps.TriggerUninstall, []string{"kopia"})
+			r.Engines = set
+
+			_, err := r.Uninstall(context.Background(), "jellyfin", false, nil)
+			if err == nil || !strings.Contains(err.Error(), "kopia") {
+				t.Fatalf("Uninstall error = %v, want a refusal naming the missing engine", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin", "db", "data.sqlite")); statErr != nil {
+				t.Fatalf("the app's data did not survive a refused uninstall: %v", statErr)
+			}
+			if got := apps.ListBackups(cfg.BackupsDir(), "jellyfin"); len(got) != 0 {
+				t.Errorf("a refused uninstall left %d archive(s) behind: %+v", len(got), got)
+			}
+		})
+	}
+}
+
+// SkipBackup is the explicit way past a failing backup: the engine is not even asked,
+// and the app is removed with its data.
+func TestStartUninstallWithoutBackupSkipsAFailingEngine(t *testing.T) {
+	r, cfg := newRegistry(t)
+	fake := backuptest.NewRemote("kopia")
+	fake.SnapshotErr = errors.New("repository unreachable")
+	r.Engines = backup.New(fake)
+
+	if err := r.StartUninstall("jellyfin", apps.UninstallOpts{SkipBackup: true}); err != nil {
+		t.Fatalf("StartUninstall: %v", err)
+	}
+	waitUntil(t, "the uninstall to finish", func() bool { return len(r.Uninstalls()) == 0 })
+
+	if _, statErr := os.Stat(filepath.Join(cfg.AppsDir(), "jellyfin")); !os.IsNotExist(statErr) {
+		t.Errorf("the app folder survived an uninstall without backup: %v", statErr)
+	}
+	for _, c := range fake.Calls {
+		if strings.HasPrefix(c, "snapshot:") {
+			t.Errorf("an uninstall without backup still asked the engine for a snapshot: %v", fake.Calls)
+			break
+		}
+	}
+}
+
 // A failed uninstall is an incident, not just a tile overlay: the overlay is gone the
 // moment someone dismisses it, and the owner who was not watching never saw it at all.
 // A later successful uninstall of the same app takes it back.
@@ -750,7 +834,7 @@ func TestStartUninstallReportsAFailureAndResolvesItOnSuccess(t *testing.T) {
 	fake.SnapshotErr = errors.New("repository unreachable")
 	r.Engines = backup.New(fake)
 
-	if err := r.StartUninstall("jellyfin", false); err != nil {
+	if err := r.StartUninstall("jellyfin", apps.UninstallOpts{}); err != nil {
 		t.Fatalf("StartUninstall: %v", err)
 	}
 	waitUntil(t, "the failure to be reported", func() bool { mu.Lock(); defer mu.Unlock(); return len(reported) == 1 })
@@ -765,7 +849,7 @@ func TestStartUninstallReportsAFailureAndResolvesItOnSuccess(t *testing.T) {
 	}
 
 	fake.SnapshotErr = nil
-	if err := r.StartUninstall("jellyfin", false); err != nil {
+	if err := r.StartUninstall("jellyfin", apps.UninstallOpts{}); err != nil {
 		t.Fatalf("retry StartUninstall: %v", err)
 	}
 	waitUntil(t, "the incident to be resolved", func() bool { mu.Lock(); defer mu.Unlock(); return len(resolved) == 1 })

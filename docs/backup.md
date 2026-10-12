@@ -684,6 +684,25 @@ where the user was told it goes, at the exact moment the tile disappears and sto
 able to say so. The escape hatch is to point the default engine at this server's disk in
 Settings → Backups and retry.
 
+### Removing without a backup
+
+Two cases skip the backup and **delete** the app folder after removing the containers:
+
+- **No engine is ticked to receive uninstalls** (`ErrNoBackupEngine` from `enginesFor`).
+  That is the user switching uninstall backups off, and refusing would hold every app on
+  the box hostage to a setting they chose. The uninstall dialog says the data will be
+  deleted before it is confirmed.
+- **The user asks for it**: `DELETE /api/apps/<id>?backup=false`, offered only as
+  *Uninstall without backup* at the bottom of the app's Settings → Backups tab, behind a
+  second confirmation. It is the way past a failing backup when the data is not worth
+  fixing the engine for — never something the uninstall falls back to on its own.
+
+An engine ticked for uninstalls that is **not installed** on the box is neither case: it
+is a failing destination, and the uninstall refuses, whether it is the only one or sits
+beside engines that work (all or nothing, as above). `Set.Missing` carries those engines,
+since `SetWriters` refuses unknown IDs and an empty writer set alone cannot tell "off"
+from "gone". An app whose folder holds the backups tree stays unremovable either way.
+
 ---
 
 ## Scheduling

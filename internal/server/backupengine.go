@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -119,25 +120,43 @@ func applyEngineSettings(set *backup.Set, store *backupconfig.Store) {
 	}
 
 	if stated {
+		receives := func(id string, t apps.Trigger) bool {
+			r := conf.Effective(id, backupconfig.Provisioned{})
+			return (t == apps.TriggerSchedule && r.Schedule) || (t == apps.TriggerUninstall && r.Uninstall)
+		}
 		for _, t := range apps.Triggers {
 			var ids []string
 			for _, id := range set.IDs() {
-				r := conf.Effective(id, backupconfig.Provisioned{})
-				if (t == apps.TriggerSchedule && r.Schedule) || (t == apps.TriggerUninstall && r.Uninstall) {
+				if receives(id, t) {
 					ids = append(ids, id)
 				}
 			}
 			if err := set.SetWriters(t, ids); err != nil {
 				log.Printf("backup: %v", err)
 			}
+			// An engine ticked for this trigger that the box does not have. It cannot be a
+			// writer, but it must not vanish either: an uninstall with no writers and
+			// nothing missing goes ahead without a backup, and one whose only destination
+			// is missing has to refuse like any other failing backup.
+			var missing []string
+			for id := range conf.Engines {
+				if _, ok := set.Get(id); !ok && receives(id, t) {
+					missing = append(missing, id)
+				}
+			}
+			sort.Strings(missing)
+			set.SetMissing(t, missing)
 		}
 		return
 	}
 
+	// The legacy single writer is never empty and falls back to the local engine when
+	// the chosen one is gone, so nothing is ever missing on this path.
 	for _, t := range apps.Triggers {
 		if err := set.SetWriters(t, []string{legacyWriter(set, conf)}); err != nil {
 			log.Printf("backup: %v", err)
 		}
+		set.SetMissing(t, nil)
 	}
 }
 
@@ -216,6 +235,12 @@ type engineStatus struct {
 	Run     backup.RunState     `json:"run"`
 	Config  backupconfig.Config `json:"config"`
 	Targets []string            `json:"targets"`
+
+	// UninstallMissing is every engine ticked to archive uninstalls that this box does
+	// not have. The uninstall dialog needs it to tell "no engine receives uninstalls"
+	// (the app is removed without a backup) from "the one that does is gone" (the
+	// uninstall will refuse) — engines[] cannot say, it lists only installed engines.
+	UninstallMissing []string `json:"uninstall_missing,omitempty"`
 
 	// LastRun and NextRun are the two facts the settings page leads with, and neither
 	// can be derived from Run above: RunState is in memory, is wiped at the start of
@@ -355,6 +380,7 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 	if w := s.engines.Writers(apps.TriggerSchedule); len(w) > 0 {
 		out.Active = w[0].ID()
 	}
+	out.UninstallMissing = s.engines.Missing(apps.TriggerUninstall)
 	for _, id := range s.engines.IDs() {
 		p, _ := s.engines.Get(id)
 		info := engineInfo{ID: id, Offsite: p.Caps().Offsite}

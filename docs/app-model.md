@@ -303,6 +303,10 @@ a snapshot in the repository; nothing is left on this disk
   zipped archive of a large app, runs for minutes and nothing waits on it.
 - The app vanishes from the grid — its folder is gone — but its data is one
   restore away, from the store's install dialog or from Settings → Backups.
+- **The exceptions are explicit.** A box with no engine ticked to receive uninstalls,
+  and the *Uninstall without backup* action in an app's Settings → Backups tab, remove
+  the folder without a backup — the data is deleted, and both say so before they run
+  (`backup.md` §Removing without a backup).
 
 ---
 

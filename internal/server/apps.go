@@ -220,12 +220,16 @@ func (s *Server) handleUninstallApp(w http.ResponseWriter, r *http.Request) {
 	// zip=true compresses the archived folder; otherwise it is a plain rename.
 	// Either way the app's data is preserved (docs/app-model.md).
 	zip := r.URL.Query().Get("zip") == "true"
+	// backup=false removes the app and DELETES its data. It is the explicit way past an
+	// uninstall whose backup keeps failing, offered from the app's Settings, Backups tab
+	// only; anything else that sends no backup parameter gets the backed-up uninstall.
+	skip := r.URL.Query().Get("backup") == "false"
 	// Drop any lingering install-progress overlay (e.g. a failed install) so the
 	// tile disappears with the archived app instead of ghosting as an error.
 	if s.installer != nil {
 		s.installer.ClearInstall(id)
 	}
-	err := s.apps.StartUninstall(id, zip)
+	err := s.apps.StartUninstall(id, apps.UninstallOpts{Zip: zip, SkipBackup: skip})
 	// Both refusals, not failures: the app declares it cannot be uninstalled
 	// (ErrNotUninstallable), or its folder is where every archive on the box lives
 	// (ErrHoldsBackups). The UI withholds the menu entry for the first and the API says

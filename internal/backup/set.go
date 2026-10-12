@@ -41,6 +41,13 @@ type Set struct {
 	// Locate had always treated them as independent for reading.
 	writers map[apps.Trigger][]string
 
+	// missing is, per trigger, the engines the configuration sends it to that are not
+	// registered on this box. SetWriters cannot hold them — it refuses an unknown ID —
+	// and without them "nothing receives uninstalls" would mean both "the user switched
+	// that off" and "the only destination the user picked has disappeared", which an
+	// uninstall has to answer in opposite ways. See Missing.
+	missing map[apps.Trigger][]string
+
 	// listings caches each engine's whole listing for the store's install picker.
 	// See ListForInstall.
 	listings map[string]*engineListing
@@ -70,7 +77,7 @@ type engineListing struct {
 // receives every trigger, which makes the local engine — always present, needing no
 // configuration — the natural default until the settings say otherwise.
 func New(providers ...apps.Provider) *Set {
-	s := &Set{byID: map[string]apps.Provider{}, writers: map[apps.Trigger][]string{}}
+	s := &Set{byID: map[string]apps.Provider{}, writers: map[apps.Trigger][]string{}, missing: map[apps.Trigger][]string{}}
 	for _, p := range providers {
 		s.Register(p)
 	}
@@ -156,6 +163,25 @@ func (s *Set) SetWriters(t apps.Trigger, ids []string) error {
 	}
 	s.writers[t] = append([]string(nil), ids...)
 	return nil
+}
+
+// SetMissing records the engines a trigger is configured to write to that this box
+// does not have. Replaced wholesale, like SetWriters, by whoever applies the settings.
+func (s *Set) SetMissing(t apps.Trigger, ids []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.missing[t] = append([]string(nil), ids...)
+}
+
+// Missing is every engine a trigger is configured to write to that is not registered.
+//
+// It is what tells an empty Writers apart: no writers and nothing missing is a box
+// where nobody asked for this trigger to be backed up, while no writers and something
+// missing is a destination that is failing — the user asked, and it cannot be reached.
+func (s *Set) Missing(t apps.Trigger) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.missing[t]...)
 }
 
 // List returns every backup of one app, from every engine, newest first.

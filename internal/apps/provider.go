@@ -142,6 +142,10 @@ type Engines interface {
 	// — and callers must treat it as a refusal rather than backing up nowhere and
 	// reporting success.
 	Writers(t Trigger) []Provider
+	// Missing is every engine the configuration sends a trigger to that this box does
+	// not have. It is what separates an empty Writers the user chose (nothing is meant
+	// to receive the trigger) from one that is a failure (the destination vanished).
+	Missing(t Trigger) []string
 	// Get resolves one engine by ID, for a caller that names its target — a manual
 	// backup aimed at an engine other than the default.
 	Get(id string) (Provider, bool)

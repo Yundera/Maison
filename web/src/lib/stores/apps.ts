@@ -208,9 +208,10 @@ export async function appAction(id: string, action: 'start' | 'stop' | 'restart'
   await loadApps()
 }
 
-/** Start uninstalling an app. Its data is always preserved: the app is backed up
- *  through the default backup engine first, and only removed once that backup is
- *  committed — so on a box backing up offsite, an uninstalled app's data is offsite.
+/** Start uninstalling an app. The app is backed up through every engine set to
+ *  receive uninstalls first, and only removed once that backup is committed — so on a
+ *  box backing up offsite, an uninstalled app's data is offsite. A box where no engine
+ *  receives uninstalls removes the app without a backup.
  *  `zip` only means anything to the local engine (see UninstallDialog).
  *
  *  The request returns as soon as the uninstall is *accepted*, not when it is
@@ -221,6 +222,17 @@ export async function appAction(id: string, action: 'start' | 'stop' | 'restart'
  *  here, as a throw. */
 export async function uninstallApp(id: string, zip = false): Promise<void> {
   await api.del<{ status: string }>(`/api/apps/${encodeURIComponent(id)}?zip=${zip}`)
+  await loadApps()
+}
+
+/** Uninstall an app WITHOUT backing it up: its containers and its data are deleted.
+ *
+ *  The way past an uninstall whose backup keeps failing, when the user has decided the
+ *  data is not worth fixing the engine for. Offered from the app's Settings › Backups
+ *  tab only, behind its own confirmation — never from the tile menu, where the normal
+ *  uninstall backs up first. */
+export async function uninstallAppWithoutBackup(id: string): Promise<void> {
+  await api.del<{ status: string }>(`/api/apps/${encodeURIComponent(id)}?backup=false`)
   await loadApps()
 }
 

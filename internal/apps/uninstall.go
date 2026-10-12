@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yundera/maison/internal/incident"
@@ -76,6 +77,21 @@ type UninstallState struct {
 	Error   string  `json:"error"`   // set when Phase == error
 }
 
+// UninstallOpts is what an uninstall request can ask for.
+type UninstallOpts struct {
+	// Zip compresses the archive. Only the local engine reads it.
+	Zip bool
+
+	// SkipBackup removes the app and its data without backing it up first.
+	//
+	// It is the way past a failing backup, and only that: an uninstall whose backup
+	// fails refuses, which keeps the app and its data, and that is right until the user
+	// decides the data is not worth fixing the engine for. That decision has to be
+	// theirs and explicit — the dashboard offers it from the app's Settings, Backups tab,
+	// never as a fallback the uninstall takes on its own.
+	SkipBackup bool
+}
+
 // StartUninstall launches a detached uninstall of app `id` and tracks its
 // progress so it rides the live app list — the confirmation dialog can close
 // immediately and the tile carries the (red) progress bars to the end.
@@ -87,7 +103,7 @@ type UninstallState struct {
 // stays on the tile until it is retried or dismissed.
 //
 // Idempotent: a second call while the same app is being uninstalled is a no-op.
-func (r *Registry) StartUninstall(id string, zip bool) error {
+func (r *Registry) StartUninstall(id string, opts UninstallOpts) error {
 	if !r.Uninstallable(id) {
 		return ErrNotUninstallable
 	}
@@ -113,7 +129,7 @@ func (r *Registry) StartUninstall(id string, zip bool) error {
 		}
 		// Deliberately not a request context: the uninstall must outlive the
 		// request that asked for it.
-		archive, err := r.Uninstall(context.Background(), id, zip, func(ev UninstallEvent) {
+		archive, err := r.uninstall(context.Background(), id, &opts, func(ev UninstallEvent) {
 			r.mu.Lock()
 			if st := r.uninstalls[id]; st != nil {
 				st.Phase, st.Message = ev.Phase, ev.Message
@@ -147,7 +163,7 @@ func (r *Registry) StartUninstall(id string, zip bool) error {
 			})
 		} else {
 			r.cfg.ResolveIncident("app.uninstall:" + id)
-			r.cfg.AnnounceActivity(uninstalledNotice(id, name, archive))
+			r.cfg.AnnounceActivity(uninstalledNotice(id, name, archive, !opts.SkipBackup))
 		}
 		r.changed()
 	}()
@@ -178,10 +194,14 @@ func (r *Registry) ClearUninstall(id string) {
 
 // uninstalledNotice words the activity notice for a finished uninstall. It names the
 // backup when there is one, because that is where the data went — the first thing
-// anyone reading "X was uninstalled" wants to know.
-func uninstalledNotice(id, name, archive string) incident.Report {
+// anyone reading "X was uninstalled" wants to know. An uninstall that deleted the data
+// says so just as plainly.
+func uninstalledNotice(id, name, archive string, backedUp bool) incident.Report {
 	detail := "It had no data on this server, so nothing was backed up."
-	if archive != "" {
+	switch {
+	case !backedUp:
+		detail = "It was removed without a backup, so its data was deleted."
+	case archive != "":
 		detail = "Its data was kept in the backup " + archive + ". Reinstalling it from that backup brings it back as it was."
 	}
 	return incident.Report{
@@ -224,12 +244,26 @@ func (r *Registry) progressed() {
 // point: a box whose backups are offsite used to get nothing offsite from an uninstall,
 // while the settings page promised that it would.
 //
+// The one case that removes without a backup is a box where NO engine is set to receive
+// uninstalls (ErrNoBackupEngine): the user has switched uninstall backups off, and
+// refusing would hold every app on the box hostage to a setting they chose. An engine
+// that is ticked but missing is not that case — it is a failing backup, and refuses.
+// opts.SkipBackup is the explicit way past a failing one.
+//
 // A failure to reach the engine fails the uninstall rather than falling back to a local
 // archive. The fallback is the more tempting behaviour and the wrong one: it puts the
 // data somewhere other than where the user was told it goes, at the exact moment the
 // tile disappears and stops being able to say so. The error stays on the tile, and the
 // escape hatch is to point the default engine at this server's disk and retry.
 func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func(UninstallEvent)) (string, error) {
+	return r.uninstall(ctx, id, &UninstallOpts{Zip: zip}, emit)
+}
+
+// uninstall is Uninstall with every option. It sets uo.SkipBackup when it removed the
+// app without a backup on its own (nothing receives uninstalls), so the caller can say
+// the data was deleted rather than archived.
+func (r *Registry) uninstall(ctx context.Context, id string, uo *UninstallOpts, emit func(UninstallEvent)) (string, error) {
+	zip := uo.Zip
 	if emit == nil {
 		emit = func(UninstallEvent) {}
 	}
@@ -260,9 +294,25 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 	// uninstall is not a "back this up over there" request — there is no dialog to
 	// choose in and nobody to choose — so it writes wherever the settings say uninstall
 	// archives go.
-	ps, err := r.enginesFor("", TriggerUninstall)
-	if err != nil {
-		return "", err
+	var ps []Provider
+	if !uo.SkipBackup {
+		var err error
+		ps, err = r.enginesFor("", TriggerUninstall)
+		switch {
+		case errors.Is(err, ErrNoBackupEngine):
+			// Nothing is set to receive uninstalls: the user switched them off.
+			uo.SkipBackup = true
+		case err != nil:
+			return "", err
+		case r.Engines != nil && len(r.Engines.Missing(TriggerUninstall)) > 0:
+			// Some destinations are here and one is not. Writing to the ones that are
+			// would break the all-or-nothing promise below as surely as a failed upload.
+			missing := strings.Join(r.Engines.Missing(TriggerUninstall), ", ")
+			return "", archiveHint(fmt.Errorf("uninstall backups are set to go to %s, which is not installed on this box", missing), missing)
+		}
+	}
+	if uo.SkipBackup {
+		return "", r.removeWithoutBackup(ctx, id, appDir, emit)
 	}
 
 	// The engine that TAKES the folder goes last, and there may be at most one.
@@ -487,5 +537,23 @@ func (r *Registry) rollBackArchives(ctx context.Context, id, stamp string, order
 // the error has to say what to do about it rather than leaving the user to guess that a
 // backup setting is what is holding an app hostage.
 func archiveHint(err error, engine string) error {
-	return fmt.Errorf("%w — the app is still installed and running. Either fix %s, or stop archiving uninstalls there in Settings, Backups", err, engine)
+	return fmt.Errorf("%w — the app is still installed and running. Either fix %s, stop archiving uninstalls there in Settings, Backups, or uninstall the app without a backup from its own Settings, Backups tab", err, engine)
+}
+
+// removeWithoutBackup is the uninstall that deletes: containers first, then the app
+// folder. Reached only when nobody asked for uninstalls to be backed up, or when the user
+// explicitly asked for this one not to be.
+//
+// Unlike the backed-up path, a folder that cannot be removed is an error here. There the
+// data was already safe and a leftover folder was untidiness; here the folder IS what the
+// user asked to be rid of, and saying "uninstalled" over it would be false.
+func (r *Registry) removeWithoutBackup(ctx context.Context, id, appDir string, emit func(UninstallEvent)) error {
+	emit(UninstallEvent{Phase: PhaseRemove, Message: "Removing containers", Backup: 100, Archive: 100})
+	r.removeContainers(ctx, id, emit, 100)
+	emit(UninstallEvent{Phase: PhaseRemove, Message: "Deleting app folder", Backup: 100, Archive: 100, Remove: 100})
+	if err := os.RemoveAll(appDir); err != nil {
+		return fmt.Errorf("delete app folder: %w", err)
+	}
+	emit(UninstallEvent{Phase: PhaseDone, Message: "Uninstalled", Backup: 100, Archive: 100, Remove: 100})
+	return nil
 }

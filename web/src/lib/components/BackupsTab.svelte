@@ -22,7 +22,8 @@
   } from '../stores/backups'
   import { fetchBackupStatus, type EngineInfo } from '../stores/backupengine'
   import { engineLabel } from '../stores/backups'
-  import { apps } from '../stores/apps'
+  import { apps, uninstallAppWithoutBackup } from '../stores/apps'
+  import { settingsApp } from '../stores/ui'
   import { renderSize } from '../format'
   import { t } from '../i18n'
   import BackupRows from './BackupRows.svelte'
@@ -141,6 +142,30 @@
       await load()
     }
   }
+  /** Uninstall without backup: the way past an uninstall whose backup keeps failing.
+   *
+   *  It lives here and not in the tile menu on purpose. The menu's uninstall backs up
+   *  first and refuses when that fails, which is what keeps a broken repository from
+   *  costing anyone their data; this is for the user who has read that refusal and
+   *  decided the data can go. Two clicks, the second naming what is deleted. */
+  const app = $derived($apps.find((a) => a.id === id))
+  let dropAsk = $state(false)
+  let dropError = $state('')
+  async function dropWithoutBackup() {
+    busy = true
+    dropError = ''
+    try {
+      await uninstallAppWithoutBackup(id)
+      // The tile carries the progress from here, and the app this panel is about is
+      // going away — so the settings close rather than sit on an app that no longer is.
+      settingsApp.set(null)
+    } catch (e) {
+      dropError = e instanceof Error ? e.message : String(e)
+    } finally {
+      busy = false
+    }
+  }
+
   const restore = (b: Backup) => act(() => restoreBackup(id, b.name, b.engine))
   const remove = (b: Backup) => act(() => deleteBackup(id, b.name, b.engine ?? ''))
 </script>
@@ -283,6 +308,27 @@
   <p class="empty">{$t('backup_empty')}</p>
 {/if}
 
+{#if app && app.uninstallable !== false}
+  <section class="drop">
+    <h4>{$t('uninstall_nobackup_title')}</h4>
+    <p class="hint">{$t('uninstall_nobackup_hint')}</p>
+    {#if !dropAsk}
+      <button class="danger" disabled={busy || running || app.uninstalling} onclick={() => (dropAsk = true)}>
+        {$t('uninstall_nobackup_button')}
+      </button>
+    {:else}
+      <p class="err">{$t('uninstall_nobackup_confirm', { name: app.name || id })}</p>
+      <div class="drop-actions">
+        <button class="ghost" disabled={busy} onclick={() => (dropAsk = false)}>{$t('cancel')}</button>
+        <button class="danger solid" disabled={busy || running} onclick={dropWithoutBackup}>
+          {$t('uninstall_nobackup_go', { name: app.name || id })}
+        </button>
+      </div>
+    {/if}
+    {#if dropError}<p class="err">{dropError}</p>{/if}
+  </section>
+{/if}
+
 <style>
   .tabs {
     display: flex;
@@ -382,5 +428,45 @@
     margin: 0;
     font-size: 0.85rem;
     color: var(--text-muted);
+  }
+  .drop {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .drop h4 {
+    margin: 0 0 0.4rem;
+    font-size: 0.9rem;
+    color: var(--red);
+  }
+  .drop-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .drop button {
+    border-radius: 5px;
+    padding: 0.4rem 0.9rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .drop .danger {
+    border: 1px solid var(--red);
+    background: none;
+    color: var(--red);
+  }
+  .drop .danger.solid {
+    background: var(--red);
+    color: #fff;
+  }
+  .drop .ghost {
+    border: 1px solid var(--border);
+    background: none;
+    color: var(--text);
+  }
+  .drop button:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

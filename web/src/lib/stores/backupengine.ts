@@ -255,6 +255,10 @@ export interface BackupStatus {
   run: RunState
   config: BackupConfig
   targets?: string[]
+  /** Engines ticked to archive uninstalls that are not installed on this box. With no
+   *  engine receiving uninstalls, an empty list means the app is removed without a
+   *  backup; a non-empty one means the uninstall will refuse. */
+  uninstall_missing?: string[]
 
   /** When the schedule last ran, and whether it was failing. Absent on a box that
    *  has never run one.

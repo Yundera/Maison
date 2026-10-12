@@ -24,25 +24,36 @@
    *  on a box backing up offsite the answer is a repository, and on a default install
    *  it is the same disk the app was on, which is a rollback and not a safety net.
    *
-   *  A status call that does not answer leaves the name empty and the copy falls back
+   *  Read from the engines ticked for uninstalls, not from the schedule's: the two are
+   *  separate settings. None ticked is a real answer — the app is removed WITHOUT a
+   *  backup — and so is a ticked engine that is not installed, which makes the server
+   *  refuse; `missing` is what tells those two apart.
+   *
+   *  A status call that does not answer leaves `loaded` false and the copy falls back
    *  to the generic wording: the uninstall still works, and the server resolves the
-   *  engine itself. */
-  let engineId = $state('')
-  let engineName = $state('')
-  let offsite = $state(false)
+   *  engines itself. */
+  let loaded = $state(false)
+  let receivers = $state<{ id: string; label: string; offsite: boolean }[]>([])
+  let missing = $state<string[]>([])
   fetchBackupStatus()
     .then((s) => {
-      const active = (s.engines ?? []).find((e) => e.id === s.active)
-      engineId = s.active
-      engineName = engineLabel(s.active, active?.name, (k) => $t(k))
-      offsite = active?.offsite ?? false
+      receivers = (s.engines ?? [])
+        .filter((e) => e.receives_uninstall)
+        .map((e) => ({ id: e.id, label: engineLabel(e.id, e.name, (k) => $t(k)), offsite: e.offsite }))
+      missing = s.uninstall_missing ?? []
+      loaded = true
     })
     .catch(() => {})
+
+  const engineName = $derived(receivers.map((e) => e.label).join(' and '))
+  /** No engine receives uninstalls and none is missing: this uninstall deletes. */
+  const noBackup = $derived(loaded && receivers.length === 0 && missing.length === 0)
+  const onlyLocal = $derived(receivers.length > 0 && receivers.every((e) => !e.offsite))
 
   // Zipping is a local-engine idea. An engine that deduplicates ignores it — a zip is
   // one opaque blob whose every byte changes when anything inside it does — so offering
   // the checkbox against a repository would offer a setting with no effect.
-  const canZip = $derived(engineId !== '' && !offsite)
+  const canZip = $derived(receivers.some((e) => !e.offsite))
 
   function close() {
     if (!busy) uninstallTarget.set(null)
@@ -72,7 +83,12 @@
   <div class="dialog" onclick={(e) => e.stopPropagation()} role="presentation">
     <h2>{$t('uninstall')} {target.name}?</h2>
     <p class="body">
-      {#if engineName}
+      {#if noBackup}
+        No backup engine is set to receive uninstalls, so this stops and removes the app's
+        containers and <strong>deletes its data</strong> — nothing is kept. To keep a copy,
+        tick an engine for uninstalls in Settings → Backups first. It runs in the background: the
+        tile shows the progress.
+      {:else if engineName}
         This backs the app up to <strong>{engineName}</strong>, then stops and removes its
         containers. Your data is never deleted — the backup is an ordinary one, listed on the
         Backups page, and the app can be reinstalled on top of it from the App Store. It runs in
@@ -83,6 +99,15 @@
         on top of it from the App Store. It runs in the background: the tile shows the progress.
       {/if}
     </p>
+
+    {#if missing.length > 0}
+      <p class="note warn">
+        Uninstalls are set to be backed up to <strong>{missing.join(', ')}</strong>, which is not
+        installed on this server, so this uninstall will be refused and the app kept. Fix it in
+        Settings → Backups, or uninstall the app without a backup from its own Settings → Backups
+        tab.
+      </p>
+    {/if}
 
     {#if canZip}
       <label class="check">
@@ -107,7 +132,7 @@
       </p>
     {/if}
 
-    {#if engineName && !offsite}
+    {#if onlyLocal}
       <p class="note warn">
         {engineName} keeps the backup on this server's own disk, so it protects against a mistaken
         uninstall but not against losing the disk. Choose a remote engine in Settings → Backups if

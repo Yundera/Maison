@@ -947,10 +947,19 @@ func (r *Registry) enginesFor(id string, t Trigger) ([]Provider, error) {
 		out = append(out, p)
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no backup engine is set to receive %s backups — choose one in Settings, Backups", t)
+		if missing := r.Engines.Missing(t); len(missing) > 0 {
+			return nil, fmt.Errorf("%s backups are set to go to %s, which is not installed on this box", t, strings.Join(missing, ", "))
+		}
+		return nil, fmt.Errorf("%w %s backups — choose one in Settings, Backups", ErrNoBackupEngine, t)
 	}
 	return out, nil
 }
+
+// ErrNoBackupEngine is enginesFor's answer when nothing at all is configured to receive
+// a trigger — not one engine failing, but none asked for. A backup refuses on it; an
+// uninstall reads it as the user having switched uninstall backups off, and removes the
+// app without one (see Registry.Uninstall).
+var ErrNoBackupEngine = errors.New("no backup engine is set to receive")
 
 // locate finds the engine that holds a backup and the backup itself.
 //

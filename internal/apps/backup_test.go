@@ -763,7 +763,7 @@ func TestRestoreAndUninstallRefuseTheAppHoldingTheArchives(t *testing.T) {
 	if err := r.RestoreForInstall(context.Background(), "maison", "", "2026-07-10_153045", nil); !errors.Is(err, ErrHoldsBackups) {
 		t.Errorf("RestoreForInstall = %v, want ErrHoldsBackups", err)
 	}
-	if err := r.StartUninstall("maison", false); !errors.Is(err, ErrHoldsBackups) {
+	if err := r.StartUninstall("maison", UninstallOpts{}); !errors.Is(err, ErrHoldsBackups) {
 		t.Errorf("StartUninstall = %v, want ErrHoldsBackups", err)
 	}
 	if _, err := r.Uninstall(context.Background(), "maison", false, nil); !errors.Is(err, ErrHoldsBackups) {

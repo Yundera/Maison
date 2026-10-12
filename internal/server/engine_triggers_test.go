@@ -120,3 +120,44 @@ func TestBothEnginesCanReceiveTheSameTrigger(t *testing.T) {
 		t.Errorf("schedule writers = %v, want both in registration order", got)
 	}
 }
+
+// An engine ticked for uninstalls that the box does not have cannot be a writer, but it
+// must be remembered as missing: an uninstall with no writers and nothing missing goes
+// ahead without a backup, while one whose destination vanished has to refuse.
+func TestATickedEngineThatIsNotInstalledIsMissing(t *testing.T) {
+	set, store := newTriggerSet(t)
+	yes, no := true, false
+	if err := store.Set(backupconfig.Config{
+		Engines: map[string]backupconfig.EngineSettings{
+			apps.EngineLocal: {Uninstall: &no, Schedule: &yes},
+			"rclone":         {Uninstall: &yes, Schedule: &no},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	applyEngineSettings(set, store)
+
+	if got := writers(set, apps.TriggerUninstall); len(got) != 0 {
+		t.Errorf("uninstall writers = %v, want none", got)
+	}
+	if got := set.Missing(apps.TriggerUninstall); !eq(got, []string{"rclone"}) {
+		t.Errorf("uninstall missing = %v, want the ticked engine the box does not have", got)
+	}
+	if got := set.Missing(apps.TriggerSchedule); len(got) != 0 {
+		t.Errorf("schedule missing = %v, want none — rclone was not ticked for it", got)
+	}
+
+	// Unticking it is the user switching uninstall backups off: nothing missing any more.
+	if err := store.Set(backupconfig.Config{
+		Engines: map[string]backupconfig.EngineSettings{
+			apps.EngineLocal: {Uninstall: &no, Schedule: &yes},
+			"rclone":         {Uninstall: &no, Schedule: &no},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	applyEngineSettings(set, store)
+	if got := set.Missing(apps.TriggerUninstall); len(got) != 0 {
+		t.Errorf("uninstall missing = %v after unticking, want none", got)
+	}
+}

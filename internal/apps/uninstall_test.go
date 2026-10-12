@@ -43,7 +43,7 @@ func TestStartUninstallArchivesAndClearsItsProgress(t *testing.T) {
 	r, appsDir, backupsDir := newTestRegistry(t)
 	seedApp(t, filepath.Join(appsDir, "jellyfin"))
 
-	if err := r.StartUninstall("jellyfin", false); err != nil {
+	if err := r.StartUninstall("jellyfin", UninstallOpts{}); err != nil {
 		t.Fatalf("StartUninstall: %v", err)
 	}
 	// It is tracked from the moment it is asked for, so the tile carries progress
@@ -78,7 +78,7 @@ func TestStartUninstallZipReportsProgressOnEveryTrack(t *testing.T) {
 		}
 	}
 
-	if err := r.StartUninstall("jellyfin", true); err != nil {
+	if err := r.StartUninstall("jellyfin", UninstallOpts{Zip: true}); err != nil {
 		t.Fatalf("StartUninstall: %v", err)
 	}
 	waitFor(t, "the uninstall to finish", func() bool { return len(r.Uninstalls()) == 0 })
@@ -191,7 +191,7 @@ func TestStartUninstallRefusesAnAppThatDeclaresIt(t *testing.T) {
 	writeCompose(t, dir, "services: {}\nx-compose-app:\n  view: system\n  lifecycle:\n    uninstallable: false\n")
 	r := New(config.Config{DataRoot: root}, nil)
 
-	if err := r.StartUninstall("maison", false); err != ErrNotUninstallable {
+	if err := r.StartUninstall("maison", UninstallOpts{}); err != ErrNotUninstallable {
 		t.Fatalf("StartUninstall = %v; want ErrNotUninstallable", err)
 	}
 	if len(r.Uninstalls()) != 0 {

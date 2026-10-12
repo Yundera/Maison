@@ -1,385 +1,486 @@
 # Maison
 
-**Maison** is a lightweight self-hosted dashboard for managing Docker apps on a
-single host. It is a *dashboard-only* reimagining of [CasaOS](https://casaos.io):
-same look, same feel, same app store — but stripped down to the one thing most
-people actually use it for: **a home screen for your apps + a store to install more.**
+**A home screen for your self-hosted apps, and a store to install more.**
 
-Maison is **not** CasaOS and shares none of its code at runtime. It *mirrors* CasaOS's
-UX and is **100% compatible with the CasaOS App Store format**, so the exact same store
-used by [`casa-img`](https://github.com/Yundera/casa-img) works here unchanged.
+Maison is a lightweight dashboard for running Docker apps on a single host. It looks and
+feels like [CasaOS](https://casaos.io) and installs from the **same app-store format**,
+but it does only two things: an app grid, and a store to install apps from. There is no
+file manager, no user accounts, and no disk tooling.
 
-It ships as **one container**: a Go binary with the Svelte UI embedded in it, driving the
-host Docker engine over the bind-mounted socket. No database, no file manager, no login.
+It ships as **one container**: a Go binary with the Svelte UI built in, driving the host
+Docker engine through the mounted socket. It has no database. The folders on disk and
+the Docker daemon *are* its state, so every app it installs is a plain Compose project
+you can still run by hand.
+
+[Install on Unraid](https://ca.unraid.net/apps/maison-1v9cr880ceymo4?q=maison) ·
+[Image: `ghcr.io/yundera/maison`](https://github.com/orgs/Yundera/packages/container/package/maison) ·
+[Default app store](https://github.com/Yundera/AppStore) ·
+[Documentation](#documentation) ·
+MIT licensed
 
 ---
 
-## Quick start
+## Contents
 
-```bash
-cp .env.example .env          # set DATA_HOST_PATH + DOCKER_GID for your host
-docker compose up -d --build  # dashboard on http://localhost:8080
-```
+- [Features](#features)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [Using Maison](#using-maison)
+- [App stores](#app-stores)
+- [How it works](#how-it-works)
+- [Documentation](#documentation)
+- [Maison vs CasaOS](#maison-vs-casaos)
+- [Development](#development)
 
-> **No auth, by design.** Maison has no login screen and assumes it sits behind a
-> trusted boundary (LAN, VPN, or an authenticating proxy). Never expose `:8080` directly
-> to the internet.
+---
 
-### The data folder and the host path (read this once)
+## Features
 
-Maison runs *in* a container, but the apps it installs come up on the **host** Docker
-daemon — so their bind-mount sources are resolved **on the host, not inside this
-container**. Two env vars keep that straight:
+- **CasaOS-style home screen.** A clock, CPU/RAM and storage widgets, and a drag-to-reorder
+  app grid with live status. Wallpapers. Four languages: English, French, German, Chinese.
+- **App store, CasaOS format.** Reads CasaOS store zips as they are, from as many stores as
+  you like. Browse, search, install, update, and share deep links to a single app.
+- **Your changes survive updates.** Maison copies the store's `docker-compose.yml`
+  unmodified and never edits it. Port, env and volume changes go into a
+  `docker-compose.override.yml` next to it, so an update replaces the base file and keeps
+  your changes.
+- **Finds apps it didn't install.** Any Compose stack on the host that carries `x-casaos`
+  metadata appears as a tile, marked *unmanaged*.
+- **Updates.** One page lists every app with an update and can update them all. Each app is
+  backed up first and rolled back if its update fails.
+- **Backups.** Per-app archives on the same disk (`local`), or nightly off-box backups of
+  apps *and* your files with [kopia](https://kopia.io), with retention. Restore one app, or
+  restore your files into a new folder or over the live tree.
+- **Uninstall keeps your data.** The app folder is moved into the archive tree, not deleted,
+  so a restore brings it back.
+- **Resources.** Live CPU, network, disk and per-app usage, 30 days of history, and disk /
+  network benchmarks.
+- **Notifications.** Failed backups and other incidents can be sent by email over SMTP.
+- **Extra domains.** Publish every app on more domains (`sslip.io`, `nip.io` or your own) in
+  addition to its primary one.
+- **Installable as a PWA** from *Settings → This device*.
 
-| Env | Meaning | Default |
-|-----|---------|---------|
-| `DATA_ROOT` | Where the data folder is mounted **inside** the container. Maison reads and writes its own files here. | `/DATA` |
-| `DATA_HOST_PATH` | The **host** path of that same folder. Written into every installed app's compose, so the host daemon binds the right directory. | = `DATA_ROOT` |
-| `STATE_DIR` | Where everything Maison owns lives — settings, store cache, and the deployment's [`.env.app`](./docs/app-env.md). An in-container path, like `DATA_ROOT`. Move it to keep Maison's state out of a folder that is also an app folder, or onto another volume. | `${DATA_ROOT}/AppData/maison` |
+## Getting started
 
-Set `DATA_HOST_PATH` to wherever the data folder really lives on the host, and bind that
-same host path to `/DATA`:
+### Before you install
+
+- A Linux host with **Docker Engine** and the **Compose plugin** (`docker compose version`).
+  Maison is published for **amd64** and **arm64**.
+- A **data folder** on the host. Maison and every app it installs keep their files there.
+  This guide uses `/DATA`. Any absolute path works.
+- A **trusted network**. Maison has **no login screen**. It is meant to sit on your LAN,
+  behind a VPN, or behind a proxy that does authentication. **Never publish its port to the
+  internet.** Maison also holds the Docker socket, which gives the same access as root on
+  the host.
+
+### Option A: Docker Compose (any Linux host)
+
+Create a folder for the stack and save this as `docker-compose.yml`:
 
 ```yaml
-environment:
-  DATA_ROOT: "/DATA"
-  DATA_HOST_PATH: "/opt/maison/DATA"   # <- the host directory
-volumes:
-  - type: bind
-    source: /opt/maison/DATA           # <- MUST equal DATA_HOST_PATH
-    target: /DATA
+services:
+  maison:
+    image: ghcr.io/yundera/maison:1            # major-version tag; :latest also exists
+    container_name: maison
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DATA_ROOT: /DATA                         # where the data folder is mounted inside the container
+      DATA_HOST_PATH: /DATA                    # the same folder on the HOST; must equal `source` below
+      PUID: "1000"                             # owner applied to app folders
+      PGID: "1000"
+      TZ: Europe/Paris
+      HOST_PROC: /host/proc                    # optional: host-accurate Resources page
+    group_add:
+      - "999"                                  # group of /var/run/docker.sock: stat -c '%g' /var/run/docker.sock
+    networks:
+      - mesh
+    volumes:
+      - type: bind
+        source: /DATA                          # MUST equal DATA_HOST_PATH
+        target: /DATA
+        bind:
+          propagation: rshared
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+
+networks:
+  mesh:                                        # the network apps join (see .env.app below)
+    name: mesh
+    driver: bridge
 ```
 
-Use a **host bind**, not a named volume — a bind mount can't point inside another
-container's named volume.
+Then:
+
+```bash
+sudo mkdir -p /DATA
+stat -c '%g' /var/run/docker.sock     # put this number under group_add
+docker compose up -d
+```
+
+Open **http://\<host-ip\>:8080**.
+
+> **Why two paths?** Maison runs inside a container, but the apps it installs are started by
+> the **host** Docker daemon. The host resolves their bind mounts on the host, not inside
+> Maison's container. `DATA_HOST_PATH` tells Maison where the data folder really is, so
+> every app's volumes point to the right place. If it doesn't match the bind `source`, the
+> apps' data ends up in a different directory from the one you think. Use a **host bind
+> mount**, not a named volume.
+
+To build from source instead, clone this repo, then
+`cp .env.example .env && docker compose up -d --build`. The repo's
+[`docker-compose.yml`](./docker-compose.yml) is the same stack, set up through `.env`.
+
+### Option B: Unraid
+
+Maison is in **Community Applications**:
+**[Maison on Unraid](https://ca.unraid.net/apps/maison-1v9cr880ceymo4?q=maison)**.
+
+1. In **Apps**, search for **Maison** and click **Install**. The template defaults are fine.
+   The data folder is `/mnt/user/appdata/maison` and `DATA_HOST_PATH` already matches it.
+   Change both together, or neither.
+2. **Create the app network once.** The template runs Maison on Unraid's bridge, which
+   doesn't create the `mesh` network that installed apps join by default. In the Unraid
+   terminal, run:
+   ```bash
+   docker network create mesh
+   ```
+   If you skip this, installs fail with *network mesh declared as external, but could not be
+   found*.
+3. Open the WebUI on port **8080**.
+
+### First steps
+
+1. **Check `.env.app`.** On first boot Maison creates
+   `<data folder>/AppData/maison/.env.app`. This file holds the variables that every app
+   receives: the network, your domain, and a default admin password. **Change
+   `APP_DEFAULT_PASSWORD`** before you install anything you will expose. It ships as the
+   same placeholder on every install. You can edit the file in *Settings → App
+   environment*. Changes take effect the next time each app starts. Details are in
+   [`docs/app-env.md`](./docs/app-env.md).
+2. **Install an app.** Open the **App Store** tile, pick an app, and click **Install**. The
+   tile shows two progress bars, one for the image download and one for the stack start.
+3. **Open it.** Read the next section first.
+
+### Opening your apps: the one thing to know
+
+A tile opens whichever address the app declares:
+
+| The app declares… | It opens at… | What you need |
+|---|---|---|
+| a published port (`port_map` in `x-casaos`) | `http://<the host you opened Maison on>:<port>` | nothing |
+| a domain route (`webui-host: myapp-${domain}`) | `https://myapp-<APP_DOMAIN>` | `APP_DOMAIN` set in `.env.app`, **and** a reverse proxy that routes it |
+
+Apps in the default [Yundera store](https://github.com/Yundera/AppStore) use the second
+kind. They publish no ports. A [Caddy](https://caddyserver.com) router finds them by their
+`caddy_*` labels on the app network. On a plain install with no domain, these apps install
+and run, but the tile shows **"no reachable address"**. To make them open, either:
+
+- **put a reverse proxy on the `mesh` network.** Use one that reads `caddy_*` labels, such
+  as [caddy-docker-proxy](https://github.com/lucaslorentz/caddy-docker-proxy). Then set
+  `APP_DOMAIN` (and the `APP_PUBLIC_IP*` values) in `.env.app`. [`dev/`](./dev/README.md)
+  is a working example: Maison, Caddy, and a Dex login provider wired together, served
+  locally on `app.localhost`. Or
+- **run it on a [Yundera PCS](https://yundera.com)**, where the domain, proxy, TLS and
+  login are already in place.
+
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Dashboard loads, installs fail with *permission denied* on `docker.sock` | `group_add` doesn't match the socket's group. Use `stat -c '%g' /var/run/docker.sock`. |
+| *network mesh declared as external, but could not be found* | Create it (`docker network create mesh`) or set `APP_NET` in `.env.app` to a network that exists. |
+| App data is not where you expected on the host | `DATA_HOST_PATH` ≠ the bind `source`. Make them equal. |
+| Tile says **no reachable address** | The app is routed by domain. See [Opening your apps](#opening-your-apps-the-one-thing-to-know). |
+| An app's install fails with *password is too short* | Set `APP_DEFAULT_PASSWORD` in `.env.app` to 12+ characters. |
+| Health check | `GET /ping` returns `200`. |
+
+---
+
+## Configuration
+
+Maison keeps two sets of settings apart: the variables **Maison itself needs to run**, and
+the variables **apps receive**.
+
+### Maison's environment
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `DATA_ROOT` | `/DATA` | The data folder's path **inside** the container. |
+| `DATA_HOST_PATH` | = `DATA_ROOT` | The same folder's path **on the host**. Must equal the bind `source`. |
+| `APPSTORE_URL` | Yundera AppStore zip | Store zip URL(s), comma-separated. |
+| `PUID` / `PGID` | `1000` / `1000` | Owner applied to app folders, and passed to apps. |
+| `TZ` | (none) | Timezone for the dashboard and the apps. |
+| `HTTP_ADDR` | `:8080` | Listen address. |
+| `HOST_PROC` | (none) | Where the host's `/proc` is mounted (e.g. `/host/proc`). With it, the Resources page shows the host's network, processes and mounts, not the container's. |
+| `STATE_DIR` | `${DATA_ROOT}/AppData/maison` | Where Maison keeps everything it owns. |
+| `SHARED_DIR` | `${DATA_ROOT}/AppDataShared` | State that belongs to the deployment, not to any one app. |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` `SMTP_TO` `SMTP_SECURITY` | (none) | Default mail transport for notifications. Unset means no mail. Can also be set in *Settings → Notifications*. See [`docs/incidents.md`](./docs/incidents.md). |
+| `FEEDBACK_URL` / `FEEDBACK_TOKEN` | (none) | Where *Send feedback* goes. Unset means the feature is hidden. See [`docs/feedback.md`](./docs/feedback.md). |
+| `BACKUP_ENGINE_CONTAINER` | `backup-engine` | An already-running backup-engine container to run commands in. If it can't be used, Maison starts a one-off container instead. |
+
+The repo's compose also reads `HOST_PORT` (published port) and `DOCKER_GID` from `.env`.
+
+### What apps receive: `.env.app`
+
+`${STATE_DIR}/.env.app` belongs to the deployment. Maison creates it once with documented
+defaults and never overwrites it. On every install and every start, Maison copies its keys
+into the app's own `.env`, together with the variables it computes per app (`AppID`,
+`PUID`, `PGID`, `TZ`, `DATA_ROOT`). Store apps refer to these only as `${VAR}` in their
+compose, so running `docker compose up -d` by hand in the app folder does exactly what
+Maison does.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `APP_NET` | `mesh` | External network each app's main service joins. It must already exist. |
+| `APP_DOMAIN` | (empty) | Base domain apps are routed on (`myapp-${APP_DOMAIN}`). |
+| `APP_PUBLIC_IP*` | (empty) | Public IP(s), used in fallback `sslip.io` / `nip.io` routes. |
+| `APP_EMAIL`, `APP_DEFAULT_PASSWORD` | (empty), `changeme-please` | Seeded into apps that create an admin account on first boot. **Change the password.** |
+
+Full reference: [`docs/app-env.md`](./docs/app-env.md).
+
+### On disk
+
+```
+<data folder>/
+├── AppData/
+│   ├── <app>/                     one folder per installed app
+│   │   ├── docker-compose.yml     the store's file, byte-for-byte, never edited
+│   │   ├── docker-compose.override.yml   your edits + where the app came from (store-ref)
+│   │   ├── .env                   variables from .env.app + per-app ones
+│   │   └── …                      the app's data
+│   └── maison/                    Maison's own state (STATE_DIR)
+│       ├── .env.app
+│       ├── .backups/<app>/<stamp> archives: on-demand backups and uninstalls
+│       └── …                      settings, store cache, resource history
+└── AppDataShared/                 deployment-wide state (SHARED_DIR)
+```
+
+Maison has no app registry. The folders under `AppData/` define which apps exist, and
+Docker reports how each one is doing. See [`docs/app-model.md`](./docs/app-model.md).
+
+---
+
+## Using Maison
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Maison                                                 [ settings ▾ ]  │
+├────────────────────┬────────────────────────────────────────────────────┤
+│  12:28             │  App ▾                                       [ + ] │
+│  Thu, 9 Jul        │                                                    │
+│                    │   ┌──────┐   ┌──────┐   ┌──────┐   ┌──────┐        │
+│  System status     │   │ App  │   │ Jelly│   │ Next │   │ Photo│        │
+│  ◔ 12% CPU         │   │ Store│   │  fin │   │ cloud│   │ prism│        │
+│  ◑  9% RAM         │   └──────┘   └──────┘   └──────┘   └──────┘        │
+│                    │   ┌──────┐   ┌──────┐                              │
+│  Storage           │   │ Gitea│   │ Grafa│*   * unmanaged: found on     │
+│  12.9 / 386 GB     │   │      │   │  na  │      the host, not installed │
+│  ▓▓░░░░░░░░░░      │   └──────┘   └──────┘      by Maison               │
+│                    │                                                    │
+│  Widget settings › │                                                    │
+└────────────────────┴────────────────────────────────────────────────────┘
+```
+
+**Tiles.** Each tile has a status dot driven by the container's health check. Hover a tile
+for **Open** and a ⋯ menu: Settings, Restart, Stop / Start, Uninstall. A tile is greyed out
+when the app is stopped, shows `…` while an action is running, and shows two progress bars
+during an install. If you open an app that is stopped or still starting, Maison first
+starts it and shows a status page until the app answers.
+
+**App / Services / System.** When the box has them, the grid heading turns into a switch:
+
+- **Services** are apps with no web UI, such as Samba or a database. They are sorted there
+  automatically, and their tile opens Settings.
+- **System** apps are the platform's own pieces. They declare `view: system`.
+- An app can also mark itself as not stoppable or not uninstallable. Maison then hides
+  those menu entries, and the API refuses those actions.
+
+**`+` menu.** Adds a bookmark tile that links to any URL.
+
+**App settings.** Each app has a config window (ports, env, volumes, web-UI address) plus
+tabs for **logs**, **stats**, **backups** and **update source**. You can point an app at a
+different store from its Update tab.
+
+**Settings.** The top-bar menu holds wallpaper, language, widgets and *Send feedback*. The
+full settings page (`/settings/<section>`) has these sections:
+
+| Section | What it does |
+|---|---|
+| Domains | Extra domains every app is published on ([`docs/domains.md`](./docs/domains.md)) |
+| App environment | Edit `.env.app` |
+| App stores | Add or remove store sources |
+| Updates | Every app that needs an update or attention, and an **Update all** button |
+| Backups | Engine and schedule; browse and restore every backup, including backups of uninstalled apps ([`docs/backup.md`](./docs/backup.md)) |
+| Resources | Live and 30-day CPU / network / disk / per-app usage, benchmarks, containers no app accounts for ([`docs/resources.md`](./docs/resources.md)) |
+| Notifications | Mail transport, recipients, the incident list ([`docs/incidents.md`](./docs/incidents.md)) |
+| This device | Install as an app (PWA); settings for this browser only |
+
+---
+
+## App stores
+
+A store is a **zip of Compose apps served over HTTP**, in the
+[CasaOS App Store](https://github.com/IceWhaleTech/CasaOS-AppStore) layout. Every app is a
+`docker-compose.yml` with an `x-casaos` block (title, icon, category, screenshots, web-UI
+port). Any host that serves a zip works. Nothing in Maison is tied to one forge.
+
+- **Several stores:** set `APPSTORE_URL` to a comma-separated list, or add stores in
+  *Settings → App stores*. Catalogs are cached under `${STATE_DIR}/appstore` and refreshed
+  at boot, every night, and when you press ⟳.
+- **`x-compose-app`:** Maison also reads its own, richer extension next to `x-casaos`. It
+  adds a web-UI address, data folders, lifecycle hooks, views, and backup exclusions. Store
+  authors: [`docs/x-compose-app.md`](./docs/x-compose-app.md).
+- **`store.json`** (optional, at the store root) gives the store a display name:
+  `{ "name": "Yundera App Store" }`. A store without one is listed by its URL.
+
+### Deep links
+
+A **store reference** points to one app in one store, and `/store/…` URLs carry it:
+
+```
+/store/<zip URL without https://>/-/<apps folder>/<app>
+/store/github.com/Yundera/AppStore/archive/refs/heads/main.zip/-/Apps/FileBrowser
+```
+
+Maison splits on the **last** `/-/`, so GitLab archive URLs, which contain one, also work.
+The store does **not** need to be configured on the box: the page warns you before you
+install from a store you haven't added. A link only shows the app. Installing always takes
+a click, so a pasted URL can never install software on a box. `/store/<app>` alone looks
+the app up in the merged catalog. The grammar is defined in `internal/appstore/ref.go`
+(the reference) and copied in `web/src/lib/storeref.ts`.
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+  browser["Browser<br/>(Svelte 5 SPA)"] -- "REST /api · WebSocket /ws" --> server
+
+  subgraph maison["Maison container (:8080)"]
+    server["Go server<br/>internal/server"]
+    server --> apps["apps<br/>tile list"]
+    server --> store["appstore<br/>fetch · cache · merge"]
+    server --> inst["installer<br/>install · update"]
+    server --> bk["backup<br/>local · kopia"]
+    inst --> stackup["stackup<br/>the only path to compose up"]
+    apps --> stackup
+  end
+
+  stackup -- "docker compose" --> sock[("/var/run/docker.sock<br/>HOST engine")]
+  apps -- "events · state" --> sock
+  store -. "HTTPS" .-> zips[("store zips")]
+  server <--> data[("/DATA<br/>AppData/&lt;app&gt;/")]
+```
+
+**The one rule.** Every `docker compose up` (install, start, update, saving an app's
+config) goes through `internal/stackup`:
+
+```
+create declared folders → pre_up hook → docker compose up -d --remove-orphans → post_up hook
+```
+
+If you call `composecmd.Up` directly, the app starts without its declared folders, and the
+bug only shows up on someone's *second* boot. Full sequences and failure semantics:
+[`docs/lifecycle.md`](./docs/lifecycle.md).
+
+**Live updates.** One multiplexed WebSocket carries system stats, app status, logs and
+install progress. Container events and lifecycle changes re-send the app list, so tiles
+update on their own. Each channel is only sampled while someone is subscribed to it.
+
+| Package | Role |
+|---|---|
+| `internal/server` | chi router: REST `/api`, WebSocket `/ws`, the SPA. Also routes by `Host:`: a request for a stopped app's domain gets the **launch page** instead of the dashboard. |
+| `internal/apps` | The tile list. Matches app folders on disk against live Docker state and finds unmanaged `x-casaos` stacks. |
+| `internal/appstore` | Fetches, caches and merges store zips. Store references. |
+| `internal/installer` | Install and update, with two-track progress. |
+| `internal/stackup` · `composecmd` | The single path to `docker compose up` · the compose CLI wrapper. |
+| `internal/dockerx` | Docker Engine API: discovery, lifecycle, event stream. |
+| `internal/appenv` · `envinject` | `.env.app`, and the variables written into each app's `.env`. |
+| `internal/xcasaos` · `xcomposeapp` | The two compose extensions. |
+| `internal/backup` · `engine` | Backup sets and the pluggable engines (`local`, `kopia`). |
+| `internal/incident` · `notify` | Incident register and mail notifications. |
+| `internal/metrics` · `bench` | Resource history ring file · disk / network benchmarks. |
+| `internal/live` | WebSocket hub. |
+| `web/` | Svelte 5 + Vite. Builds into `internal/ui/dist`, which the Go binary embeds. |
 
 ---
 
 ## Documentation
 
-The README is the overview. These are **authoritative** and win on any conflict:
+This README is the overview. The files in `docs/` are **authoritative** and take
+precedence if anything here disagrees with them.
 
-| Doc | What it specifies |
-|-----|-------------------|
-| [`docs/app-model.md`](./docs/app-model.md) | Where an app **lives** on disk and how its tile state is derived. Start here. |
-| [`docs/lifecycle.md`](./docs/lifecycle.md) | What install / start / update / save / uninstall / backup / restore actually **do**, in order, and their failure semantics. |
-| [`docs/x-compose-app.md`](./docs/x-compose-app.md) | Maison's own compose extension: `view`, `folders`, `hooks`, and the resolved web-UI URL. |
-| [`docs/domains.md`](./docs/domains.md) | The **additional domains** apps are published on (`sslip.io` / `nip.io` / your own), and the Caddy routes Maison generates for them. |
-| [`docs/FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md) | Row-by-row scope table vs `casa-img`. |
-| [`docs/backup.md`](./docs/backup.md) | **Design, not yet implemented.** Offsite backup and disaster recovery: the two backup sets, the pluggable engine, scheduling, retention, encryption, and recovery mode. |
-| [`docs/resources.md`](./docs/resources.md) | The **Resources** page: live host breakdown, 30 days of history in a fixed-size ring file, the `HOST_PROC` mount, and the disk / network benchmarks. |
-| [`docs/feedback.md`](./docs/feedback.md) | **Send feedback**: off unless the deployment names a sink (`FEEDBACK_URL` + `FEEDBACK_TOKEN`), and the sink's GET/POST contract. |
-
-> **Reference implementation:** the full CasaOS bundle Maison slims down lives at
-> `D:\workspace\yundera\yundera-root\packages\casa-img` (container path
-> `/d/workspace/yundera/yundera-root/packages/casa-img`). When a *CasaOS* behaviour is
-> ambiguous, that package is the source of truth. When a *Maison* behaviour is
-> ambiguous, `docs/` is.
+| Doc | What it covers |
+|-----|----------------|
+| [`app-model.md`](./docs/app-model.md) | Where an app lives on disk and how its tile state is derived. **Start here.** |
+| [`lifecycle.md`](./docs/lifecycle.md) | What install / start / update / save / uninstall / backup / restore do, in order, and how they fail. |
+| [`app-env.md`](./docs/app-env.md) | `.env.app`: what an app receives, and how it reaches the app's `.env`. |
+| [`x-compose-app.md`](./docs/x-compose-app.md) | Maison's compose extension: web-UI URL, folders, hooks, views, lifecycle, backup exclusions. |
+| [`domains.md`](./docs/domains.md) | Extra domains and the Caddy routes Maison generates for them. |
+| [`backup.md`](./docs/backup.md) | Backup and recovery: the two backup sets, engines, schedule, retention, encryption. Mostly implemented; the status note at the top lists the gaps. |
+| [`incidents.md`](./docs/incidents.md) | Incident register and notifications. |
+| [`resources.md`](./docs/resources.md) | The Resources page, its history file, the `HOST_PROC` mount, benchmarks. |
+| [`feedback.md`](./docs/feedback.md) | *Send feedback* and the sink contract. |
+| [`FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md) | Row-by-row scope compared with CasaOS. |
+| [`dev/README.md`](./dev/README.md) | The local stack with Caddy and SSO. |
 
 ---
 
-## 1. Goals
+## Maison vs CasaOS
 
-- **Dashboard-first.** The app grid + system widgets are the product. Everything else is
-  trimmed.
-- **Pixel-for-pixel CasaOS UX.** Layout, widgets, interactions, and visual design match the
-  CasaOS dashboard (see [§4](#4-ux)). A CasaOS user should feel no difference on the home
-  screen.
-- **CasaOS App Store, unchanged.** Consume the identical app-store zip `casa-img` uses. No
-  new store format, no forked catalog. **Multi-store**, with auto-update.
-- **Unmanaged-app discovery.** Any Compose stack on the host carrying `x-casaos` metadata —
-  even one Maison didn't install — surfaces as a tile. This replaces CasaOS's manual
-  "install a customized app" form.
-- **Single lightweight container.** One image, one port, the host Docker socket.
-- **Zero-config.** Boots to a usable dashboard: no setup wizard, no login.
+Maison is **not** a CasaOS fork and shares no code with it. It copies the CasaOS home-screen
+UX and is compatible with its **store format**, and nothing else. CasaOS plugins won't
+work.
 
-## 2. Non-goals (explicit exclusions)
-
-| Excluded | Why |
-|----------|-----|
-| **File manager / Files app** | Maison is dashboard-only. No `/DATA` browser, no upload/download UI. |
-| **Authentication / users / login** | No login screen, no sessions. Maison assumes a trusted network boundary; the operator owns access control. |
-| **Multi-user / RBAC** | Single implicit operator. No accounts. |
-| **Global search bar** | The dashboard has no search box. |
-| **Promo / onboarding cards** | No getting-started cards on the home screen. |
-| **Manual "install a customized app" form** | Replaced by unmanaged-app auto-discovery ([§4.3](#43-main-column)). |
-| **Terminal / SSH / hardware tools** | No disk/RAID management, network shares, or remote-storage tooling. |
-| **Being CasaOS** | Not a fork you can drop CasaOS plugins into. Compatibility is *store format only*. |
-
-## 3. Positioning vs CasaOS / casa-img
-
-`casa-img` is a full CasaOS bundle: a dashboard **plus** a file manager, user accounts,
-disk/storage management, network shares, and remote-storage tooling. Maison keeps only
-the dashboard + app-management surface.
-
-| Feature area | casa-img | Maison |
-|--------------|----------|----------|
-| App-grid dashboard (same UX) | ✅ | ✅ |
-| App store: browse / install / uninstall / auto-update | ✅ | ✅ |
-| Multi-store | ✅ | ✅ |
-| Multi-service Compose apps | ✅ | ✅ |
-| System widgets (CPU / RAM / storage) | ✅ | ✅ |
-| Resource monitor with history ([`resources.md`](./docs/resources.md)) | ❌ | ✅ 30 days |
-| Disk / network benchmarks | ❌ | ✅ |
-| Per-app logs, container stats, live status | ✅ | ✅ |
-| i18n / multi-language | ✅ | ✅ |
-| Authentication / users | ✅ | ❌ |
-| File manager / Files | ✅ | ❌ |
-| Global search bar · promo cards | ✅ | ❌ |
-| Manual "install customized app" form | ✅ | ❌ → unmanaged-app discovery |
-| On-disk app layout | CasaOS nesting | 🔶 **flat `AppData/<app>`** ([`app-model.md`](./docs/app-model.md)) |
-| Per-app config edits | rewrites the compose | 🔶 **override compose file** ([§5.1](#51-per-app-configuration)) |
-| Disk/RAID mgmt, Samba shares, remote storage | ✅ | ❌ |
+| | CasaOS | Maison |
+|---|:-:|:-:|
+| App-grid dashboard, widgets, i18n | ✅ | ✅ |
+| Store: multi-store, install, update | ✅ | ✅ |
+| Apps it didn't install show up as tiles | ❌ (manual import form) | ✅ automatic |
+| Edits survive app updates | ❌ (rewrites the compose) | ✅ override file |
+| Off-box backups, update rollback | ❌ | ✅ |
+| Resource history, benchmarks, notifications | ❌ | ✅ |
+| On-disk layout | `AppData/casaos/apps/<app>` | flat `AppData/<app>` |
+| Login / users | ✅ | ❌ (put it behind your own auth) |
+| File manager, disk/RAID, Samba, remote storage | ✅ | ❌ |
 
 Full table: [`docs/FEATURE-COMPARISON.md`](./docs/FEATURE-COMPARISON.md).
 
 ---
 
-## 4. UX
+## Development
 
-The dashboard is a 1:1 copy of the CasaOS home screen. Live reference:
-<https://demo.nsl.sh/#/> (the casa-img demo — minus the login page and Files tile, which
-Maison does not have).
-
-Theming is **wallpaper-only** (CasaOS has no light/dark toggle); the App Store is a
-**panel**, not a page you navigate away to; settings live in a **top-bar dropdown**.
-
-### 4.1 Layout
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  [top bar: brand · social links · settings dropdown]                      │  ← top toolbar
-├───────────────────────┬──────────────────────────────────────────────────┤
-│  ┌─────────────────┐  │                                                    │
-│  │  12:28          │  │   App                                        [ + ]│  ← app grid header
-│  │  Thu, 9 Jul     │  │  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐           │
-│  └─────────────────┘  │  │ App  │  │ App  │  │ App  │  │ App  │  ...       │  ← installed apps
-│  ┌─────────────────┐  │  │Store │  │  A   │  │  B   │  │  C   │            │
-│  │  System status  │  │  └──────┘  └──────┘  └──────┘  └──────┘           │
-│  │   12% CPU  0°C  │  │  ┌──────┐  ┌──────┐                                │
-│  │    9% RAM       │  │  │ App  │  │ App* │   * = unmanaged (auto-detected)│
-│  └─────────────────┘  │  │  D   │  │  E   │                                │
-│  ┌─────────────────┐  │  └──────┘  └──────┘                                │
-│  │  Storage        │  │                                                    │
-│  │  Healthy        │  │   (no global search bar, no promo cards)           │
-│  │  12.95/386 GB   │  │                                                    │
-│  │  ▓░░░░░░░░       │  │                                                    │
-│  └─────────────────┘  │                                                    │
-│  [ Widget settings › ]│                                                    │
-└───────────────────────┴──────────────────────────────────────────────────┘
-```
-
-### 4.2 Left column — widgets
-
-- **Clock/date** — large local time + full date.
-- **System status** — two radial gauges: CPU % (with temperature, `0°C` when unavailable)
-  and RAM % (with absolute value). Live-updating.
-- **Storage** — disk health badge, `Used / Total`, usage bar.
-- **Widget settings** — toggle which widgets show.
-
-### 4.3 Main column
-
-Just the app grid — no global search bar, no promo cards.
-
-- Each **tile** = icon + name, with a status dot driven by the container health check.
-  Hover reveals **Open** and a burger (⋯) menu: **Open, Settings, Restart, Stop, Start,
-  Uninstall**. Tiles are **drag-to-reorder**.
-- **App / Services / System.** The section heading is a switch when the box has
-  system apps or services. System apps are the platform's own pieces, which declare
-  `view: system` in their compose ([`docs/x-compose-app.md`](./docs/x-compose-app.md)):
-  that only gives them their own grid. An app that declares `lifecycle.stoppable` or
-  `lifecycle.uninstallable` false — whatever its grid — has **Stop** or **Uninstall**
-  withheld from its menu (the API refuses it too); **Restart** stays. Services are apps with no web UI (Samba, a
-  database), sorted there automatically; their tile opens Settings instead of a URL.
-  With neither, the heading is a plain "App" and nothing else changes.
-- A tile is **greyed** when stopped, shows a **`…` overlay** while a lifecycle op is in
-  flight, and shows **two progress bars** (image download + stack start) while installing.
-- **Unmanaged apps** — any host Compose stack carrying `x-casaos` that Maison didn't
-  install appears automatically, badged **unmanaged**. Maison reads its `x-casaos` for
-  icon/name/link and can start/stop/restart it, but its config is owned by whatever
-  created it.
-- **`+` menu** → **add an external link** (pin a bookmark tile to any URL).
-- The **App Store** tile opens the store panel ([§5](#5-app-store-casaos-compatible)).
-
-### 4.4 Settings (top-bar dropdown)
-
-Wallpaper, **language** (`en_us`, `fr_fr`, `de_de`, `zh_cn` — one JSON per language),
-widget visibility, and the **app-store source URLs** (multi-store).
-
-The full-screen settings page (`/settings/<section>`) carries the rest: domains, the
-deployment's `.env.app`, backups, and **Resources** — the host monitor, its thirty days of
-recorded history, and the disk / network benchmarks
-([`docs/resources.md`](./docs/resources.md)). The System status widget's arrow opens the
-per-app monitor, which links through to the same page.
-
----
-
-## 5. App Store (CasaOS-compatible)
-
-- **Source:** a zip of Compose listings over HTTP, laid out as `casa-img`'s:
-  `https://github.com/Yundera/AppStore/archive/refs/heads/main.zip`. Any host serving a zip
-  will do — nothing in Maison is specific to one forge. Set `APPSTORE_URL` to a
-  **comma-separated** list for multiple stores. Catalogs are cached under
-  `${DATA_ROOT}/AppData/maison/appstore` and refreshed hourly.
-- **App format:** standard `docker-compose.yml` + the CasaOS **`x-casaos`** block (title,
-  icon, tagline, category, screenshots, main port/scheme/path). Read and honoured
-  unchanged.
-- **Store UI:** category browse, featured/most-popular, in-store search, and an app detail
-  page (screenshots, description, developer, install). Deep-linkable — see below.
-
-### 5.0 Store references (deep links)
-
-A **store reference** addresses one app in one store, and is what `/store/…` carries:
-
-```
-/store/<locator>/-/<apps folder>/<app>
-/store/git.example.org/appstore/archive/main.zip/-/Apps/FileBrowser
-```
-
-- The **locator** is the store's zip URL with the scheme left off (`https` is implied;
-  write `http://` out in full if you mean it). It need **not** be a configured source —
-  this is what lets a link show an app from a store the box has never added, and the detail
-  page warns before installing one. Nothing is written to the source list.
-- The **apps folder** is named by the link rather than assumed, so a store is free to keep
-  its apps somewhere other than `Apps/`.
-- `/store/<app>` with no `/-/` still means "this app, from the merged catalog", exactly as
-  before, and the older `/store/<app>?store=<url>` form is still read (and rewritten into
-  the grammar above on arrival).
-
-The separator is GitLab's `/-/`, split on the **last** occurrence — a GitLab-hosted store's
-own archive URL contains one:
-
-```
-/store/git.example.org/group/project/-/archive/main/project-main.zip/-/Apps/FileBrowser
-```
-
-A deep link only **fetches and shows** an app. Installing is still a click, and that is
-deliberate: a URL anyone can paste must not be able to install software on a box.
-
-The grammar lives in `internal/appstore/ref.go` (authority) and `web/src/lib/storeref.ts`
-(the SPA's mirror). The API takes the same reference as `?store=` + `?apps_path=` alongside
-a single-segment app id.
-
-### 5.0.1 `store.json` — what a store calls itself
-
-Optional, at the store root, next to `category-list.json`:
-
-```json
-{ "name": "Yundera App Store" }
-```
-
-It is what the source list and the unlisted-store warning show. **A store without one is
-named by its URL** — deliberately, rather than by a name derived from the URL's shape:
-"owner/repo" is one forge's path layout, it means nothing for a store served from anywhere
-else, and it renders two refs of the same repository identically, which is exactly when
-somebody most needs to know which one they are about to install from.
-
-A store that has never been fetched successfully has no name of its own yet, and is listed
-by URL until it has.
-- **Install:** writes the app's project to `${DATA_ROOT}/AppData/<app>/` and brings it up
-  through the lifecycle pipeline ([§6.2](#62-the-one-rule)). The store's
-  `docker-compose.yml` is copied **byte-for-byte** and never modified — customization goes
-  in the override file, which is what lets updates stay clean.
-- **Variables, not rewrites:** everything the deployment contributes reaches an app as a
-  `${VAR}` its own compose already references — `APP_NET`, `DATA_ROOT`, `APP_DOMAIN`, the
-  rest of `.env.app`, plus the base vars Maison computes (`PUID`, `PGID`, `TZ`, `AppID`).
-  They are written into the app's `.env` and resolved by `docker compose` on every up, so
-  a `docker compose up -d --remove-orphans` you run by hand in the app's folder does exactly
-  what Maison does. See [`docs/app-env.md`](./docs/app-env.md).
-
-### 5.1 Per-app configuration
-
-Maison keeps a CasaOS-style config window (ports, env, volumes) but **diverges on how
-edits persist**:
-
-- The store's `docker-compose.yml` is **never modified**.
-- Edits are written to a separate **`docker-compose.override.yml`**, layered on via Compose
-  override semantics. The running app = base + override.
-- The override also carries the **update reference** (`store-ref`: one locator naming the
-  store, the folder and the app) — so it survives a base re-copy on update, and can be
-  repointed at another store from the Update tab.
-
----
-
-## 6. Architecture
-
-One Go binary with the Svelte SPA embedded (`//go:embed`), talking to the host Docker
-daemon. No database: **the filesystem and the Docker daemon are the state.**
-
-```
-┌──────────────────────── Maison container ─────────────────────────┐
-│  Svelte 5 SPA (embedded)  ──REST /api + WebSocket /ws──►  Go server  │
-│                                      ├── system   CPU/RAM/disk       │
-│                                      ├── apps     registry (managed  │
-│                                      │            + unmanaged)       │
-│                                      ├── appstore fetch/cache/merge  │
-│                                      ├── installer install + update  │
-│                                      └── stackup ──► docker compose ─┼──► /var/run/docker.sock
-│  Serves on one HTTP port (:8080)                                     │        (HOST engine)
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-### 6.1 Packages
-
-| Package | Role |
-|---|---|
-| `internal/server` | chi router: REST `/api`, WebSocket `/ws`, SPA catch-all. Also dispatches by `Host:` — a request for an app's gateway host, while that app is down, gets the **launch gate** instead of the dashboard. |
-| `internal/apps` | The tile list: reconciles on-disk projects with live Docker state; surfaces unmanaged `x-casaos` stacks. |
-| `internal/appstore` | Fetches, caches, and merges CasaOS store zips (multi-store). |
-| `internal/installer` | Store install + update, with two-track progress (image pull, stack start). |
-| `internal/stackup` | **Every** `docker compose up` goes through here (see below). |
-| `internal/composecmd` | Shells out to the `docker compose` plugin. |
-| `internal/dockerx` | Docker Engine API: discovery, lifecycle, container event stream. |
-| `internal/envinject` | The variables an app's compose is interpolated with, and host↔container path mapping. It does not touch the compose itself. |
-| `internal/xcasaos` · `internal/xcomposeapp` | The two compose extensions. |
-| `internal/live` | WebSocket hub, channel-multiplexed; sampling only runs while a client is subscribed. |
-| `web/` | Svelte 5 + Vite. Vite builds straight into `internal/ui/dist`, which the Go binary embeds. |
-
-### 6.2 The one rule
-
-Every `docker compose up` goes through `internal/stackup`:
-
-```
-ensure folders  →  pre_up hook  →  docker compose up -d --remove-orphans  →  post_up hook
-```
-
-Install, start, update, save-config and save-web-UI all land there. **Never call
-`composecmd.Up` directly** — an app started that way comes up without its declared
-directories, and the bug only surfaces on someone's *second* boot. Full sequences and
-failure semantics: [`docs/lifecycle.md`](./docs/lifecycle.md).
-
-### 6.3 Live updates
-
-One multiplexed WebSocket carries system stats, app status, and per-app logs/stats.
-Container events, lifecycle transitions, and install progress all rebroadcast the app
-list, so tiles move on their own. Channels are subscribe-gated: nobody watching, nothing
-sampled.
-
----
-
-## 7. Development
+You need Go (version in `go.mod`) and Node.js (LTS).
 
 ```bash
+# UI first: Vite builds into internal/ui/dist, which go:embed bakes into the binary
+npm --prefix web install
+npm --prefix web run build
+npm --prefix web run check     # svelte-check
+
 # Backend (serves the embedded UI on :8080)
 go run ./cmd/maison
 go test ./...
 
-# Frontend (Vite on :5173, proxies /api + /ping + /ws to :8080)
-npm --prefix web install
+# UI hot reload: Vite on :5173, proxies /api, /ping and /ws to :8080
 npm --prefix web run dev
-npm --prefix web run build     # → internal/ui/dist (the Go embed dir)
-npm --prefix web run check     # svelte-check
 ```
 
-`go build` needs `internal/ui/dist` to exist or the `//go:embed` fails — a placeholder
-`index.html` is committed there for exactly that reason. Run the Vite build for a real UI.
+A placeholder `internal/ui/dist/index.html` is committed so `go build` works before the UI
+is built. Run the Vite build to get the real UI. If Go or Node isn't installed, build in
+containers:
 
-### The `dev/` stack
+```bash
+docker run --rm -v "$PWD/web":/src -w /src node:22 sh -c 'npm install && npm run build'
+docker run --rm -v "$PWD":/src -w /src golang:1.26 go test ./...
+```
 
-The root `docker-compose.yml` runs Maison alone, which is enough to browse the store and
-install ordinary apps. It **cannot** test SSO-enabled store apps: those need a Caddy router
-(to route them by their `caddy_*` labels) and a Dex OIDC provider. `dev/` adds exactly
-those, wired the way a production PCS is:
+**Store apps with SSO** need a Caddy router and a Dex OIDC provider. The root compose
+doesn't have them. [`dev/`](./dev/README.md) adds both, wired the way a Yundera PCS wires
+them:
 
 ```bash
 cd dev
@@ -388,111 +489,10 @@ cp .env.dev.example .env.dev   # set DOCKER_GID + DATA_HOST_PATH
 docker compose --env-file .env.dev up -d --build
 ```
 
-See [`dev/README.md`](./dev/README.md) — including the TLS-trust caveat that bites
-back-channel OIDC calls.
+**Releases.** A GitHub Action publishes `ghcr.io/yundera/maison` for amd64 and arm64:
+`:main` on every push to `main`; `:X.Y.Z`, `:X.Y`, `:X` and `:latest` on `vX.Y.Z` tags.
+To release, push a tag. There is no version file to edit.
 
----
+## License
 
-## 8. Deployment
-
-One container, host Docker socket bind-mounted, one published port, apps on a shared
-bridge network. This is the shipped `docker-compose.yml`:
-
-```yaml
-services:
-  maison:
-    image: maison:latest
-    build: .
-    container_name: maison
-    hostname: maison
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      DATA_ROOT: "/DATA"                      # in-container mount target
-      DATA_HOST_PATH: "${DATA_HOST_PATH:-/DATA}"  # the SAME folder, host-side
-      PUID: "1000"
-      PGID: "1000"
-      TZ: "${TZ:-UTC}"
-      APPSTORE_URL: "https://github.com/Yundera/AppStore/archive/refs/heads/main.zip"
-    group_add:
-      - "${DOCKER_GID:-999}"                  # the docker socket's group on the host
-    networks:
-      - mesh
-    volumes:
-      - type: bind                            # source MUST equal DATA_HOST_PATH
-        source: ${DATA_HOST_PATH:-/DATA}
-        target: /DATA
-        bind:
-          propagation: rshared
-      - type: bind
-        source: /var/run/docker.sock
-        target: /var/run/docker.sock
-
-networks:
-  mesh:
-    driver: bridge
-    name: mesh
-```
-
-### Environment
-
-| Var | Default | Purpose |
-|-----|---------|---------|
-| `DATA_ROOT` | `/DATA` | Data folder inside the container. |
-| `DATA_HOST_PATH` | = `DATA_ROOT` | That folder's path on the host. |
-| `APPSTORE_URL` | Yundera AppStore zip | Store source(s), comma-separated. |
-| `PUID` / `PGID` | `1000` | Ownership applied to app folders. |
-| `TZ` | — | Timezone for the dashboard and installed apps. |
-| `HTTP_ADDR` | `:8080` | Listen address. |
-
-### Notes
-
-- **`/var/run/docker.sock`** is the only privilege Maison needs — it is how apps get
-  installed and run. Mounting it is equivalent to root on the host; run Maison only on
-  hosts you trust it on. `DOCKER_GID` must match `stat -c '%g' /var/run/docker.sock`.
-- **`/DATA`** (bind, `rshared`) holds app data and the compose projects Maison writes.
-- **State** lives at `${DATA_ROOT}/AppData/maison/` — settings, store cache, and the
-  deployment's [`.env.app`](./docs/app-env.md). It is Maison's own app directory, so
-  everything Maison owns is in one place. It holds no `docker-compose.yml` on a
-  standalone install and therefore renders no tile; a deployment that installs the
-  dashboard's own compose stack here gets a Maison tile, which is intended.
-- **Backups** are one feature with one **engine** setting, on one page
-  (**Settings → Backups**): the engine and schedule at the top, every backup below.
-  Make one from an app's **Backups** tab, or let the nightly run do it; browse and
-  restore every backup on the box — including those of uninstalled apps — from that
-  page. Each row says where it is, and a restore comes from wherever it actually is
-  rather than from whichever engine is selected today, so switching engines never
-  strands what the previous one wrote.
-  - **`local`** (default) writes archives to `${DATA_ROOT}/AppData/maison/.backups/<app>/<stamp>`,
-    one per app per moment, holding the whole app folder (compose + override + `.env`
-    + data). On the data disk, so on its own it is a rollback mechanism, not disaster
-    recovery.
-  - **A remote engine** — kopia today — sends apps *and* your files (everything at the
-    data root except `AppData/`) to a repository off the box, nightly, with tiered
-    retention. Your files get their own card on the Backups page, and restore either into
-    a new folder — the safe way to get a few files back — or over the live tree, which
-    takes an undo snapshot first and never touches app data. It streams
-    straight to the repository rather than staging a copy, so an app occupying most of
-    its own disk can still be backed up. The engine runs as a container; Maison ships
-    no binary and installs nothing on the host. Credentials are rendered onto the box
-    out of band — Maison only reads them. See [`docs/backup.md`](docs/backup.md).
-- **Uninstall never deletes.** The app folder is **moved** into the archive tree (or zipped,
-  on request); the data stays put and is one restore away.
-- **Health:** `GET /ping` → 200.
-- **TLS / public routing** is out of scope — front Maison with a reverse proxy
-  (Caddy/Traefik/mesh-router), exactly as `casa-img` is fronted.
-
----
-
-## 9. Reference material
-
-- **Slim-from source of truth:** `/d/workspace/yundera/yundera-root/packages/casa-img`
-  — `Dockerfile` (the 8-service bundle), `dev/docker-compose.yml` (deployment model),
-  `conf/app-management/app-management.conf` (store URL + paths),
-  `s6-overlay/scripts/casa-init.sh` (socket-GID trick),
-  `docs/environment-variable-injection.md` (template rules), `CasaOS-UI/` (the Vue 2.7
-  dashboard Maison matches).
-- **Live UX reference:** <https://demo.nsl.sh/#/>
-- **CasaOS App Store format:** <https://github.com/Yundera/AppStore> · upstream
-  <https://github.com/IceWhaleTech/CasaOS-AppStore>
+[MIT](./LICENSE)

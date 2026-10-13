@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/maison-logo-horizontal-inverse.svg">
+    <img src="docs/brand/maison-logo-horizontal-couleur.svg" alt="Maison" width="320">
+  </picture>
+</p>
+
 # Maison
 
 **A home screen for your self-hosted apps, and a store to install more.**

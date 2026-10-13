@@ -9,34 +9,34 @@ authoring files to every browser.
 
 ## Where the artwork came from
 
-`icon.svg` was traced from **`template-root/root/stacks/maison/icon.png`** — the
-192px raster already used for Maison's own tile on a PCS — at template-root
-`a6bcc61`. The circle centres and radii were fitted to that file's
-silhouette rather than eyeballed, and the redraw reproduces it to **RMSE 0.0119**
-(1.2%), which is antialiasing noise rather than shape error.
+The **October 2026 brand pack** ("MAISON, PACK LOGO") — the nautilus shell, blue
+`#27AAE1` with a single pink chamber `#EE2A7B`. The shell geometry is the pack's
+own vector, never redrawn here:
 
-It was redrawn rather than upscaled because 192px is below the 512px a web app
-manifest needs, and enlarging the raster to 512 is visibly soft on any modern
-phone. A vector source also rasterises to whatever size a future platform asks
-for.
+| file | what it is |
+|---|---|
+| `favicon.svg` | the pack's `maison-symbole-favicon.svg` verbatim — the flat shell, no ribs |
+| `icon.svg` | the pack's `maison-symbole-icone.svg` nested at 77.5% on a white rounded tile (the pack's `icon-512.png` placement) |
+| `icon-square.svg` | the same shell at 72%, full bleed — the apple-touch source (the pack's `apple-touch-icon.png` placement) |
+| `icon-maskable.svg` | the same shell at 60%, full bleed — the maskable source (the pack's `icon-maskable-512.png` placement) |
 
-Three things in the source look like mistakes and are not, all recorded in the
-file's own comment: the background is a **gradient**, not the flat `#F8F6F5` a
-colour-picker reports; there are **two** brand colours drawn at 95% opacity, not
-the four you can pick out of the original; and the **z-order is asymmetric** —
-the left amber circle is under the red, the right one over it.
+The rendered `apple-touch-icon.png` and `icon-maskable-512.png` are pixel-identical
+(RMSE 0) to the pack's own PNGs.
 
-## Checking it still matches
+The pack's usage rules that bind these files:
 
-```sh
-compare -metric RMSE \
-  <(rsvg-convert -w 192 -h 192 icon.svg | convert png:- -background white -alpha remove -alpha off png:-) \
-  <(convert ../../../template-root/root/stacks/maison/icon.png -background white -alpha remove -alpha off png:-) \
-  null:
-# expect the parenthesised figure <= 0.015
-```
+- **Below 48px, only the favicon or icone variant** — never the thin-line
+  `maison-symbole-trait`. That is why `favicon-32.png` and the browser-tab SVG
+  come from `favicon.svg`, not `icon.svg`.
+- **One pink chamber, no other colour inside the shell.**
+- **Clear space around the mark at least the pink chamber's height.**
 
-And the maskable safe zone — nothing important may leave the circle:
+The full-size logos (horizontal, vertical, "par Yundera", colour/mono/inverse) are
+not part of the app; the two the top-level README shows are in `docs/brand/`.
+
+## Checking the maskable safe zone
+
+Nothing important may leave the circle:
 
 ```sh
 rsvg-convert -w 512 -h 512 icon-maskable.svg \
@@ -44,13 +44,12 @@ rsvg-convert -w 512 -h 512 icon-maskable.svg \
       -compose CopyOpacity -composite show:
 ```
 
-## Drift
+## Other copies of the mark
 
-The upstream `icon.png` is in a **different repository** (the `template-root`
-submodule) and can change without anything here noticing — the `compare` above is
-the only thing that would catch it.
+Two places carry the mark without reading these files, and must be updated by hand
+when it changes:
 
-The right long-term fix is the other direction: regenerate
-`template-root/root/stacks/maison/icon.png` **from** `icon.svg` so this becomes
-the single source for the tile and the PWA alike. That needs a change in
-template-root's repo, so it has not been done here.
+- **`internal/server/pwa.go`** — the offline page inlines `favicon.svg`, because it
+  must render while the server that would serve `/icons/` is unreachable.
+- **The Maison tile on a box** — `stacks/maison/icon.png` in
+  `mesh-router-template-root`, a different repository, rendered from `icon.svg`.

@@ -123,6 +123,14 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 // a seeded secret (`${APP_DEFAULT_PASSWORD}|alnum:32`) reads: nil for a fresh
 // install, which then generates, rather than the password Sync just wrote in.
 func UpWithPrior(ctx context.Context, cfg config.Config, project, dir string, files []string, prior []byte) error {
+	// Before anything is written: a stack whose data is in another shape than its
+	// compose expects must not start, and nothing about it should change either.
+	if err := CheckDataVersion(dir); err != nil {
+		cfg.ReportIncident(dataIncident(project, err))
+		return err
+	}
+	cfg.ResolveIncident(dataIncidentID(project))
+
 	files = SyncRoutes(cfg, project, dir, files)
 	// After SyncRoutes: the vars Maison owns win over its seeds.
 	if err := appenv.Sync(cfg, project, dir); err != nil {

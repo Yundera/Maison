@@ -351,6 +351,13 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	if err != nil {
 		return fmt.Errorf("parse compose: %w", err)
 	}
+	// The data version this compose expects, read before anything is fetched or
+	// written: a store app whose migrations block is malformed is an authoring
+	// error, and refusing it here costs nothing.
+	data, err := f.Data()
+	if err != nil {
+		return fmt.Errorf("x-compose-app: %w", err)
+	}
 
 	project := projectName(f.Name, ref.ID)
 
@@ -380,10 +387,26 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return err
 	}
+	// A fresh install never replays history: its data is created in the shape the
+	// compose expects, so the marker says so before pre_install runs. Over a restored
+	// folder the data already has a version — read before the store's compose
+	// replaces the one it came with — and it has to be the one this compose expects:
+	// install runs no migrations, and starting the new version on older data is the
+	// failure migrations exist to prevent. See docs/migrations.md.
+	if have, ok, err := stackup.InstalledDataVersion(appDir); err != nil {
+		return err
+	} else if ok && have != data.Version {
+		return fmt.Errorf("the existing data is at version %d but the store's current version of the app expects %d, and an install runs no migrations",
+			have, data.Version)
+	}
+
 	// The store's bytes, unchanged. Maison does not rewrite an app's compose — see
 	// the package doc of internal/envinject and docs/app-model.md.
 	composePath := filepath.Join(appDir, "docker-compose.yml")
 	if err := os.WriteFile(composePath, raw, 0o644); err != nil {
+		return err
+	}
+	if err := stackup.WriteDataVersion(appDir, data.Version); err != nil {
 		return err
 	}
 

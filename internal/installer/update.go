@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -134,6 +135,13 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	defer in.endUpdate(project)
 	step := func(phase, msg string, pct float64) {
 		in.setUpdate(project, UpdateState{Phase: phase, Message: msg, Pct: pct})
+	}
+
+	// Which data the new version expects, against which data the app holds — read
+	// while the old compose is still on disk, since it is the baseline for an install
+	// with no marker. First of the refusals: each one here costs nothing.
+	if err := in.checkDataPlan(project, dir, newBase); err != nil {
+		return res, err
 	}
 
 	// Refused before the image pull, so an app whose rollback point cannot fit costs
@@ -529,4 +537,67 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// Reasons an update is refused over its data plan, carried in the app.update
+// incident's args like the no-rollback ones.
+const (
+	DataRefusedStoreError = "data_store_error"
+	DataRefusedNewer      = "data_newer"
+	DataRefusedBlocked    = "data_blocked"
+	DataRefusedMigrations = "data_migrations"
+)
+
+// checkDataPlan refuses an update whose new version expects its data in another
+// shape than the app holds it (docs/migrations.md, "The update sequence").
+//
+// This build runs no migration steps yet, so any pending step refuses the update —
+// with the step's own message when it is a blocked one. That is the safe reading of
+// the manifest: a build that ignored data_version would put the new image on
+// unconverted data, which is the Odoo incident. An update that leaves data_version
+// where it is goes through untouched, which is every update today.
+func (in *Installer) checkDataPlan(project, dir string, newBase []byte) error {
+	f, err := composefile.Parse(newBase)
+	if err != nil {
+		return fmt.Errorf("parse the store's compose: %w", err)
+	}
+	refuse := func(reason, title, detail string) error {
+		log.Printf("update %s: refused (%s): %s", project, reason, detail)
+		in.report(incident.Report{
+			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
+			Title:  project + " was not updated: " + title,
+			Detail: detail + "\n\nNothing was changed; the app is still running its current version.",
+			Args:   map[string]string{"app": project, "reason": reason},
+		})
+		return errors.New(title + ": " + detail)
+	}
+	data, err := f.Data()
+	if err != nil {
+		return refuse(DataRefusedStoreError, "its new version declares its data migrations wrongly",
+			"The store's x-compose-app block is invalid ("+err.Error()+"). This is for the app's maintainer to fix.")
+	}
+	from, ok, err := stackup.InstalledDataVersion(dir)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		from = 1
+	}
+	steps, err := data.Pending(from)
+	if err != nil {
+		return refuse(DataRefusedNewer, "its data is newer than the store's version", err.Error())
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+	for _, m := range steps {
+		if m.Blocked != "" {
+			return refuse(DataRefusedBlocked, "this update cannot be applied automatically",
+				fmt.Sprintf("Moving the data from version %d to %d crosses %q, which the app's maintainer marked as manual:\n\n%s",
+					from, data.Version, m.Label(), strings.TrimSpace(m.Blocked)))
+		}
+	}
+	return refuse(DataRefusedMigrations, "it needs a data migration",
+		fmt.Sprintf("The new version expects its data at version %d; it is at %d. This Maison does not run data migrations yet, so it will not start the new version on unconverted data.",
+			data.Version, from))
 }

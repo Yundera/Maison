@@ -10,6 +10,8 @@ import (
 
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/incident"
+	"github.com/yundera/maison/internal/stackup"
 )
 
 // The rollback path is the interesting half of an update, and it is reachable
@@ -190,5 +192,77 @@ func TestReadUpdateRefWithoutAnOverride(t *testing.T) {
 	in, _ := refFixture(t, "")
 	if got := in.readUpdateRef("jellyfin"); got.ID != "" {
 		t.Errorf("read %+v, want the zero reference", got)
+	}
+}
+
+// --- the data plan --------------------------------------------------------------
+
+func dataPlanFixture(t *testing.T, installed string, marker int) (*Installer, string, *[]map[string]string) {
+	t.Helper()
+	in, dir := refFixture(t, "")
+	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(installed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if marker > 0 {
+		if err := stackup.WriteDataVersion(dir, marker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var args []map[string]string
+	in.Report = func(r incident.Report) { args = append(args, r.Args) }
+	return in, dir, &args
+}
+
+const plainCompose = "services: {app: {image: odoo:18.0}}\n"
+
+func TestDataPlanLetsAnOrdinaryUpdateThrough(t *testing.T) {
+	in, dir, reported := dataPlanFixture(t, plainCompose, 0)
+	if err := in.checkDataPlan("odoo", dir, []byte("services: {app: {image: odoo:18.1}}\nx-compose-app: {version: '18.1'}\n")); err != nil {
+		t.Fatalf("an update that keeps data_version was refused: %v", err)
+	}
+	if len(*reported) != 0 {
+		t.Errorf("incidents raised: %v", *reported)
+	}
+}
+
+func TestDataPlanRefusals(t *testing.T) {
+	cases := []struct {
+		name      string
+		installed string
+		marker    int
+		next      string
+		reason    string
+	}{
+		{"blocked step", plainCompose, 0,
+			"services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: Needs OpenUpgrade.}]}\n",
+			DataRefusedBlocked},
+		{"runnable step, no runner yet", plainCompose, 0,
+			"services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, image: openupgrade:19}]}\n",
+			DataRefusedMigrations},
+		{"data newer than the store", plainCompose, 3, plainCompose, DataRefusedNewer},
+		{"malformed manifest", plainCompose, 0,
+			"services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 3, migrations: [{id: 3, image: x:1}]}\n",
+			DataRefusedStoreError},
+	}
+	for _, c := range cases {
+		in, dir, reported := dataPlanFixture(t, c.installed, c.marker)
+		err := in.checkDataPlan("odoo", dir, []byte(c.next))
+		if err == nil {
+			t.Errorf("%s: not refused", c.name)
+			continue
+		}
+		if len(*reported) != 1 || (*reported)[0]["reason"] != c.reason {
+			t.Errorf("%s: incidents %v, want reason %s", c.name, *reported, c.reason)
+		}
+	}
+}
+
+// The baseline comes from the compose being replaced: an install with no marker
+// whose compose already declares data_version 2 is at 2, not 1.
+func TestDataPlanBaselineIsTheInstalledCompose(t *testing.T) {
+	v2 := "services: {app: {image: a:2}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, image: m:2}]}\n"
+	in, dir, _ := dataPlanFixture(t, v2, 0)
+	if err := in.checkDataPlan("app", dir, []byte(strings.Replace(v2, "a:2", "a:2.1", 1))); err != nil {
+		t.Fatalf("refused an update that stays at data version 2: %v", err)
 	}
 }

@@ -1,8 +1,13 @@
 # App data migrations
 
-> **Status: design — not implemented.** Nothing below exists in the code yet. The
-> update sequence it extends is the one in [`lifecycle.md`](./lifecycle.md#update),
-> which is authoritative for what Maison does today.
+> **Status: partly implemented — no migration runs yet.** In the code today: the
+> manifest (`version`, `data_version`, `migrations`, validated — `internal/xcomposeapp`),
+> the `.data-version` marker with its baseline rule, install writing it, every start
+> refusing a marker that disagrees with the compose (`internal/stackup/dataversion.go`),
+> and the update plan's refusals. Not yet: the runner. Until it lands, an update with
+> **any** pending step is refused (reason `data_migrations`, or `data_blocked` with the
+> step's message), never applied past it. The update sequence this extends is the one
+> in [`lifecycle.md`](./lifecycle.md#update), authoritative for what Maison does today.
 
 How a store app carries its users' data from one version to the next when an image
 bump alone is not enough: a PostgreSQL major upgrade, an app that must boot every
@@ -336,6 +341,9 @@ it unnecessary.
   between `EnsureVariables` and `RunInit`; the marker check for every other mode. The
   container form reuses `initrun.go`; the script form reuses `RunHook`.
 - `internal/installer` install path — write `.data-version` before `pre_install`.
+  Over a restored folder the data already has a version (its marker, else the restored
+  compose's); an install runs no migrations, so one that disagrees with the store's
+  compose is refused rather than started on data of another shape.
 - Update progress — a `migrate` phase naming the step (`Migrating data (2/3):
   pg-14-to-16`), with the step's output in the run log.
 - Incidents — a blocked update raises `app.update:<app>` as a warning carrying the

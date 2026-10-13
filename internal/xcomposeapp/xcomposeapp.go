@@ -39,6 +39,11 @@ type App struct {
 	Title    Localized `yaml:"title,omitempty"`
 	Icon     string    `yaml:"icon,omitempty"`
 	Category string    `yaml:"category,omitempty"`
+	// Version is the app's release as people read it (`2.4.0`, `2024.10.1-ls45`).
+	// Display only: nothing compares it. Which data an install holds is
+	// data_version's job, read apart from App — see ParseData and
+	// docs/migrations.md. Presentation, so it does not raise SchemaVersion.
+	Version string `yaml:"version,omitempty"`
 	// View is the dashboard grid the app's tile lands in — see the View*
 	// constants. Presentation only, which is why it does NOT raise
 	// SchemaVersion: a build that predates it renders the app in the ordinary

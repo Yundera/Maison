@@ -52,3 +52,9 @@ func (f *File) StoreInfo() (*xcasaos.StoreInfo, error) {
 func (f *File) ComposeApp() (*xcomposeapp.App, error) {
 	return xcomposeapp.Parse(f.XComposeApp)
 }
+
+// Data returns the app's data_version and migrations (see xcomposeapp.ParseData).
+// Only meaningful on a base compose: an override has no say over the data's history.
+func (f *File) Data() (xcomposeapp.Data, error) {
+	return xcomposeapp.ParseData(f.XComposeApp)
+}

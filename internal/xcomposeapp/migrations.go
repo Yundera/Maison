@@ -41,7 +41,7 @@ type Migration struct {
 	Volumes    []string `yaml:"volumes,omitempty"`
 	Network    string   `yaml:"network,omitempty"`
 
-	// The script form: a path inside the store app's folder, and the images it
+	// The script form: a path under the store app's migrations/ folder, and the images it
 	// will `docker run`, pulled ahead with the app's own.
 	Script string   `yaml:"script,omitempty"`
 	Images []string `yaml:"images,omitempty"`
@@ -53,6 +53,10 @@ type Migration struct {
 	// Timeout is a Go duration, DefaultMigrationTimeout when empty.
 	Timeout string `yaml:"timeout,omitempty"`
 }
+
+// MigrationsDir is the store app's folder its migration scripts live in; a script
+// step's path starts with it.
+const MigrationsDir = "migrations"
 
 // DefaultMigrationTimeout bounds a step that declares no timeout: a dump/restore
 // of a large database is legitimately long, a hang is not.
@@ -143,8 +147,10 @@ func (m Migration) validate() error {
 		if container {
 			return errors.New("a script step takes no container keys (entrypoint, command, user, environment, volumes, network)")
 		}
-		if !filepath.IsLocal(m.Script) {
-			return fmt.Errorf("script %q must be a relative path inside the app's folder", m.Script)
+		// Only the store app's migrations/ folder travels with an update, so that is
+		// the only place a script can be.
+		if !filepath.IsLocal(m.Script) || !strings.HasPrefix(filepath.ToSlash(filepath.Clean(m.Script)), MigrationsDir+"/") {
+			return fmt.Errorf("script %q must be a path under the app's %s/ folder", m.Script, MigrationsDir)
 		}
 	default: // blocked
 		if container || m.Images != nil || m.Timeout != "" {

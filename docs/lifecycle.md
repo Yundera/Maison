@@ -164,15 +164,19 @@ install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdat
 ```
 1. fetch the store's current compose for the app store-ref names
 2. equal to what's on disk, byte for byte? → nothing to do, report "up to date"
+   data plan (docs/migrations.md): data newer, a malformed manifest, a blocked step,
+     or steps pending with no rollback point → REFUSE, nothing changed
    room for the rollback point on the local disk? no → REFUSE, nothing changed
-3. pull the new version's images  ← while the old version is still serving
+3. pull the new version's images, and every pending migration step's
+                                  ← while the old version is still serving
 4. back up the app  ← the rollback point, taken before anything is written
                       (failed? → REFUSE, nothing changed)
 5. stop the old version  (not for an app declaring lifecycle.stoppable: false)
 6. overwrite docker-compose.yml (the strict base only)
-7. refresh .seed from the same store sync as the compose above
-8. stackup.Up  → converge (folders, secrets, variables, init, seed, files — including
-                 anything the new version introduces) → pre_up → up → post_up
+7. refresh .seed and .migrate from the same store sync as the compose above
+8. stackup.UpWith → converge (folders, secrets, variables, migrations — each pending
+                 step once, in order, .data-version after each — init, seed, files)
+                 → pre_up → up → post_up
 9. Up failed? → restore the rollback point, start it, watch it, and report
 ```
 
@@ -229,6 +233,15 @@ does not start is a rollback that failed. Then it **watches** it: two looks at i
 containers 30 seconds apart (`installer.Steady`). A container restarting, one whose restart
 counter moved, or one that was running at the first look and is not at the second means
 the previous version is not staying up, whatever the restore said.
+
+An update that **converts the app's data** (pending `migrations`, see
+[`migrations.md`](./migrations.md)) is the same sequence with the steps run inside
+step 8, and two differences. It is never applied without a rollback point — *Update
+without backup* is refused for it — and it may take hours, so its time budget is an
+ordinary update's plus every step's own `timeout`, and the Update tab runs it as a
+one-app background run (`202 {"started": true}`) that survives the browser tab. A
+failed step is a failed update: the restore brings back the old compose, data and
+marker together.
 
 Every failed update leaves an `app.update:<app>` incident, not just a tile: a warning when
 the previous version is back and running, **critical** when it is not, when the rollback

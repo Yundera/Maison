@@ -3,13 +3,16 @@ package installer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // The box-wide half of the Update tab: every app's update status in one pass, for
@@ -27,6 +30,10 @@ const (
 	// the store is unreachable, or no longer ships the app. Never rendered as
 	// "up to date", for the reason AppComposeFrom gives.
 	StateError = "error"
+	// StateBlocked: the store's version differs, but reaching it crosses a data
+	// migration the app's maintainer marked as manual (`blocked:`). Never queued by
+	// "Update all"; applying it alone is refused with the maintainer's message.
+	StateBlocked = "blocked"
 	// StateUntracked: Maison manages the app, but it records no store to update from
 	// (installed by CasaOS, before store references existed, or dropped in by hand).
 	StateUntracked = "untracked"
@@ -85,6 +92,65 @@ type AppUpdate struct {
 	// Suggestion is set only for an untracked app with one unambiguous match.
 	Suggestion *Suggestion `json:"suggestion,omitempty"`
 	Error      string      `json:"error,omitempty"`
+	DataPlan
+}
+
+// DataPlan is what an available update would do to the app's data, for the
+// Updates page and the Update tab: nothing (no steps), convert it (steps), or
+// nothing until someone does it by hand (Blocked). See docs/migrations.md.
+type DataPlan struct {
+	DataFrom   int             `json:"data_from,omitempty"`
+	DataTo     int             `json:"data_to,omitempty"`
+	Migrations []MigrationInfo `json:"migrations,omitempty"`
+	// Blocked is the maintainer's message for a step marked as manual.
+	Blocked string `json:"blocked,omitempty"`
+}
+
+// MigrationInfo names one pending step.
+type MigrationInfo struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	// Timeout is the step's own budget, which the update's time budget grows by.
+	Timeout time.Duration `json:"-"`
+}
+
+// Budget is how long an update with this data plan may take, given what an
+// ordinary one gets: that, plus every pending step's own timeout. A dump/restore
+// of a large database is legitimately long; the per-step timeout is what still
+// catches a hang.
+func (dp DataPlan) Budget(base time.Duration) time.Duration {
+	for _, m := range dp.Migrations {
+		base += m.Timeout
+	}
+	return base
+}
+
+// describeData plans an available update's data and says what it found. A blocked
+// step returns StateBlocked; a store or data error StateError; otherwise
+// StateAvailable, with the steps the update would run.
+func describeData(dir string, newBase []byte) (DataPlan, string, string) {
+	plan, err := PlanData(dir, newBase)
+	dp := DataPlan{DataFrom: plan.From, DataTo: plan.To}
+	for _, m := range plan.Steps {
+		timeout := xcomposeapp.DefaultMigrationTimeout
+		if d, err := time.ParseDuration(m.Timeout); err == nil && m.Timeout != "" {
+			timeout = d
+		}
+		dp.Migrations = append(dp.Migrations, MigrationInfo{ID: m.ID, Name: m.Label(), Timeout: timeout})
+	}
+	var refused *DataRefusedError
+	switch {
+	case err == nil:
+		if len(dp.Migrations) == 0 {
+			dp = DataPlan{} // nothing to say: the data is not touched
+		}
+		return dp, StateAvailable, ""
+	case errors.As(err, &refused) && refused.Reason == DataRefusedBlocked:
+		dp.Blocked = refused.Detail
+		return dp, StateBlocked, ""
+	default:
+		return DataPlan{}, StateError, err.Error()
+	}
 }
 
 // CheckAll reports every target's update state. It never fails as a whole: a store
@@ -146,7 +212,7 @@ func (in *Installer) CheckAll(ctx context.Context, targets []CheckTarget) []AppU
 			out[i].State = StateCurrent
 			continue
 		}
-		out[i].State = StateAvailable
+		out[i].DataPlan, out[i].State, out[i].Error = describeData(filepath.Join(in.cfg.AppsDir(), targets[i].ID), newBase)
 		out[i].Images = imageChanges(current[i], newBase)
 	}
 

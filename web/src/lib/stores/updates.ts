@@ -9,7 +9,7 @@ import { live } from '../live/ws'
 /** One app's place on the page. `untracked` is a managed app with no store to
  *  update from; `unmanaged` is a stack Maison only discovered. `error` means the
  *  check could not be completed — never "up to date". */
-export type UpdateState = 'available' | 'current' | 'error' | 'untracked' | 'unmanaged'
+export type UpdateState = 'available' | 'blocked' | 'current' | 'error' | 'untracked' | 'unmanaged'
 
 /** A service whose image the update changes — the version line. `from` is absent
  *  for a service the update adds, `to` for one it removes. */
@@ -43,6 +43,12 @@ export interface AppUpdate {
   images?: ImageChange[]
   suggestion?: Suggestion
   error?: string
+  /** What the update does to the app's data (docs/migrations.md); absent for an
+   *  ordinary update. `blocked` carries the maintainer's message for a manual step. */
+  data_from?: number
+  data_to?: number
+  migrations?: { id: number; name: string }[]
+  blocked?: string
 }
 
 export type RunStatus = 'queued' | 'updating' | 'done' | 'failed'

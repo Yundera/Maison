@@ -78,26 +78,11 @@ func runStep(ctx context.Context, runner Runner, cfg config.Config, project, dir
 		return err
 	}
 
-	spec := dockerx.RunSpec{}
-	if spec.Image, err = render(step.Image); err != nil {
-		return err
-	}
-	if spec.User, err = render(step.User); err != nil {
-		return err
-	}
-	if spec.Network, err = render(step.Network); err != nil {
-		return err
-	}
-	if spec.Entrypoint, err = renderAll(render, step.Entrypoint); err != nil {
-		return err
-	}
-	if spec.Cmd, err = renderAll(render, step.Command); err != nil {
-		return err
-	}
-	if spec.Env, err = renderAll(render, step.Env); err != nil {
-		return err
-	}
-	if spec.Binds, err = renderBinds(render, cfg, step.Volumes); err != nil {
+	spec, err := buildRunSpec(cfg, render, runSurface{
+		Image: step.Image, User: step.User, Network: step.Network,
+		Entrypoint: step.Entrypoint, Command: step.Command, Env: step.Env, Volumes: step.Volumes,
+	})
+	if err != nil {
 		return err
 	}
 
@@ -117,6 +102,43 @@ func runStep(ctx context.Context, runner Runner, cfg config.Config, project, dir
 		}
 	}
 	return nil
+}
+
+// runSurface is the `docker run` part of a one-shot container declaration — what an
+// init step and a container migration step have in common.
+type runSurface struct {
+	Image, User, Network string
+	Entrypoint, Command  []string
+	Env, Volumes         []string
+}
+
+// buildRunSpec renders a run surface into the spec the daemon is handed: every
+// reference resolved strictly, and every bind source spelled as the host spells it.
+func buildRunSpec(cfg config.Config, render func(string) (string, error), r runSurface) (dockerx.RunSpec, error) {
+	var spec dockerx.RunSpec
+	var err error
+	if spec.Image, err = render(r.Image); err != nil {
+		return spec, err
+	}
+	if spec.User, err = render(r.User); err != nil {
+		return spec, err
+	}
+	if spec.Network, err = render(r.Network); err != nil {
+		return spec, err
+	}
+	if spec.Entrypoint, err = renderAll(render, r.Entrypoint); err != nil {
+		return spec, err
+	}
+	if spec.Cmd, err = renderAll(render, r.Command); err != nil {
+		return spec, err
+	}
+	if spec.Env, err = renderAll(render, r.Env); err != nil {
+		return spec, err
+	}
+	if spec.Binds, err = renderBinds(render, cfg, r.Volumes); err != nil {
+		return spec, err
+	}
+	return spec, nil
 }
 
 // stepDue evaluates the step's guard. It returns the marker path to write on

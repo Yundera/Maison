@@ -123,9 +123,38 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 // a seeded secret (`${APP_DEFAULT_PASSWORD}|alnum:32`) reads: nil for a fresh
 // install, which then generates, rather than the password Sync just wrote in.
 func UpWithPrior(ctx context.Context, cfg config.Config, project, dir string, files []string, prior []byte) error {
+	return UpWith(ctx, cfg, project, dir, files, UpOptions{Prior: prior})
+}
+
+// UpOptions are what the callers of Up that know more than "bring it up" pass in.
+type UpOptions struct {
+	// Prior is the app's .env before the caller synced it (see UpWithPrior).
+	Prior []byte
+	// Migrate puts the up in update mode: the plan's steps run after `variables`
+	// and before init, the seed tree and `files`, which write create-if-absent
+	// defaults for the new layout and would otherwise take the path a migration is
+	// about to move the user's real data into. Only an update sets it — only an
+	// update has a rollback point to undo a step with.
+	Migrate *MigratePlan
+	// Progress is told about each migration step as it starts.
+	Progress MigrateProgress
+}
+
+// UpWith is the one up every path goes through; Up and UpWithPrior are its
+// common spellings.
+func UpWith(ctx context.Context, cfg config.Config, project, dir string, files []string, opts UpOptions) error {
+	prior := opts.Prior
 	// Before anything is written: a stack whose data is in another shape than its
 	// compose expects must not start, and nothing about it should change either.
-	if err := CheckDataVersion(dir); err != nil {
+	// An update instead checks the data is where its plan starts from — the compose
+	// on disk is already the new one.
+	if opts.Migrate != nil {
+		if v, ok, err := ReadDataVersion(dir); err != nil {
+			return err
+		} else if ok && v != opts.Migrate.From {
+			return fmt.Errorf("the app's data is at version %d, not %d as the update planned", v, opts.Migrate.From)
+		}
+	} else if err := CheckDataVersion(dir); err != nil {
 		cfg.ReportIncident(dataIncident(project, err))
 		return err
 	}
@@ -139,7 +168,13 @@ func UpWithPrior(ctx context.Context, cfg config.Config, project, dir string, fi
 	}
 	spec := Load(files)
 
-	captures, err := Converge(ctx, cfg, project, dir, spec, envinject.EnvFileVars(prior))
+	var migrate func(context.Context, map[string]string) error
+	if opts.Migrate != nil {
+		migrate = func(ctx context.Context, captures map[string]string) error {
+			return RunMigrations(ctx, cfg, project, dir, *opts.Migrate, captures, opts.Progress)
+		}
+	}
+	captures, err := converge(ctx, cfg, project, dir, spec, envinject.EnvFileVars(prior), migrate)
 	if err != nil {
 		return err
 	}
@@ -172,7 +207,7 @@ func UpWithPrior(ctx context.Context, cfg config.Config, project, dir string, fi
 // path into a stack goes through: directories, then the values its templates
 // reference, then the files themselves.
 //
-//	folders → secrets → variables → init(pre_up) → seed → files
+//	folders → secrets → variables → [migrations] → init(pre_up) → seed → files
 //
 // Each step is idempotent and each is fatal: an app whose directory is missing,
 // whose secret could not be generated, or whose config file could not be
@@ -186,6 +221,12 @@ func UpWithPrior(ctx context.Context, cfg config.Config, project, dir string, fi
 // prior is the app's .env as it stood before this operation synced it — what a
 // seeded secret reads (see EnsureSecrets).
 func Converge(ctx context.Context, cfg config.Config, project, dir string, spec Spec, prior map[string]string) (map[string]string, error) {
+	return converge(ctx, cfg, project, dir, spec, prior, nil)
+}
+
+// converge is Converge with an update's data migrations slotted in after
+// `variables` (see UpOptions.Migrate). migrate is nil on every other path.
+func converge(ctx context.Context, cfg config.Config, project, dir string, spec Spec, prior map[string]string, migrate func(context.Context, map[string]string) error) (map[string]string, error) {
 	if err := Prepare(cfg, project, dir, spec); err != nil {
 		return nil, err
 	}
@@ -198,6 +239,11 @@ func Converge(ctx context.Context, cfg config.Config, project, dir string, spec 
 	}
 	if err := EnsureVariables(cfg, project, dir, spec.Variables, captures); err != nil {
 		return nil, err
+	}
+	if migrate != nil {
+		if err := migrate(ctx, captures); err != nil {
+			return nil, err
+		}
 	}
 	if err := RunInit(ctx, cfg, project, dir, xcomposeapp.PhasePreUp, spec.Init, captures); err != nil {
 		return nil, err
@@ -249,6 +295,12 @@ func Prepare(cfg config.Config, project, dir string, spec Spec) error {
 // hookshell.go for why that list is an allowlist and why the verdict comes from
 // a file rather than an exit status.
 func RunHook(ctx context.Context, cfg config.Config, project, dir, script string) error {
+	return runHook(ctx, cfg, project, dir, script, nil)
+}
+
+// runHook is RunHook with extra variables in the hook's environment — what a
+// migration script is told on top of a hook's (see RunMigrations).
+func runHook(ctx context.Context, cfg config.Config, project, dir, script string, extraEnv []string) error {
 	rejected, err := os.CreateTemp("", "maison-hook-rejected-")
 	if err != nil {
 		return fmt.Errorf("hook workspace: %w", err)
@@ -269,7 +321,7 @@ func RunHook(ctx context.Context, cfg config.Config, project, dir, script string
 
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", envinject.RewriteToHostPath(script, cfg))
 	cmd.Dir = dir
-	cmd.Env = append(hookEnv(cfg, project, dir),
+	cmd.Env = append(append(hookEnv(cfg, project, dir), extraEnv...),
 		"BASH_ENV="+preamble.Name(),
 		hookRejectedVar+"="+rejected.Name(),
 	)

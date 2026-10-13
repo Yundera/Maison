@@ -8,6 +8,7 @@ import (
 
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/stackup"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // StoreSeedDir is the folder a store app ships its initial data tree in. Its
@@ -86,4 +87,31 @@ func copyTree(src, dest string) error {
 		// arrives executable.
 		return os.Chmod(target, mode)
 	})
+}
+
+// StoreMigrationsDir is the folder a store app ships its migration scripts in.
+const StoreMigrationsDir = xcomposeapp.MigrationsDir
+
+// writeMigrations copies a store app's migrations/ folder into the app folder, as
+// stackup.MigrateDir/migrations, for the reason writeSeed copies the seed tree: it
+// arrives with the same store sync as the compose, so the compose and the scripts it
+// names are from the same commit. The folder keeps its name so a step's `script:` —
+// a path in the store app's folder — resolves unchanged under MigrateDir. Replaced
+// wholesale, never merged.
+func writeMigrations(app *appstore.CatalogApp, appDir string) error {
+	dest := filepath.Join(appDir, stackup.MigrateDir)
+	if err := os.RemoveAll(dest); err != nil {
+		return fmt.Errorf("clear %s: %w", stackup.MigrateDir, err)
+	}
+	if app == nil {
+		return nil
+	}
+	src := filepath.Join(app.Dir(), StoreMigrationsDir)
+	if _, err := os.Stat(src); err != nil {
+		return nil // no script steps — the common case
+	}
+	if err := copyTree(src, filepath.Join(dest, StoreMigrationsDir)); err != nil {
+		return fmt.Errorf("copy %s: %w", StoreMigrationsDir, err)
+	}
+	return nil
 }

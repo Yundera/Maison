@@ -210,45 +210,69 @@ func dataPlanFixture(t *testing.T, installed string, marker int) (*Installer, st
 	}
 	var args []map[string]string
 	in.Report = func(r incident.Report) { args = append(args, r.Args) }
+	// A wired rollback point, as on a real box: without one any step is refused.
+	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, error) { return "rp", nil }
 	return in, dir, &args
 }
 
-const plainCompose = "services: {app: {image: odoo:18.0}}\n"
+const (
+	plainCompose   = "services: {app: {image: odoo:18.0}}\n"
+	migrateCompose = "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, name: openupgrade, image: openupgrade:19}]}\n"
+)
 
-func TestDataPlanLetsAnOrdinaryUpdateThrough(t *testing.T) {
+func TestPlanLetsAnOrdinaryUpdateThrough(t *testing.T) {
 	in, dir, reported := dataPlanFixture(t, plainCompose, 0)
-	if err := in.checkDataPlan("odoo", dir, []byte("services: {app: {image: odoo:18.1}}\nx-compose-app: {version: '18.1'}\n")); err != nil {
-		t.Fatalf("an update that keeps data_version was refused: %v", err)
+	plan, err := in.planUpdateData("odoo", dir, []byte("services: {app: {image: odoo:18.1}}\n"), UpdateOptions{})
+	if err != nil || len(plan.Steps) != 0 || plan.From != 1 || plan.To != 1 {
+		t.Fatalf("plan = %+v, %v", plan, err)
 	}
 	if len(*reported) != 0 {
 		t.Errorf("incidents raised: %v", *reported)
 	}
 }
 
-func TestDataPlanRefusals(t *testing.T) {
+func TestPlanCarriesPendingSteps(t *testing.T) {
+	in, dir, _ := dataPlanFixture(t, plainCompose, 0)
+	plan, err := in.planUpdateData("odoo", dir, []byte(migrateCompose), UpdateOptions{})
+	if err != nil || plan.From != 1 || plan.To != 2 || len(plan.Steps) != 1 || plan.Steps[0].Label() != "openupgrade" {
+		t.Fatalf("plan = %+v, %v", plan, err)
+	}
+	if imgs := migrationImages(plan); len(imgs) != 1 || imgs[0] != "openupgrade:19" {
+		t.Errorf("images to pull = %v", imgs)
+	}
+}
+
+func TestPlanRefusals(t *testing.T) {
 	cases := []struct {
 		name      string
 		installed string
 		marker    int
 		next      string
+		opts      UpdateOptions
+		noHook    bool
 		reason    string
 	}{
-		{"blocked step", plainCompose, 0,
-			"services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: Needs OpenUpgrade.}]}\n",
-			DataRefusedBlocked},
-		{"runnable step, no runner yet", plainCompose, 0,
-			"services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, image: openupgrade:19}]}\n",
-			DataRefusedMigrations},
-		{"data newer than the store", plainCompose, 3, plainCompose, DataRefusedNewer},
-		{"malformed manifest", plainCompose, 0,
-			"services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 3, migrations: [{id: 3, image: x:1}]}\n",
-			DataRefusedStoreError},
+		{name: "blocked step", installed: plainCompose,
+			next:   "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: Needs OpenUpgrade.}]}\n",
+			reason: DataRefusedBlocked},
+		{name: "data newer than the store", installed: plainCompose, marker: 3, next: plainCompose, reason: DataRefusedNewer},
+		{name: "malformed manifest", installed: plainCompose,
+			next:   "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 3, migrations: [{id: 3, image: x:1}]}\n",
+			reason: DataRefusedStoreError},
+		{name: "update without backup", installed: plainCompose, next: migrateCompose,
+			opts: UpdateOptions{NoBackup: true}, reason: DataRefusedNoBackup},
+		{name: "no rollback hook wired", installed: plainCompose, next: migrateCompose,
+			noHook: true, reason: DataRefusedNoBackup},
 	}
 	for _, c := range cases {
 		in, dir, reported := dataPlanFixture(t, c.installed, c.marker)
-		err := in.checkDataPlan("odoo", dir, []byte(c.next))
-		if err == nil {
-			t.Errorf("%s: not refused", c.name)
+		if c.noHook {
+			in.BackupBeforeUpdate = nil
+		}
+		_, err := in.planUpdateData("odoo", dir, []byte(c.next), c.opts)
+		var refused *DataRefusedError
+		if !errors.As(err, &refused) || refused.Reason != c.reason {
+			t.Errorf("%s: err = %v, want reason %s", c.name, err, c.reason)
 			continue
 		}
 		if len(*reported) != 1 || (*reported)[0]["reason"] != c.reason {
@@ -259,10 +283,48 @@ func TestDataPlanRefusals(t *testing.T) {
 
 // The baseline comes from the compose being replaced: an install with no marker
 // whose compose already declares data_version 2 is at 2, not 1.
-func TestDataPlanBaselineIsTheInstalledCompose(t *testing.T) {
-	v2 := "services: {app: {image: a:2}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, image: m:2}]}\n"
-	in, dir, _ := dataPlanFixture(t, v2, 0)
-	if err := in.checkDataPlan("app", dir, []byte(strings.Replace(v2, "a:2", "a:2.1", 1))); err != nil {
-		t.Fatalf("refused an update that stays at data version 2: %v", err)
+func TestPlanBaselineIsTheInstalledCompose(t *testing.T) {
+	in, dir, _ := dataPlanFixture(t, migrateCompose, 0)
+	plan, err := in.planUpdateData("app", dir, []byte(strings.Replace(migrateCompose, "odoo:19.0", "odoo:19.1", 1)), UpdateOptions{})
+	if err != nil || plan.From != 2 || len(plan.Steps) != 0 {
+		t.Fatalf("plan = %+v, %v; want no steps from 2", plan, err)
+	}
+}
+
+func TestDescribeDataStates(t *testing.T) {
+	_, dir, _ := dataPlanFixture(t, plainCompose, 0)
+	cases := map[string]struct{ next, state string }{
+		"ordinary": {"services: {app: {image: odoo:18.1}}\n", StateAvailable},
+		"steps":    {migrateCompose, StateAvailable},
+		"blocked":  {"services: {}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: by hand}]}\n", StateBlocked},
+		"broken":   {"services: {}\nx-compose-app: {data_version: 0}\n", StateError},
+	}
+	for name, c := range cases {
+		dp, state, _ := describeData(dir, []byte(c.next))
+		if state != c.state {
+			t.Errorf("%s: state %s, want %s", name, state, c.state)
+		}
+		if name == "steps" && (len(dp.Migrations) != 1 || dp.DataFrom != 1 || dp.DataTo != 2) {
+			t.Errorf("steps: %+v", dp)
+		}
+		if name == "ordinary" && (dp.DataTo != 0 || dp.Migrations != nil) {
+			t.Errorf("ordinary update describes data: %+v", dp)
+		}
+		if name == "blocked" && dp.Blocked == "" {
+			t.Error("blocked: no message")
+		}
+	}
+}
+
+func TestWriteMigrationsReplacesTheCopy(t *testing.T) {
+	_, dir := refFixture(t, "")
+	stale := filepath.Join(dir, stackup.MigrateDir, "old.sh")
+	os.MkdirAll(filepath.Dir(stale), 0o755)
+	os.WriteFile(stale, []byte("exit 0"), 0o644)
+	if err := writeMigrations(nil, dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("a script the store no longer ships survived the update")
 	}
 }

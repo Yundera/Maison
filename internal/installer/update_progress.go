@@ -9,6 +9,7 @@ const (
 	UpdatePhaseBackup   = "backup"   // taking the rollback point
 	UpdatePhaseStop     = "stop"     // stopping the old version
 	UpdatePhaseApply    = "apply"    // writing the new compose and seed tree
+	UpdatePhaseMigrate  = "migrate"  // converting the app's data (only when the update declares steps)
 	UpdatePhaseStart    = "start"    // bringing the new version up
 	UpdatePhaseRollback = "rollback" // putting the old version back
 )

@@ -17,6 +17,7 @@ import (
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/stackup"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // UpdateStatus reports whether a managed app has a pending store update. It is
@@ -39,6 +40,9 @@ type UpdateStatus struct {
 	Store         string `json:"store"`
 	StoreAppID    string `json:"store_app_id"`
 	StoreAppsPath string `json:"store_apps_path,omitempty"`
+	// Blocked is set, and Available still true, when reaching the store's version
+	// crosses a manual data migration; DataPlan carries what the update would run.
+	DataPlan
 	// Error carries a non-fatal lookup failure (store unreachable, app pulled from
 	// the catalog, …) so the UI can explain why a check couldn't complete.
 	Error string `json:"error,omitempty"`
@@ -67,6 +71,10 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 		return st, nil
 	}
 	st.Available = !bytes.Equal(current, newBase)
+	if st.Available {
+		// Available stays the byte comparison; Blocked or Error say why it would be refused.
+		st.DataPlan, _, st.Error = describeData(dir, newBase)
+	}
 	return st, nil
 }
 
@@ -140,7 +148,8 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// Which data the new version expects, against which data the app holds — read
 	// while the old compose is still on disk, since it is the baseline for an install
 	// with no marker. First of the refusals: each one here costs nothing.
-	if err := in.checkDataPlan(project, dir, newBase); err != nil {
+	plan, err := in.planUpdateData(project, dir, newBase, opts)
+	if err != nil {
 		return res, err
 	}
 
@@ -157,7 +166,7 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// below would otherwise cost the whole download, not just the swap. Not fatal —
 	// `compose up` pulls whatever is still missing, and fails loudly if it cannot.
 	if f, err := composefile.Parse(newBase); err == nil {
-		in.pullImages(ctx, f, func(ev Event) { step(UpdatePhasePull, ev.Message, ev.Download) })
+		in.pullList(ctx, append(composeImages(f), migrationImages(plan)...), func(ev Event) { step(UpdatePhasePull, ev.Message, ev.Download) })
 	}
 
 	// The rollback point, before anything is written.
@@ -186,6 +195,14 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 			return res, in.refuseNoRollback(project, err)
 		}
 		res.Backup = name
+	}
+	// An app that opts out of backups gets no rollback point even when one is asked
+	// for. Nothing has been stopped or written yet, so a conversion that could not be
+	// undone is still refused for free.
+	if len(plan.Steps) > 0 && res.Backup == "" {
+		return res, in.refuseData(project, &DataRefusedError{Reason: DataRefusedNoBackup,
+			Title:  "it converts the app's data, which needs a rollback point",
+			Detail: "This update converts the app's data, and no rollback point was taken to undo it — the app does not take backups."})
 	}
 
 	// Stop the old version before anything of the new one runs. The new version's init
@@ -219,6 +236,11 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// changes the tile. Unlike the seed tree it cannot fail the update: a tile with
 	// last version's icon is not a reason to roll an app back.
 	writeIcon(ctx, app, dir, project)
+	// The migration scripts, from the same sync again, so a script step runs the
+	// script its compose was written against.
+	if err := writeMigrations(app, dir); err != nil {
+		return in.rollBack(ctx, project, res, err)
+	}
 
 	// stackup.Up creates any folder the updated compose newly introduces — declared
 	// or bind-derived — before bringing the stack back up, so the new version can
@@ -230,7 +252,14 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// No measured track: converging and `compose up` report no progress, so the bar
 	// sits full while the label says what is happening (as a backup's start does).
 	step(UpdatePhaseStart, "Starting the new version", 100)
-	if err := stackup.Up(ctx, in.cfg, project, dir, files); err != nil {
+	up := stackup.UpOptions{}
+	if len(plan.Steps) > 0 {
+		up.Migrate = &plan
+		up.Progress = func(i, n int, m xcomposeapp.Migration) {
+			step(UpdatePhaseMigrate, fmt.Sprintf("Migrating data (%d/%d): %s", i, n, m.Label()), float64(i-1)/float64(n)*100)
+		}
+	}
+	if err := stackup.UpWith(ctx, in.cfg, project, dir, files, up); err != nil {
 		return in.rollBack(ctx, project, res, err)
 	}
 	res.Applied = true
@@ -427,6 +456,10 @@ func (in *Installer) SetUpdateRef(ctx context.Context, project, refStr string) (
 
 	st := statusOf(ref)
 	st.Available = !bytes.Equal(current, newBase)
+	if st.Available {
+		// Available stays the byte comparison; Blocked or Error say why it would be refused.
+		st.DataPlan, _, st.Error = describeData(dir, newBase)
+	}
 	return st, nil
 }
 
@@ -545,59 +578,104 @@ const (
 	DataRefusedStoreError = "data_store_error"
 	DataRefusedNewer      = "data_newer"
 	DataRefusedBlocked    = "data_blocked"
-	DataRefusedMigrations = "data_migrations"
+	DataRefusedNoBackup   = "data_no_backup"
 )
 
-// checkDataPlan refuses an update whose new version expects its data in another
-// shape than the app holds it (docs/migrations.md, "The update sequence").
+// DataRefusedError is an update refused over its data plan, before anything was
+// pulled, stopped or written.
+type DataRefusedError struct {
+	Reason string // one of DataRefused*
+	Title  string // what the owner is told happened, in a few words
+	Detail string // why, in the maintainer's or Maison's words
+}
+
+func (e *DataRefusedError) Error() string { return e.Title + ": " + e.Detail }
+
+// PlanData works out how an update would move the app's data: from where the data
+// is (the marker, else the compose still on disk — so this must run before the
+// update overwrites it) to the data_version the store's new compose expects, and
+// the steps between. See docs/migrations.md, "The update sequence".
 //
-// This build runs no migration steps yet, so any pending step refuses the update —
-// with the step's own message when it is a blocked one. That is the safe reading of
-// the manifest: a build that ignored data_version would put the new image on
-// unconverted data, which is the Odoo incident. An update that leaves data_version
-// where it is goes through untouched, which is every update today.
-func (in *Installer) checkDataPlan(project, dir string, newBase []byte) error {
+// A *DataRefusedError means the update cannot happen as things stand: the store's
+// manifest is malformed, the data is newer than the store's version, or a step on
+// the way is marked as manual. Any other error is a failure to read the app folder.
+func PlanData(dir string, newBase []byte) (stackup.MigratePlan, error) {
 	f, err := composefile.Parse(newBase)
 	if err != nil {
-		return fmt.Errorf("parse the store's compose: %w", err)
-	}
-	refuse := func(reason, title, detail string) error {
-		log.Printf("update %s: refused (%s): %s", project, reason, detail)
-		in.report(incident.Report{
-			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
-			Title:  project + " was not updated: " + title,
-			Detail: detail + "\n\nNothing was changed; the app is still running its current version.",
-			Args:   map[string]string{"app": project, "reason": reason},
-		})
-		return errors.New(title + ": " + detail)
+		return stackup.MigratePlan{}, fmt.Errorf("parse the store's compose: %w", err)
 	}
 	data, err := f.Data()
 	if err != nil {
-		return refuse(DataRefusedStoreError, "its new version declares its data migrations wrongly",
-			"The store's x-compose-app block is invalid ("+err.Error()+"). This is for the app's maintainer to fix.")
+		return stackup.MigratePlan{}, &DataRefusedError{Reason: DataRefusedStoreError,
+			Title:  "its new version declares its data migrations wrongly",
+			Detail: "The store's x-compose-app block is invalid (" + err.Error() + "). This is for the app's maintainer to fix."}
 	}
 	from, ok, err := stackup.InstalledDataVersion(dir)
 	if err != nil {
-		return err
+		return stackup.MigratePlan{}, err
 	}
 	if !ok {
 		from = 1
 	}
-	steps, err := data.Pending(from)
-	if err != nil {
-		return refuse(DataRefusedNewer, "its data is newer than the store's version", err.Error())
+	plan := stackup.MigratePlan{From: from, To: data.Version}
+	if plan.Steps, err = data.Pending(from); err != nil {
+		return plan, &DataRefusedError{Reason: DataRefusedNewer,
+			Title: "its data is newer than the store's version", Detail: err.Error()}
 	}
-	if len(steps) == 0 {
-		return nil
-	}
-	for _, m := range steps {
+	for _, m := range plan.Steps {
 		if m.Blocked != "" {
-			return refuse(DataRefusedBlocked, "this update cannot be applied automatically",
-				fmt.Sprintf("Moving the data from version %d to %d crosses %q, which the app's maintainer marked as manual:\n\n%s",
-					from, data.Version, m.Label(), strings.TrimSpace(m.Blocked)))
+			return plan, &DataRefusedError{Reason: DataRefusedBlocked,
+				Title: "this update cannot be applied automatically",
+				Detail: fmt.Sprintf("Moving the data from version %d to %d crosses %q, which the app's maintainer marked as manual:\n\n%s",
+					from, data.Version, m.Label(), strings.TrimSpace(m.Blocked))}
 		}
 	}
-	return refuse(DataRefusedMigrations, "it needs a data migration",
-		fmt.Sprintf("The new version expects its data at version %d; it is at %d. This Maison does not run data migrations yet, so it will not start the new version on unconverted data.",
-			data.Version, from))
+	return plan, nil
+}
+
+// planUpdateData is PlanData for ApplyUpdate: it adds the refusal only an apply can
+// make — a conversion with no rollback point — and reports every refusal as the
+// app's update incident.
+func (in *Installer) planUpdateData(project, dir string, newBase []byte, opts UpdateOptions) (stackup.MigratePlan, error) {
+	plan, err := PlanData(dir, newBase)
+	if err == nil && len(plan.Steps) > 0 && (opts.NoBackup || in.BackupBeforeUpdate == nil) {
+		// "Update without backup" exists so a large app is not pinned on an old
+		// version. With a migration pending it would make an irreversible conversion
+		// with no undo, so this is the one place it is not honoured.
+		err = &DataRefusedError{Reason: DataRefusedNoBackup,
+			Title: "it converts the app's data, which needs a rollback point",
+			Detail: fmt.Sprintf("This update moves the data from version %d to %d. A data conversion is only run with a rollback point to undo it, and this update would have none.",
+				plan.From, plan.To)}
+	}
+	var refused *DataRefusedError
+	if errors.As(err, &refused) {
+		return plan, in.refuseData(project, refused)
+	}
+	return plan, err
+}
+
+// refuseData reports a data refusal as the app's update incident and returns it.
+func (in *Installer) refuseData(project string, refused *DataRefusedError) error {
+	log.Printf("update %s: refused (%s): %s", project, refused.Reason, refused.Detail)
+	in.report(incident.Report{
+		ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
+		Title:  project + " was not updated: " + refused.Title,
+		Detail: refused.Detail + "\n\nNothing was changed; the app is still running its current version.",
+		Args:   map[string]string{"app": project, "reason": refused.Reason},
+	})
+	return refused
+}
+
+// migrationImages lists the images the plan's steps run, for the update's pull. An
+// image spelled with a ${VAR} is left to the step itself, which renders and pulls it.
+func migrationImages(plan stackup.MigratePlan) []string {
+	var out []string
+	for _, m := range plan.Steps {
+		for _, img := range append([]string{m.Image}, m.Images...) {
+			if img != "" && !strings.Contains(img, "${") {
+				out = append(out, img)
+			}
+		}
+	}
+	return out
 }

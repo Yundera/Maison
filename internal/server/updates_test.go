@@ -45,6 +45,37 @@ func TestRunQueueLeavesStaysUpAppsOutOfUpdateAll(t *testing.T) {
 	}
 }
 
+// A blocked app is never part of "Update all"; named alone it is queued, so the owner
+// gets the maintainer's message from the refusal instead of "nothing to update".
+func TestRunQueueSkipsBlockedAppsUnlessNamedAlone(t *testing.T) {
+	rs := rows(
+		installer.AppUpdate{ID: "jellyfin", State: installer.StateAvailable},
+		installer.AppUpdate{ID: "odoo", State: installer.StateBlocked},
+	)
+	if q, err := runQueue(rs, nil); err != nil || strings.Join(q, ",") != "jellyfin" {
+		t.Errorf("update all = %v, %v; want [jellyfin]", q, err)
+	}
+	if q, err := runQueue(rs, []string{"odoo"}); err != nil || strings.Join(q, ",") != "odoo" {
+		t.Errorf("odoo alone = %v, %v; want it queued", q, err)
+	}
+	if q, _ := runQueue(rs, []string{"jellyfin", "odoo"}); strings.Join(q, ",") != "jellyfin" {
+		t.Errorf("named among others = %v; want odoo dropped", q)
+	}
+}
+
+// An update's time inside a run grows by its migrations' own timeouts.
+func TestUpdateBudgetGrowsWithMigrations(t *testing.T) {
+	s := &Server{}
+	s.updates.rows = rows(installer.AppUpdate{ID: "odoo", State: installer.StateAvailable,
+		DataPlan: installer.DataPlan{Migrations: []installer.MigrationInfo{{ID: 2, Timeout: time.Hour}, {ID: 3, Timeout: 30 * time.Minute}}}})
+	if got, want := s.updateBudget("odoo"), updateTimeout+90*time.Minute; got != want {
+		t.Errorf("budget = %s, want %s", got, want)
+	}
+	if got := s.updateBudget("other"); got != updateTimeout {
+		t.Errorf("unknown app budget = %s", got)
+	}
+}
+
 func testUpdatesServer(t *testing.T) *Server {
 	t.Helper()
 	cfg := config.Config{DataRoot: t.TempDir()}

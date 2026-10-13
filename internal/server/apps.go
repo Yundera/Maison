@@ -165,7 +165,19 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	// An update that converts the app's data may take hours and must not die with
+	// the browser tab, so it runs as a one-app update run — background, sequential
+	// with any other, with its migrations' time budget — and the tile follows it.
+	if row, ok := s.refreshUpdateRow(r.Context(), id); ok && row.State == installer.StateAvailable && len(row.Migrations) > 0 {
+		if err := s.startUpdateRun([]string{id}, installer.UpdateOptions{NoBackup: body.NoBackup}); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "started", "started": true})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), updateTimeout)
 	defer cancel()
 
 	var res installer.UpdateResult
@@ -194,6 +206,12 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 			if errors.As(err, &nr) {
 				out["reason"], out["needed"], out["free"] = nr.Reason, nr.Needed, nr.Free
 			}
+			status = http.StatusConflict
+		}
+		var dr *installer.DataRefusedError
+		if errors.As(err, &dr) {
+			// Refused over the data, nothing changed.
+			out["reason"] = dr.Reason
 			status = http.StatusConflict
 		}
 		writeJSON(w, status, out)

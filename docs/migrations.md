@@ -1,13 +1,10 @@
 # App data migrations
 
-> **Status: partly implemented — no migration runs yet.** In the code today: the
-> manifest (`version`, `data_version`, `migrations`, validated — `internal/xcomposeapp`),
-> the `.data-version` marker with its baseline rule, install writing it, every start
-> refusing a marker that disagrees with the compose (`internal/stackup/dataversion.go`),
-> and the update plan's refusals. Not yet: the runner. Until it lands, an update with
-> **any** pending step is refused (reason `data_migrations`, or `data_blocked` with the
-> step's message), never applied past it. The update sequence this extends is the one
-> in [`lifecycle.md`](./lifecycle.md#update), authoritative for what Maison does today.
+> **Status: implemented**, except the [open questions](#open-questions) at the end.
+> Code: `internal/xcomposeapp/migrations.go` (manifest), `internal/stackup/dataversion.go`
+> (marker, start check), `internal/stackup/migrate.go` (runner), `internal/installer/update.go`
+> (`PlanData`, the update sequence). The update sequence this extends is the one in
+> [`lifecycle.md`](./lifecycle.md#update), authoritative for what Maison does today.
 
 How a store app carries its users' data from one version to the next when an image
 bump alone is not enough: a PostgreSQL major upgrade, an app that must boot every
@@ -82,7 +79,7 @@ belongs to the app, not to a box.
 /DATA/AppData/<app>/
 ├── docker-compose.yml        # says where the data is going (data_version)
 ├── .data-version             # says where the data is — one integer
-├── .migrate/                 # the store's migrations/ folder, refreshed on update
+├── .migrate/                 # .migrate/migrations/ = the store's migrations/, refreshed on update
 ├── .init/
 └── …
 ```
@@ -145,7 +142,7 @@ x-compose-app:
 | `id` | all | **Required.** The `data_version` this step produces. Steps are `2 … data_version`, each present exactly once. |
 | `name` | all | Shown in the update progress and the logs. |
 | `image`, `command`, `entrypoint`, `user`, `environment`, `volumes`, `network` | container | The `docker run` surface, with the same semantics, interpolation and path spelling as an [`init`](./x-compose-app.md#init) step. |
-| `script` | script | Path inside the store app's folder. Copied to `.migrate/` on update and run from there. |
+| `script` | script | Path under the store app's `migrations/` folder (e.g. `migrations/0003-move-config.sh`) — nothing else travels with an update. Copied to `.migrate/migrations/` and run from there. |
 | `images` | script | Images the script will `docker run`, pulled with the app's own images while the old version still serves. Optional; an unlisted image is pulled when the script runs. |
 | `blocked` | refusal | Markdown shown to the operator. An update that would cross this step is **refused before anything is pulled.** |
 | `timeout` | container, script | Go duration. Default `2h` — a dump/restore of a large database is legitimately long, a hang is not. |
@@ -262,6 +259,11 @@ so. This is the one place `NoBackup` is not honoured.
 
 **An app that is not stoppable** (`lifecycle.stoppable: false`) is not stopped at step 5,
 so its migrations run against a live old version. Its maintainer writes them for that.
+
+**Time.** An ordinary update gets five minutes; one with pending steps gets that plus
+every step's `timeout`. The Update tab hands such an update to a one-app background run
+(`202 {"started": true}`), so it outlives the browser tab, and the tile's progress bar
+names the step (`Migrating data (2/3): pg-14-to-16`).
 
 **Update all** is unchanged — it is already strictly sequential, one rollback point at a
 time. A blocked app appears on Settings → Updates as *blocked*, with its message,

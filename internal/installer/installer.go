@@ -542,12 +542,22 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 // pullImages pulls each service image, mapping per-image download progress onto
 // the 0 → 100 Download bar.
 func (in *Installer) pullImages(ctx context.Context, f *composefile.File, emit func(Event)) {
+	in.pullList(ctx, composeImages(f), emit)
+}
+
+// composeImages lists the images a compose's services run.
+func composeImages(f *composefile.File) []string {
 	var images []string
 	for _, svc := range f.Services {
 		if svc.Image != "" {
 			images = append(images, svc.Image)
 		}
 	}
+	return images
+}
+
+// pullList pulls each image in turn, reporting progress across the whole list.
+func (in *Installer) pullList(ctx context.Context, images []string, emit func(Event)) {
 	if len(images) == 0 || in.dx == nil {
 		emit(Event{Phase: "pull", Message: "Preparing images", Download: 100})
 		return

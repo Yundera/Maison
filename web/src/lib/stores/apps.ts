@@ -287,6 +287,7 @@ const updateLabels: Record<string, string> = {
   backup: 'backing_up',
   stop: 'stopping',
   apply: 'update_applying',
+  migrate: 'update_migrating',
   start: 'starting_up',
   rollback: 'update_rolling_back',
 }
@@ -533,6 +534,15 @@ export interface UpdateStatus {
   store_app_id: string
   /** Non-fatal lookup failure (store unreachable, app removed from catalog, …). */
   error?: string
+  /** What the update does to the app's data (docs/migrations.md): the version the
+   *  data is at and the one the new version expects, with the steps between. Absent
+   *  when the update leaves the data alone — every ordinary update. */
+  data_from?: number
+  data_to?: number
+  migrations?: { id: number; name: string }[]
+  /** Set when a step on the way is marked as manual by the app's maintainer: the
+   *  update is refused, and this is their message. */
+  blocked?: string
 }
 
 /** Check whether the app's reference store has a newer compose than installed. */
@@ -547,13 +557,15 @@ export function checkUpdate(id: string): Promise<UpdateStatus> {
 export async function applyUpdate(
   id: string,
   noBackup = false,
-): Promise<{ updated: boolean; warning?: string }> {
-  const res = await api.post<{ status: string; updated: boolean; warning?: string }>(
+): Promise<{ updated: boolean; started?: boolean; warning?: string }> {
+  const res = await api.post<{ status: string; updated: boolean; started?: boolean; warning?: string }>(
     `/api/apps/${encodeURIComponent(id)}/update`,
     noBackup ? { noBackup: true } : undefined,
   )
   await loadApps()
-  return { updated: res?.updated ?? false, warning: res?.warning }
+  // `started`: an update that converts the app's data runs in the background (it may
+  // take hours); the tile's progress bar and the Updates page follow it.
+  return { updated: res?.updated ?? false, started: res?.started, warning: res?.warning }
 }
 
 /** Point the app at a different store, app or folder. The reference is resolved

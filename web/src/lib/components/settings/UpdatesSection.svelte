@@ -113,7 +113,10 @@
     }
   }
 
-  const REFUSED = new Set(['no_room', 'backup_timeout', 'backup_failed'])
+  /** Refused over the app's data (docs/migrations.md). Nothing changed, and "update
+   *  without backup" is no way past any of them. */
+  const DATA_REFUSED = ['data_blocked', 'data_newer', 'data_store_error', 'data_no_backup']
+  const REFUSED = new Set(['no_room', 'backup_timeout', 'backup_failed', ...DATA_REFUSED])
   const BROKEN = new Set(['broken', 'rollback_failed', 'not_running'])
 
   type RowState = 'queued' | 'updating' | 'updated' | 'refused' | 'rolled_back' | 'broken' | 'failed' | 'idle'
@@ -159,6 +162,14 @@
         return $t('updates_why_rollback_failed')
       case 'broken':
         return $t('updates_why_broken')
+      case 'data_blocked':
+        return $t('updates_why_data_blocked')
+      case 'data_newer':
+        return $t('updates_why_data_newer')
+      case 'data_store_error':
+        return $t('updates_why_data_store_error')
+      case 'data_no_backup':
+        return $t('updates_why_data_no_backup')
       default:
         return $t('updates_why_failed')
     }
@@ -169,7 +180,9 @@
   const available = $derived(rows.filter((r) => r.state === 'available' && !r.stays_up))
   const system = $derived(rows.filter((r) => r.state === 'available' && r.stays_up))
   const attention = $derived(
-    rows.filter((r) => r.state === 'error' || (r.state === 'current' && problemFor(r.id) !== null)),
+    rows.filter(
+      (r) => r.state === 'error' || r.state === 'blocked' || (r.state === 'current' && problemFor(r.id) !== null),
+    ),
   )
   const untracked = $derived(rows.filter((r) => r.state === 'untracked'))
   const unmanaged = $derived(rows.filter((r) => r.state === 'unmanaged'))
@@ -356,6 +369,15 @@
       <p class="meta mono" title={v.all}>
         {v.text}{#if v.more}<span class="more-count">{$t('updates_more', { n: String(v.more) })}</span>{/if}
       </p>
+      {#if row.migrations?.length}
+        <p class="meta">
+          {$t('updates_converts_data', {
+            from: String(row.data_from ?? ''),
+            to: String(row.data_to ?? ''),
+            steps: row.migrations.map((m) => m.name).join(', '),
+          })}
+        </p>
+      {/if}
       {#if lv}{@render stepBar(lv.p, lv.msg)}{/if}
       {#if p && st !== 'updating' && st !== 'queued'}{@render problemNote(row, p)}{/if}
       {#if st === 'updated' && item?.warning}<p class="explain warn">{$t('updates_done_no_backup')}</p>{/if}
@@ -386,9 +408,11 @@
           <button disabled={busy} onclick={() => (row.stays_up ? (confirm = { kind: 'system', id: row.id }) : update(row.id))}>
             {$t('updates_retry')}
           </button>
-          <button class="warn-btn" disabled={busy} onclick={() => (confirm = { kind: 'nobackup', id: row.id })}>
-            {$t('updates_no_backup_retry')}
-          </button>
+          {#if !DATA_REFUSED.includes(p?.reason ?? '')}
+            <button class="warn-btn" disabled={busy} onclick={() => (confirm = { kind: 'nobackup', id: row.id })}>
+              {$t('updates_no_backup_retry')}
+            </button>
+          {/if}
         {:else}
           <button
             class={p ? '' : 'primary'}
@@ -526,7 +550,10 @@
               <span class="title">{row.name}</span>
               {#if p}{@render chip(rowState(row.id, p))}{/if}
             </div>
-            {#if row.state === 'error'}
+            {#if row.state === 'blocked'}
+              <p class="explain">{$t('updates_blocked')}</p>
+              <p class="raw blocked">{row.blocked ?? ''}</p>
+            {:else if row.state === 'error'}
               <p class="explain">{$t('updates_check_failed')}</p>
               <details class="more">
                 <summary>{$t('updates_details')}</summary>

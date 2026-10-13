@@ -347,8 +347,13 @@
     applyingUpdate = true
     updateMsg = ''
     try {
-      const res = await applyUpdate(id, !backupFirst)
-      updateMsg = res.updated ? 'Updated & recreated.' : 'Already up to date.'
+      // A data conversion always takes a rollback point (the server refuses otherwise).
+      const res = await applyUpdate(id, !backupFirst && !update?.migrations?.length)
+      updateMsg = res.started
+        ? 'Started — the data is being converted. Follow it on the tile or in Settings → Updates.'
+        : res.updated
+          ? 'Updated & recreated.'
+          : 'Already up to date.'
       if (res.warning) updateMsg += ' ' + res.warning
       await runCheckUpdate() // refresh the status after applying
     } catch (e) {
@@ -703,6 +708,8 @@
                 <span class="v badge health-unhealthy">No source</span>
               {:else if update.error}
                 <span class="v badge health-unhealthy">Couldn't check</span>
+              {:else if update.available && update.blocked}
+                <span class="v badge health-unhealthy">Blocked</span>
               {:else if update.available}
                 <span class="v badge health-starting">Update available</span>
               {:else}
@@ -717,6 +724,19 @@
               </p>
             {:else if update.error}
               <p class="hint">{update.error}</p>
+            {/if}
+            {#if update.available && update.blocked}
+              <p class="hint">
+                This update can't be applied automatically. The app's maintainer says:
+              </p>
+              <pre class="hint blocked">{update.blocked}</pre>
+            {:else if update.available && update.migrations?.length}
+              <p class="hint">
+                This update converts the app's data (version {update.data_from} →
+                {update.data_to}: {update.migrations.map((m) => m.name).join(', ')}). It
+                runs in the background and may take a while; a rollback point is always
+                taken first, and the app is put back if a step fails.
+              </p>
             {/if}
             {#if refDirty && refInput && !refValid}
               <p class="hint">
@@ -745,12 +765,17 @@
             class="check"
             title="Takes a rollback point first, so a new version that fails to start is put back automatically."
           >
-            <input type="checkbox" bind:checked={backupFirst} disabled={applyingUpdate} />
+            <!-- A data conversion always takes a rollback point: unticking it would only get the update refused. -->
+            <input
+              type="checkbox"
+              bind:checked={backupFirst}
+              disabled={applyingUpdate || !!update?.migrations?.length}
+            />
             <span>Backup</span>
           </label>
           <button
             class="primary"
-            disabled={applyingUpdate || checkingUpdate || !update?.available}
+            disabled={applyingUpdate || checkingUpdate || !update?.available || !!update?.blocked}
             onclick={runApplyUpdate}
           >
             {applyingUpdate ? 'Updating…' : 'Update now'}
@@ -923,6 +948,10 @@
     color: var(--text-muted);
     font-size: 0.8rem;
     margin: 0 0 0.5rem;
+  }
+  pre.blocked {
+    white-space: pre-wrap;
+    margin: 0;
   }
   .hint a {
     color: var(--primary);

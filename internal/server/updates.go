@@ -178,23 +178,30 @@ func (s *Server) checkTargets(ctx context.Context, only map[string]bool) ([]inst
 // refreshUpdateRow re-checks one app and replaces its row, after something outside
 // a run changed it — the Update tab's button, or a new store reference. Cheaper than
 // a whole check, and without it the page would keep offering an update just applied.
-func (s *Server) refreshUpdateRow(ctx context.Context, id string) {
+func (s *Server) refreshUpdateRow(ctx context.Context, id string) (installer.AppUpdate, bool) {
 	if s.apps == nil || s.installer == nil {
-		return
+		return installer.AppUpdate{}, false
 	}
 	rows, err := s.checkTargets(ctx, map[string]bool{id: true})
 	if err != nil || len(rows) != 1 {
-		return
+		return installer.AppUpdate{}, false
 	}
 	u := &s.updates
 	u.mu.Lock()
+	found := false
 	for i := range u.rows {
 		if u.rows[i].ID == id {
-			u.rows[i] = rows[0]
+			u.rows[i], found = rows[0], true
 		}
+	}
+	// Added when the page has never been checked: a run can only queue an app that
+	// has a row.
+	if !found {
+		u.rows = append(u.rows, rows[0])
 	}
 	u.mu.Unlock()
 	s.broadcastUpdates()
+	return rows[0], true
 }
 
 // runQueue resolves which apps a run updates. With no ids: every app with an update
@@ -226,7 +233,10 @@ func runQueue(rows []installer.AppUpdate, ids []string) ([]string, error) {
 			continue
 		}
 		// Retrying an app whose last check failed is allowed: the store may be back.
-		if r.State != installer.StateAvailable && r.State != installer.StateError {
+		// A blocked app named alone goes through, so the owner gets the maintainer's
+		// message from the refusal rather than "nothing to update".
+		if r.State != installer.StateAvailable && r.State != installer.StateError &&
+			!(r.State == installer.StateBlocked && len(ids) == 1) {
 			continue
 		}
 		if r.StaysUp && len(ids) > 1 {
@@ -239,6 +249,20 @@ func runQueue(rows []installer.AppUpdate, ids []string) ([]string, error) {
 		return nil, errNothingToRun
 	}
 	return q, nil
+}
+
+// updateBudget is one app's time inside a run: an ordinary update's, grown by its
+// pending data migrations' own timeouts (installer.DataPlan.Budget).
+func (s *Server) updateBudget(id string) time.Duration {
+	u := &s.updates
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, r := range u.rows {
+		if r.ID == id {
+			return r.DataPlan.Budget(updateTimeout)
+		}
+	}
+	return updateTimeout
 }
 
 // startUpdateRun queues ids and runs them in the background. It returns once the run
@@ -282,7 +306,7 @@ func (s *Server) runUpdates(q []string, opts installer.UpdateOptions) {
 	for i, id := range q {
 		set(i, func(it *UpdateRunItem) { it.Status = runUpdating })
 
-		ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), s.updateBudget(id))
 		var res installer.UpdateResult
 		err := s.apps.WithBusy(id, func() error {
 			var e error
@@ -303,6 +327,10 @@ func (s *Server) runUpdates(q []string, opts installer.UpdateOptions) {
 				var nr *installer.NoRollbackError
 				if errors.As(err, &nr) {
 					it.Reason, it.Needed, it.Free = nr.Reason, nr.Needed, nr.Free
+				}
+				var dr *installer.DataRefusedError
+				if errors.As(err, &dr) {
+					it.Reason = dr.Reason
 				}
 				return
 			}

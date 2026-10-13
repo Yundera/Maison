@@ -84,6 +84,11 @@ const (
 	// never taken by the user. Nothing is failing, but losing the server would lose every
 	// backup with it. One per engine, "backup.secret:<engine>".
 	KindBackupSecret = "backup.secret"
+	// KindBackupApproval is an engine the box has and the owner has not enabled — an
+	// installed engine app waiting for its Enable click. A warning: nothing is failing,
+	// and nothing is written there yet either.
+	KindBackupApproval = "backup.approval"
+
 	KindDiskFull     = "disk.full"
 	KindDiskUnseen   = "disk.unseen"
 	KindAppUnhealthy = "app.unhealthy"

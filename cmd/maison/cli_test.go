@@ -19,6 +19,7 @@ func TestParseCLI(t *testing.T) {
 		{"secret set feedback_token", "tok\n", "PUT", "/secrets/feedback_token", "tok\n"},
 		{"secret rm feedback_token", "", "DELETE", "/secrets/feedback_token", ""},
 		{"stores ensure https://example.com/s.zip", "", "POST", "/stores/ensure", `{"url":"https://example.com/s.zip"}`},
+		{"backup approve kopia", "", "POST", "/backup/engines/kopia/approve", ""},
 	}
 	for _, c := range cases {
 		m, p, b, err := parseCLI(strings.Fields(c.args), strings.NewReader(c.stdin))

@@ -66,6 +66,15 @@ export interface EngineInfo {
   /** Where a user who no longer has the key can start over, when the deployment offers
    *  such a place. Absent, no link is shown. */
   recovery_help_url?: string
+  /** An engine an installed app brought that the owner has not enabled. Nothing runs
+   *  in it — not even a status probe — until they do, because enabling it approves the
+   *  image Maison runs as root with every app's data in scope. */
+  needs_approval: boolean
+  /** The image the engine's descriptor names: what enabling it approves. Absent for the
+   *  local engine. */
+  image?: string
+  /** The image repository it is enabled with, absent when it is not (and for local). */
+  approved?: string
 }
 
 /** How retention resolved for one engine.
@@ -160,6 +169,9 @@ export interface EngineSettings {
    *  any engine switches the whole box off that fallback. */
   schedule?: boolean
   uninstall?: boolean
+  /** The image repository this engine is enabled with. Read-only here: the server keeps
+   *  it whatever a PUT says, and it changes only through approve/revoke below. */
+  approved?: string
 }
 
 /** One target's place in a run.
@@ -329,4 +341,23 @@ export interface RecoverResult {
  *  shows, not as a fault. */
 export function recoverBackupEngine(id: string, key: string): Promise<RecoverResult> {
   return api.post<RecoverResult>(`/api/backup/engines/${encodeURIComponent(id)}/recover`, { key })
+}
+
+const enginePath = (id: string) => `/api/backup/engines/${encodeURIComponent(id)}`
+
+/** Enables an engine an installed app brought. The server first checks that the
+ *  engine's container belongs to that app and runs the image the engine declares, and
+ *  answers 409 with the reason when it does not. */
+export function approveBackupEngine(id: string): Promise<unknown> {
+  return api.post(`${enginePath(id)}/approve`)
+}
+
+/** Disables it again. Its backups stay listed; nothing more is written or read there. */
+export function revokeBackupEngine(id: string): Promise<unknown> {
+  return api.post(`${enginePath(id)}/revoke`)
+}
+
+/** Reads the engine descriptors again — for an engine app the page does not show yet. */
+export function rescanBackupEngines(): Promise<unknown> {
+  return api.post('/api/backup/engines/rescan')
 }

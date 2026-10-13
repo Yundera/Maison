@@ -231,6 +231,12 @@ type EngineStatus struct {
 	// self-hoster pointing the same engine at their own bucket has nobody to send them
 	// to. Empty means no such place exists, and the page offers no link.
 	RecoveryHelpURL string
+
+	// NeedsApproval is true for an engine the box has but the owner has not enabled: its
+	// app is installed and declares an adapter, and nothing will be run in it until
+	// someone says so. Neither Configured nor Connected is meaningful beside it — nobody
+	// has asked the engine.
+	NeedsApproval bool
 }
 
 // RecoverResult is what reconnecting a rebuilt box to its repository found there.

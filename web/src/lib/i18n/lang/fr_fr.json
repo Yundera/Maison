@@ -582,5 +582,15 @@
   "dont_show_again": "Ne plus afficher à l'ouverture",
   "open_app": "Ouvrir l'application",
   "close": "Fermer",
-  "credentials_none": "Cette application ne déclare aucun identifiant."
+  "credentials_none": "Cette application ne déclare aucun identifiant.",
+  "backup_row_needs_approval": "installé, pas encore activé",
+  "backup_engines_rescan": "Rechercher des moteurs de sauvegarde",
+  "backup_approve_explain": "L'application {app} fournit un moteur de sauvegarde. Rien n'y est sauvegardé tant que vous ne l'avez pas activé. L'activer permet à Maison d'exécuter ce moteur avec accès aux données de toutes les applications : n'activez qu'un moteur que vous avez installé vous-même.",
+  "backup_approve_image": "Image du moteur :",
+  "backup_approve_submit": "Activer ce moteur",
+  "backup_approve_working": "Vérification du moteur…",
+  "backup_approved_fact": "Activé ({image}).",
+  "backup_approve_revoke": "Désactiver",
+  "uninstall_engine_warn": "Cette application est un moteur de sauvegarde. La désinstaller arrête toutes les sauvegardes qui y vont et supprime sa configuration de ce serveur, y compris le mot de passe du dépôt. Assurez-vous d'en avoir gardé une copie, sinon ces sauvegardes ne pourront plus être lues.",
+  "uninstall_engine_confirm": "Je comprends que les sauvegardes vers ce moteur s'arrêtent"
 }

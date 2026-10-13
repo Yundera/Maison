@@ -136,6 +136,21 @@ type EngineSettings struct {
 	// Maison bug can leave a stale one behind. "Reapply every run" and "whatever is
 	// in the repository wins" cannot both be true, so the operator says which.
 	Unmanaged bool `json:"unmanaged,omitempty"`
+
+	// Approved is the image repository the owner enabled this engine with — no tag, no
+	// digest (adapter.ImageRepo). Empty means not enabled, and nothing is run in an engine
+	// that is not.
+	//
+	// An adapter.json is a file in an app's folder, and any app with the data root
+	// mounted can write one; what Maison runs from it is an image, as root, with every
+	// app's data in scope. So finding a descriptor is not enough: someone has to say yes
+	// to that image, and this is where the yes is kept. A descriptor that later names a
+	// different repository is not covered by it.
+	//
+	// It is NEVER taken from PUT /api/backup/config. Approving goes through its own route,
+	// which first checks that the descriptor's container belongs to the engine's own app
+	// and runs the image it names (see handleApproveEngine).
+	Approved string `json:"approved,omitempty"`
 }
 
 // Provisioned is the deployment's side of the settings — what the host-side

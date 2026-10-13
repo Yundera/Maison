@@ -71,6 +71,11 @@ type Server struct {
 	// mailing it — the boot-time retries and the detector loop both ask (backupkey.go).
 	keyMailMu sync.Mutex
 
+	// engineMu serialises rescanEngines: the container watcher, the detector pass and
+	// the approval routes all ask, and two scans racing would register one descriptor
+	// twice (backupapprove.go).
+	engineMu sync.Mutex
+
 	// updates is the Settings → Updates report and its "update all" run (updates.go).
 	updates updatesState
 
@@ -475,6 +480,12 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// reattaches to the repository already in its space. The body is that key, so
 		// it is a POST for the same reason as the one above. See handleRecoverEngine.
 		r.Post("/backup/engines/{id}/recover", s.handleRecoverEngine)
+		// Engines that arrive with an app: the owner's Enable / Disable, and a re-read
+		// of the descriptors for when the container watcher missed one. See
+		// backupapprove.go.
+		r.Post("/backup/engines/{id}/approve", s.handleApproveEngine)
+		r.Post("/backup/engines/{id}/revoke", s.handleRevokeEngine)
+		r.Post("/backup/engines/rescan", s.handleRescanEngines)
 
 		// Settings → Updates. Top-level, clear of the /apps/{id}/{action} catch-all.
 		r.Get("/updates", s.handleGetUpdates)
@@ -857,6 +868,10 @@ func (s *Server) watchDocker() {
 			// still served while its replacement is fetched; it is stale, not wrong.
 			s.apps.InvalidateContainers()
 			s.broadcastApps()
+			// An app that brings a backup engine writes its descriptor when its
+			// container starts, and takes it away when it is removed: either is a
+			// container event, so this is where an engine app is noticed.
+			s.rescanEngines()
 		}
 	}()
 }

@@ -63,8 +63,14 @@ func buildEngines(cfg config.Config, store *backupconfig.Store) *backup.Set {
 	// descriptor first. What makes it honest when that ordering is nonetheless broken is
 	// checkBackup: an engine the configuration names and this set does not have is
 	// reported, not quietly dropped. See detect.go.
-	for _, d := range adapter.Discover(cfg) {
-		providers = append(providers, adapter.New(cfg, d))
+	//
+	// Every one of them is gated on the owner's approval (backupapprove.go). The engines
+	// present on the first start of a Maison that knows about approval are approved here,
+	// once, because the deployment put them there.
+	found := adapter.Discover(cfg)
+	seedApprovals(store, found)
+	for _, d := range found {
+		providers = append(providers, newGatedEngine(cfg, store, d))
 	}
 
 	set := backup.New(providers...)
@@ -131,6 +137,9 @@ func applyEngineSettings(set *backup.Set, store *backupconfig.Store) {
 					ids = append(ids, id)
 				}
 			}
+			// A ticked engine the owner has not enabled cannot be written to, and is
+			// missing in the same sense as one the box does not have.
+			ids, missing := usableWriters(set, ids)
 			if err := set.SetWriters(t, ids); err != nil {
 				log.Printf("backup: %v", err)
 			}
@@ -138,7 +147,6 @@ func applyEngineSettings(set *backup.Set, store *backupconfig.Store) {
 			// writer, but it must not vanish either: an uninstall with no writers and
 			// nothing missing goes ahead without a backup, and one whose only destination
 			// is missing has to refuse like any other failing backup.
-			var missing []string
 			for id := range conf.Engines {
 				if _, ok := set.Get(id); !ok && receives(id, t) {
 					missing = append(missing, id)
@@ -166,7 +174,7 @@ func legacyWriter(set *backup.Set, conf backupconfig.Config) string {
 	// The user's override wins; empty means "follow whatever the deployment
 	// provisioned", which is inferred below rather than stored.
 	if chosen := conf.Engine; chosen != "" {
-		if _, ok := set.Get(chosen); ok {
+		if p, ok := set.Get(chosen); ok && engineApproved(p) {
 			return chosen
 		}
 		// Not a typo — PUT /api/backup/config refuses an engine the box does not have,
@@ -176,7 +184,7 @@ func legacyWriter(set *backup.Set, conf backupconfig.Config) string {
 		// copy — but the box must not be left believing they are going offsite, so
 		// checkBackup raises backup.missing for exactly this. The log line is the
 		// operator's copy of it.
-		log.Printf("backup: %q is not declared on this box any more — backups are landing on the local disk instead", chosen)
+		log.Printf("backup: %q is not declared on this box any more, or is not enabled — backups are landing on the local disk instead", chosen)
 		return apps.EngineLocal
 	}
 	// No override: prefer an offsite engine that is actually connected. That inference
@@ -362,6 +370,14 @@ type engineInfo struct {
 	// be broken for its duration. Sent as a fact rather than inferred from a capability
 	// because that is what it is — a hardcoded wiring the page should be able to state.
 	ReceivesRollback bool `json:"receives_rollback"`
+
+	// NeedsApproval is an engine an installed app brought and the owner has not enabled;
+	// Image is what enabling it would approve. Approved is the image repository it is
+	// enabled with, empty for the local engine and for one that is not. See
+	// backupapprove.go.
+	NeedsApproval bool   `json:"needs_approval"`
+	Image         string `json:"image,omitempty"`
+	Approved      string `json:"approved,omitempty"`
 }
 
 func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
@@ -423,6 +439,11 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		info.CanChangeSecret = canChangeSecret(p)
+		info.NeedsApproval = st.NeedsApproval
+		if g, ok := p.(gatedEngine); ok {
+			info.Image = g.Descriptor().Image
+			info.Approved = conf.Approved(id)
+		}
 		out.Engines = append(out.Engines, info)
 	}
 	if s.backupSched != nil {
@@ -472,6 +493,9 @@ func (s *Server) handlePutBackupConfig(w http.ResponseWriter, r *http.Request) {
 	// A client still sending `smtp` here is honoured once and moved, rather than
 	// having its mail configuration stored where nothing reads it any more.
 	adoptLegacySMTP(s.settings, &in)
+	// Approvals are not the page's to write: a page loaded before one was given would
+	// otherwise withdraw it by saving, and a client could grant one by sending it.
+	in = backupconfig.PreserveOwned(in, s.backupConf.Get())
 	if err := s.backupConf.Set(in); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

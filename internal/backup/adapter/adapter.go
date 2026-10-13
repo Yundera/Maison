@@ -66,13 +66,42 @@ type Provider struct {
 	// file per engine directory, and two attempts racing would have one install or test
 	// the other's key.
 	secretMu sync.Mutex
+
+	// approved says whether the owner has enabled this engine. Nil is always enabled,
+	// which is what New builds; the server builds every engine with NewGated.
+	approved func() bool
 }
+
+// ErrNotApproved is every verb of an engine the owner has not enabled.
+//
+// It is returned BEFORE anything is run. Approving an engine is approving the image
+// Maison will exec as root with the data root in scope, so an engine nobody approved
+// must not cost so much as a `capabilities` call into it.
+var ErrNotApproved = errors.New("this backup engine is not enabled — enable it in Settings › Backups")
 
 // New builds a provider from a descriptor. It performs no I/O: a provider is
 // constructed at boot, including on a box whose engine container is not running.
 func New(cfg config.Config, d Descriptor) *Provider {
 	return &Provider{cfg: cfg, desc: d, runner: engine.New(cfg)}
 }
+
+// NewGated is New for an engine that runs only while approved() says so.
+//
+// The engine is registered either way: an engine that is not enabled still has a tab,
+// an incident and an Enable button, and one that was enabled and is not any more keeps
+// its history in the list even though reading it now fails with ErrNotApproved.
+func NewGated(cfg config.Config, d Descriptor, approved func() bool) *Provider {
+	p := New(cfg, d)
+	p.approved = approved
+	return p
+}
+
+// Descriptor is what this provider was built from. The server compares it against a
+// fresh Discover to tell a changed descriptor from an unchanged one.
+func (p *Provider) Descriptor() Descriptor { return p.desc }
+
+// Approved reports whether the owner has enabled this engine.
+func (p *Provider) Approved() bool { return p.approved == nil || p.approved() }
 
 func (p *Provider) ID() string { return p.desc.EngineID }
 
@@ -85,14 +114,17 @@ func (p *Provider) dir() string { return p.cfg.BackupEngineDir(p.desc.EngineID) 
 
 // Caps asks the adapter what it can do, once.
 //
-// The answer is cached for the life of the process because it is a property of a pinned
-// image: it cannot change without the image changing, and the image changes only with a
-// redeploy that restarts Maison anyway.
+// The answer is cached for the life of this provider because it is a property of a pinned
+// image: it cannot change without the image changing, and a changed image means a changed
+// descriptor, which the server answers with a fresh provider (rescanEngines).
 //
 // A failure is NOT cached, and returns the zero value — "this engine cannot" for every
 // field, which is the conservative answer and the one that keeps a transient failure
 // from being recorded as a permanent incapacity.
 func (p *Provider) Caps() apps.Caps {
+	if !p.Approved() {
+		return apps.Caps{}
+	}
 	p.mu.Lock()
 	if p.caps != nil {
 		defer p.mu.Unlock()
@@ -156,6 +188,16 @@ func (p *Provider) readState() repoState {
 // Status is cached briefly, because both the settings page and every app's Backups tab
 // ask and answering costs a round trip into the engine.
 func (p *Provider) Status(ctx context.Context) apps.EngineStatus {
+	if !p.Approved() {
+		// Answered from files alone. Not cached either: the moment the owner clicks
+		// Enable, the next page load has to stop saying it.
+		state := p.readState()
+		return apps.EngineStatus{
+			Label:         state.Label,
+			Detail:        ErrNotApproved.Error(),
+			NeedsApproval: true,
+		}
+	}
 	p.mu.Lock()
 	if time.Since(p.statusAt) < 30*time.Second {
 		defer p.mu.Unlock()

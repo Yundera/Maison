@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/config"
@@ -215,4 +216,35 @@ func ReadDescriptor(path string) (Descriptor, error) {
 		return d, err
 	}
 	return d, nil
+}
+
+// Equal reports whether two descriptors describe the same engine invocation. Secret is a
+// pointer, so == would compare addresses.
+func (d Descriptor) Equal(o Descriptor) bool {
+	a, b := d.Secret, o.Secret
+	d.Secret, o.Secret = nil, nil
+	if d != o {
+		return false
+	}
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// ImageRepo is an image reference without its tag or digest — what an owner approves.
+//
+// The repository rather than the full reference, so that the engine app updating itself
+// within its own image (a new tag of the same adapter) needs nobody's click, while a
+// descriptor that starts naming a different image does. A registry port is not a tag:
+// only a colon after the last slash is.
+func ImageRepo(ref string) string {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	}
+	slash := strings.LastIndex(ref, "/")
+	if i := strings.LastIndex(ref, ":"); i > slash {
+		ref = ref[:i]
+	}
+	return ref
 }

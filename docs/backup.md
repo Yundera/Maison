@@ -21,6 +21,11 @@
 > hand-connected repository against MinIO or a filesystem path remains how this is
 > developed and tested.
 >
+> Engines are also picked up **while running**: a descriptor that appears or changes is
+> registered on the next container event, without a restart, and every engine waits for the
+> owner's approval before anything is run in it
+> (§[The adapter image is provisioned, and approved before it runs](#the-adapter-image-is-provisioned-and-approved-before-it-runs)).
+>
 > **Not yet built:** disaster recovery / recovery mode ([below](#disaster-recovery)). Maison
 > also still falls back to a one-shot container when the resident engine is unreachable,
 > instead of reporting it.
@@ -395,13 +400,36 @@ engine container and no repository is not a degraded box — it is the default F
 and it must raise nothing. Everything above is conditional on an engine having been
 provisioned and being ticked to receive a trigger.
 
-### The adapter image is deployment-provisioned, never user-supplied
+### The adapter image is provisioned, and approved before it runs
 
-The image is named by the host side (`ensure-kopia-stack.sh` and its pin), not by anything a
-user can type. This is the line that keeps the adapter from being the remote-execution
-surface described under [Not yet decided](#not-yet-decided): an image Maison execs as root
-with app data and storage credentials in scope is first-party infrastructure. *Which
-repository an engine points at* remains an ordinary user setting.
+The image is named by whoever installed the engine — the host side on a managed PCS
+(`ensure-kopia-stack.sh` and its pin), or an engine app installed from a store on a stock box
+(§[Store-installed engines](#store-installed-engines)) — and never by anything a user can type
+into a form. This is the line that keeps the adapter from being a remote-execution surface: an
+image Maison execs as root with app data and storage credentials in scope must have come from
+something the owner chose to install. *Which repository an engine points at* remains an
+ordinary user setting.
+
+An `adapter.json` is a file, though, and any app with the data root mounted can write one. So
+**an engine runs nothing until the owner has approved its image** — not a backup, not a status
+probe, not `capabilities`. The approval is the image *repository* (no tag, no digest), kept in
+`backup.json` under `engines.<id>.approved`: an engine app updating itself to a new tag keeps
+it, a descriptor that starts naming another image loses it. Approving from the dashboard first
+checks that the descriptor's container belongs to the compose project named after the engine
+— the engine's own app — and runs exactly the image the descriptor names, so a descriptor some
+other app wrote into that folder can only point at what that app already runs. The resident
+container is checked again on use: a container recreated from a different image is passed
+over for a one-shot run of the approved one.
+
+Approval is never part of `PUT /api/backup/config` (a page loaded before an approval would
+otherwise revoke it by saving). It has its own routes — `POST /api/backup/engines/{id}/approve`
+and `/revoke` — and the deployment's way in is the admin socket, `maison backup approve <id>`,
+which skips the container check because its caller provisioned the engine.
+
+**Existing boxes.** The first start of a Maison that knows about approval approves every engine
+already present, once (`approvals_seeded`): those descriptors can only have come from the
+deployment. Every engine that appears after that waits. A managed PCS also re-approves its own
+engine nightly through the CLI, which covers a box rebuilt after the seed.
 
 It also collapses a pin that is currently duplicated across two repositories with only a
 comment holding it together — `KOPIA_IMAGE` in `template-root/scripts/library/kopia.sh` and
@@ -683,6 +711,14 @@ the tempting behaviour and the wrong one: it would put the data somewhere other 
 where the user was told it goes, at the exact moment the tile disappears and stops being
 able to say so. The escape hatch is to point the default engine at this server's disk in
 Settings → Backups and retry.
+
+### Uninstalling an engine app
+
+An engine's directory is `AppData/<engine>/engine` — inside the engine app's own folder — so
+uninstalling a store-installed engine takes its repository configuration and password with it.
+The uninstall dialog says so and asks for an explicit acknowledgement. The engine stays listed
+afterwards (engines are never removed from the set), its reads fail, and any trigger still
+ticked for it raises `backup.missing`.
 
 ### Removing without a backup
 
@@ -1291,15 +1327,29 @@ handling lives on this side and retrofitting it during an incident is expensive.
 
 ---
 
-## Not yet decided
+## Store-installed engines
 
-- **What "custom" means** in the engine picker. Half-answered by
-  [The engine adapter](#the-engine-adapter): *user supplies a repository target for an
-  engine the deployment ships* is ordinary and is what the picker offers, while *user
-  supplies an image or a command* remains a deliberate remote-execution surface and is not
-  offered. What is still undecided is whether a user-installed adapter ever becomes a
-  supported thing for a self-hoster who wants a destination Yundera does not ship, and if
-  so what distinguishes it from the provisioned one in the UI.
+A stock box has no host side to provision an engine, so the engine comes as an app. The Kopia
+app in the Yundera store (`Apps/Kopia`) runs `maison-kopia-engine serve` as its resident
+container, which does what `ensure-backup-config.sh` does on a managed PCS: it reads
+`connect.json` and `credentials.env` from `AppData/kopia/engine/`, mints
+`repository.password`, creates or connects the repository, and writes `adapter.json`.
+
+1. Install Kopia from the store.
+2. Fill `AppData/kopia/engine/connect.json` (bucket, S3 endpoint, region, prefix ending in `/`)
+   and `credentials.env` (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) — Backblaze B2 through
+   its S3 endpoint works. The app ships `.example` copies of both.
+3. Maison notices the descriptor on the next container event (or the detector pass, or the
+   Look for backup engines button) and lists the engine as waiting, with a
+   `backup.approval:<id>` warning.
+4. Enable it in Settings › Backups, tick what it receives, and keep a copy of the repository
+   password.
+
+The store app is for boxes **without** a platform-provisioned kopia. Maison refuses a store
+install over a folder whose compose declares `lifecycle.uninstallable: false` — the managed
+PCS's own kopia stack — rather than letting the two overwrite each other every night.
+
+## Not yet decided
 - **Whether the engine container drops to `--network none` for a filesystem repository.**
   It gets that isolation today only as a side effect of running one-shot, which
   [The engine adapter](#the-engine-adapter) removes. The stack would have to choose its

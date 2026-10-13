@@ -35,8 +35,14 @@
   let loaded = $state(false)
   let receivers = $state<{ id: string; label: string; offsite: boolean }[]>([])
   let missing = $state<string[]>([])
+  /** Whether the app being removed is itself a backup engine — the Kopia app on a stock
+   *  box. Its engine directory, repository password included, lives in its app folder
+   *  and leaves with it, so this is the one uninstall that takes backups down with it. */
+  let isEngine = $state(false)
+  let engineAck = $state(false)
   fetchBackupStatus()
     .then((s) => {
+      isEngine = (s.engines ?? []).some((e) => e.id === target.id)
       receivers = (s.engines ?? [])
         .filter((e) => e.receives_uninstall)
         .map((e) => ({ id: e.id, label: engineLabel(e.id, e.name, (k) => $t(k)), offsite: e.offsite }))
@@ -109,6 +115,14 @@
       </p>
     {/if}
 
+    {#if isEngine}
+      <p class="note warn">{$t('uninstall_engine_warn')}</p>
+      <label class="check">
+        <input type="checkbox" bind:checked={engineAck} disabled={busy} />
+        <span>{$t('uninstall_engine_confirm')}</span>
+      </label>
+    {/if}
+
     {#if canZip}
       <label class="check">
         <input type="checkbox" bind:checked={zip} disabled={busy} />
@@ -144,7 +158,7 @@
 
     <div class="actions">
       <button class="ghost" onclick={close} disabled={busy}>{$t('cancel')}</button>
-      <button class="danger" onclick={confirm} disabled={busy}>
+      <button class="danger" onclick={confirm} disabled={busy || (isEngine && !engineAck)}>
         {busy ? '…' : $t('uninstall')}
       </button>
     </div>

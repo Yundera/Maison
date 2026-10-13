@@ -8,6 +8,7 @@ package installer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -216,6 +217,9 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from Ba
 		return "", fmt.Errorf("parse compose: %w", err)
 	}
 	project := projectName(f.Name, ref.ID)
+	if err := in.refusePlatformOwned(project); err != nil {
+		return "", err
+	}
 
 	in.mu.Lock()
 	if _, running := in.installs[project]; running {
@@ -267,6 +271,35 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from Ba
 		in.notify()
 	}()
 	return project, nil
+}
+
+// ErrPlatformOwned is a store install aimed at a folder the box's own platform deployed.
+var ErrPlatformOwned = errors.New("provided by this box's platform")
+
+// refusePlatformOwned refuses to install over an app that declares it cannot be
+// uninstalled.
+//
+// Install is deliberately non-destructive on top of what it finds — that is what makes
+// install-from-backup work — so on its own it would overwrite a platform stack's compose
+// file with a store app of the same name: a managed PCS deploys its own `kopia` stack,
+// and the store's Kopia (meant for boxes without one) would replace it until the next
+// self-check put it back, and so on every night. `lifecycle.uninstallable: false` is
+// exactly the declaration of "this box's platform owns this folder"; a store app that is
+// merely installed already never carries it, so reinstalling one still works.
+func (in *Installer) refusePlatformOwned(project string) error {
+	b, err := os.ReadFile(filepath.Join(in.cfg.AppsDir(), project, "docker-compose.yml"))
+	if err != nil {
+		return nil // nothing there: an ordinary fresh install
+	}
+	f, err := composefile.Parse(b)
+	if err != nil {
+		return nil
+	}
+	ca, err := f.ComposeApp()
+	if err != nil || ca == nil || ca.Lifecycle.CanUninstall() {
+		return nil
+	}
+	return fmt.Errorf("%s is %w and cannot be installed from a store over it", project, ErrPlatformOwned)
 }
 
 // Installs returns a snapshot of every tracked install (in-flight or errored).
@@ -362,6 +395,10 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	project := projectName(f.Name, ref.ID)
 
 	appDir := filepath.Join(in.cfg.AppsDir(), project)
+	// Checked again here because not every install comes through StartInstall.
+	if err := in.refusePlatformOwned(project); err != nil {
+		return err
+	}
 
 	// Restore before anything writes to appDir: RestoreBackup refuses to overwrite
 	// an existing folder, and the install below is deliberately non-destructive on

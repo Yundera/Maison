@@ -91,6 +91,11 @@ type Config struct {
 	// to is a silent loss of a choice they made.
 	Engines map[string]EngineSettings `json:"engines,omitempty"`
 
+	// ApprovalsSeeded records that the engines this box already had when approval was
+	// introduced have been approved, once. Every engine that appears after that waits
+	// for the owner (see server.seedApprovals).
+	ApprovalsSeeded bool `json:"approvals_seeded,omitempty"`
+
 	// LegacySMTP is where failure alerts were configured before they moved to
 	// usersettings — see the SMTP field there for why.
 	//
@@ -221,7 +226,11 @@ func (s *Store) Set(c Config) error {
 	c = sane(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.write(c)
+}
 
+// write persists c and makes it current. The caller holds s.mu.
+func (s *Store) write(c Config) error {
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
@@ -242,6 +251,52 @@ func (s *Store) Set(c Config) error {
 	s.cur = c
 	return nil
 }
+
+// Update applies fn to the current configuration and stores the result, under one lock.
+//
+// For the writers that change one field and must not lose a concurrent change to
+// another: Get-then-Set would let a PUT from the settings page land between the two
+// and be overwritten with the copy fn started from.
+func (s *Store) Update(fn func(*Config)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.cur
+	// fn gets its own map: the current one is shared with every Get caller.
+	c.Engines = make(map[string]EngineSettings, len(s.cur.Engines))
+	for id, es := range s.cur.Engines {
+		c.Engines[id] = es
+	}
+	fn(&c)
+	return s.write(sane(c))
+}
+
+// PreserveOwned copies onto next the fields only Maison's own routes may write — the
+// approvals — from cur. The settings page sends its whole document back, and a page
+// loaded before an approval must not revoke it by saving.
+func PreserveOwned(next, cur Config) Config {
+	next.ApprovalsSeeded = cur.ApprovalsSeeded
+	if len(cur.Engines) == 0 && len(next.Engines) == 0 {
+		return next
+	}
+	engines := make(map[string]EngineSettings, len(next.Engines))
+	for id, es := range next.Engines {
+		es.Approved = ""
+		engines[id] = es
+	}
+	for id, es := range cur.Engines {
+		if es.Approved == "" {
+			continue
+		}
+		e := engines[id]
+		e.Approved = es.Approved
+		engines[id] = e
+	}
+	next.Engines = engines
+	return next
+}
+
+// Approved reports the image repository engine id was enabled with, "" when it was not.
+func (c Config) Approved(id string) string { return c.Engines[id].Approved }
 
 // migrate reads a settings file written before retention had modes.
 //

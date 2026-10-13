@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
@@ -452,6 +453,10 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		Engine: strings.TrimSpace(body.Engine),
 	}
 	project, err := s.installer.StartInstall(r.Context(), storeRef(r), from)
+	if errors.Is(err, installer.ErrPlatformOwned) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

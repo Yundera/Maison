@@ -493,5 +493,15 @@
   "dont_show_again": "打开时不再显示",
   "open_app": "打开应用",
   "close": "关闭",
-  "credentials_none": "此应用未声明任何凭据。"
+  "credentials_none": "此应用未声明任何凭据。",
+  "backup_row_needs_approval": "installed, not enabled yet",
+  "backup_engines_rescan": "Look for backup engines",
+  "backup_approve_explain": "The {app} app provides a backup engine. Nothing is backed up to it until you enable it. Enabling it lets Maison run the engine with access to every app's data, so only enable an engine you installed yourself.",
+  "backup_approve_image": "Engine image:",
+  "backup_approve_submit": "Enable this engine",
+  "backup_approve_working": "Checking the engine…",
+  "backup_approved_fact": "Enabled ({image}).",
+  "backup_approve_revoke": "Disable",
+  "uninstall_engine_warn": "This app is a backup engine. Uninstalling it stops every backup that goes there and removes its configuration, including the repository password, from this box. Make sure you have kept a copy of that password, or you will not be able to read these backups again.",
+  "uninstall_engine_confirm": "I understand that backups to this engine stop"
 }

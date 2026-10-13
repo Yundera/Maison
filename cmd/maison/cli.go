@@ -35,6 +35,7 @@ const cliUsage = `usage: maison <command>
   secret set <name>                    store a secret; its value on stdin
   secret rm <name>                     delete a secret
   stores ensure <url>                  add a store source unless already listed
+  backup approve <engine>              enable a backup engine the deployment provisioned
 
 Manageable settings: domains, feedback, onboarding, smtp.
 A setting refers to a secret as the whole string "${secret:<name>}".
@@ -128,6 +129,11 @@ func parseCLI(args []string, stdin io.Reader) (method, path string, body []byte,
 		}
 		b, _ := json.Marshal(map[string]string{"url": args[2]})
 		return http.MethodPost, "/stores/ensure", b, nil
+	case "backup approve":
+		if len(args) != 3 {
+			return usage()
+		}
+		return http.MethodPost, "/backup/engines/" + url.PathEscape(args[2]) + "/approve", nil, nil
 	}
 	return usage()
 }

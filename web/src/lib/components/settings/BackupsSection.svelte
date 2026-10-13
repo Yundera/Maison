@@ -49,6 +49,9 @@
     changeEngineSecret,
     generateSecret,
     recoverBackupEngine,
+    approveBackupEngine,
+    revokeBackupEngine,
+    rescanBackupEngines,
     type BackupStatus,
     type RecoverResult,
     type BackupConfig,
@@ -432,6 +435,42 @@
     }
   }
 
+  // --- engines an app brought ------------------------------------------------------
+
+  let approving = $state(false)
+  let approveError = $state('')
+
+  /** Enable or disable an engine an installed app provides. The server checks that the
+   *  engine's container belongs to that app and runs the image it declares; when it does
+   *  not, the 409 carries the reason, which is the only useful thing to show. */
+  async function setApproved(id: string, on: boolean) {
+    approving = true
+    approveError = ''
+    try {
+      await (on ? approveBackupEngine(id) : revokeBackupEngine(id))
+      await loadStatus()
+      loadArchives()
+    } catch (e) {
+      approveError = (e as Error).message
+    } finally {
+      approving = false
+    }
+  }
+
+  /** Looks for engine apps again — the container watcher normally gets there first. */
+  async function rescan() {
+    busy = true
+    try {
+      await rescanBackupEngines()
+      await loadStatus()
+      loadArchives()
+    } catch (e) {
+      error = (e as Error).message
+    } finally {
+      busy = false
+    }
+  }
+
   /** The dialog's answer. Pausing is the default and the safe one: a box that was just
    *  rebuilt has empty apps, and a nightly run would save that emptiness and start
    *  pushing the real history out of retention. */
@@ -514,7 +553,13 @@
       if (!known) {
         return { id: e.id, label: label(e.id, e.name), level: 'idle', last: '', note: '', receives }
       }
-      if (e.needs_recovery) {
+      if (e.needs_approval) {
+        // An engine app is installed and nothing goes there until the owner says so.
+        // Not a failure — but not idle either, since it is the reason a backup the user
+        // may expect off-site is not.
+        level = 'warn'
+        note = $t('backup_row_needs_approval')
+      } else if (e.needs_recovery) {
         // Before the "receives" test on purpose: on a rebuilt box this engine receives
         // nothing (it is not connected, so nothing is routed to it), and the idle grey
         // that earns would hide the one state where everything the user owns is at stake.
@@ -712,6 +757,7 @@
     <button class="go" onclick={runNow} disabled={busy || runState?.running}>
       {$t('backup_run_now')}
     </button>
+    <button class="ghost" onclick={rescan} disabled={busy}>{$t('backup_engines_rescan')}</button>
   </div>
 
     <!-- The plan, live: what is being backed up, how far in, and what is still to
@@ -835,6 +881,30 @@
        page used to state once for the box — wrongly for at least one of them. -->
   <section class="card">
     <h4>{label(active.engine, active.name)}</h4>
+
+    <!-- An engine an installed app brought. Enabling it approves the image Maison will
+         run as root with every app's data in scope, so the image is shown and the click
+         is the owner's — nothing runs in it before. -->
+    {#if activeInfo?.needs_approval}
+      <div class="approval">
+        <p class="note warn">{$t('backup_approve_explain', { app: activeInfo.id })}</p>
+        {#if activeInfo.image}
+          <p class="hint">{$t('backup_approve_image')} <code>{activeInfo.image}</code></p>
+        {/if}
+        <button class="go" onclick={() => setApproved(activeInfo.id, true)} disabled={approving}>
+          {approving ? $t('backup_approve_working') : $t('backup_approve_submit')}
+        </button>
+        {#if approveError}<p class="err at-form">{approveError}</p>{/if}
+      </div>
+    {:else if activeInfo?.approved}
+      <p class="hint quiet">
+        {$t('backup_approved_fact', { image: activeInfo.approved })}
+        <button class="ghost" onclick={() => setApproved(activeInfo.id, false)} disabled={approving}>
+          {$t('backup_approve_revoke')}
+        </button>
+      </p>
+      {#if approveError}<p class="err at-form">{approveError}</p>{/if}
+    {/if}
 
     <dl class="props">
       <div>
@@ -1636,6 +1706,13 @@
 
   .recovery {
     margin-top: 1.5rem;
+  }
+  .approval {
+    margin: 0 0 1.25rem;
+  }
+  .approval code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
   }
   .recover-form {
     display: flex;

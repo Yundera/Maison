@@ -552,15 +552,20 @@ func (r *Runner) runOnce(ctx context.Context, s Spec, useExec bool, onLine func(
 
 // residentUsable reports whether a resident container may stand in for a one-shot run.
 //
-// The check is the hostname, and only the hostname, because that is the invariant a
-// resident container can break without anyone noticing. kopia files snapshots under
-// user@host; the host is pinned once, host-side, into repository.config; a container
-// created before that pin — or left running across a re-connect — would file every
-// later backup under a second identity. One repository holding two lineages is not an
-// error anyone sees until a restore comes back empty.
+// The check is the hostname and the image. The hostname is the invariant a resident
+// container can break without anyone noticing. kopia files snapshots under user@host;
+// the host is pinned once, host-side, into repository.config; a container created
+// before that pin — or left running across a re-connect — would file every later backup
+// under a second identity. One repository holding two lineages is not an error anyone
+// sees until a restore comes back empty.
+//
+// The image is what the owner approved (see backupconfig.EngineSettings.Approved): the
+// descriptor names it, and a container that has since been recreated from something
+// else is not what anyone said yes to. A mismatch costs a one-shot run of the image the
+// descriptor names, never an exec into the other one.
 //
 // Everything else Argv guards either belongs to the container's own declaration or
-// fails loudly on first use. This one fails quietly and late, which is what makes it
+// fails loudly on first use. These fail quietly and late, which is what makes them
 // worth a round trip every residentTTL.
 //
 // A container that cannot be inspected at all is simply not usable, and says nothing:
@@ -569,7 +574,7 @@ func (r *Runner) residentUsable(ctx context.Context, s Spec) bool {
 	if s.Hostname == "" {
 		return false
 	}
-	key := s.Container + "\x00" + s.Hostname
+	key := residentKey(s)
 
 	r.mu.Lock()
 	if c, seen := r.resident[key]; seen && time.Since(c.when) < residentTTL {
@@ -580,13 +585,14 @@ func (r *Runner) residentUsable(ctx context.Context, s Spec) bool {
 
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, r.docker(),
-		"inspect", "--format", "{{.Config.Hostname}}", s.Container).Output()
-	got := strings.TrimSpace(string(out))
-	ok := err == nil && got == s.Hostname
-	if err == nil && !ok {
+	got, err := r.InspectContainer(cctx, s.Container)
+	ok := err == nil && got.Hostname == s.Hostname && (s.Image == "" || got.Image == s.Image)
+	if err == nil && got.Hostname != s.Hostname {
 		log.Printf("engine: resident container %s has hostname %q, want %q — using one-shot containers so snapshots keep one identity",
-			s.Container, got, s.Hostname)
+			s.Container, got.Hostname, s.Hostname)
+	} else if err == nil && !ok {
+		log.Printf("engine: resident container %s runs %q, the descriptor names %q — using one-shot containers of the named image",
+			s.Container, got.Image, s.Image)
 	}
 
 	r.mu.Lock()
@@ -598,12 +604,38 @@ func (r *Runner) residentUsable(ctx context.Context, s Spec) bool {
 	return ok
 }
 
+func residentKey(s Spec) string { return s.Container + "\x00" + s.Hostname + "\x00" + s.Image }
+
 // forgetResident drops a cached verdict so the next run re-checks instead of waiting
 // out the TTL. Called when a container that passed the check turns out to be gone.
 func (r *Runner) forgetResident(s Spec) {
 	r.mu.Lock()
-	delete(r.resident, s.Container+"\x00"+s.Hostname)
+	delete(r.resident, residentKey(s))
 	r.mu.Unlock()
+}
+
+// Container is what an inspect of an engine container says about whose it is.
+type Container struct {
+	// Project is the compose project that created it — on a PCS, the app id.
+	Project  string
+	Image    string
+	Hostname string
+}
+
+// InspectContainer reads the facts the resident check and an engine approval rest on.
+// An absent container is an error: there is nothing to vouch for.
+func (r *Runner) InspectContainer(ctx context.Context, name string) (Container, error) {
+	out, err := exec.CommandContext(ctx, r.docker(), "inspect", "--type", "container", "--format",
+		`{{index .Config.Labels "com.docker.compose.project"}}|{{.Config.Image}}|{{.Config.Hostname}}`,
+		name).Output()
+	if err != nil {
+		return Container{}, fmt.Errorf("engine: inspecting %s: %w", name, err)
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 3)
+	if len(parts) != 3 {
+		return Container{}, fmt.Errorf("engine: inspecting %s: unexpected output %q", name, out)
+	}
+	return Container{Project: parts[0], Image: parts[1], Hostname: parts[2]}, nil
 }
 
 // killExec stops an engine left running inside the resident container. It is the exec

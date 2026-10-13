@@ -81,6 +81,9 @@ func (s *Server) runDetectors(ctx context.Context) {
 func (s *Server) checkOnce(ctx context.Context, d *detector) {
 	d.seen = map[string]bool{}
 	s.checkDisk()
+	// Before checkBackup, so an engine that appeared since the last pass is judged on
+	// this one. The container watcher normally gets there first; this is its safety net.
+	s.rescanEngines()
 	s.checkBackup(ctx)
 	s.checkApps(ctx, d)
 	// Not a detector, but it needs the same thing one does: somebody looking while
@@ -272,8 +275,25 @@ func (s *Server) checkBackup(ctx context.Context) {
 		// around it would leave it silent in the one state it exists for.
 		var st apps.EngineStatus
 		haveStatus := false
+		approvalID := incident.KindBackupApproval + ":" + id
 		if known {
 			st, haveStatus = p.Status(ctx), true
+			// An engine nobody has enabled runs nothing, so nothing below can be said
+			// about it: it is neither unreachable nor waiting for a key, it is waiting
+			// for the owner. Not gated on the schedule — an installed engine app nobody
+			// enabled is worth one notice whether or not backups are switched on.
+			if st.NeedsApproval {
+				s.incidents.Report(incident.Report{
+					ID: approvalID, Kind: incident.KindBackupApproval, Severity: incident.Warning,
+					Title: "A backup engine is waiting to be enabled",
+					Detail: fmt.Sprintf("The %s app provides a backup engine, but nothing will be backed up to it "+
+						"until you enable it. Open Settings → Backups to review and enable it.", id),
+					Args: map[string]string{"engine": id},
+				})
+				s.incidents.Resolve(incidentID)
+				continue
+			}
+			s.incidents.Resolve(approvalID)
 			if s.checkBackupRecovery(id, st) {
 				// The recovery incident is the better sentence for the same fact: an
 				// engine that has no key is also not connected, and "cannot be reached"
@@ -310,14 +330,14 @@ func (s *Server) checkBackup(ctx context.Context) {
 
 	s.checkBackupDestinations(conf)
 
-	// A recovery incident for an engine that has left the set entirely — its descriptor
+	// A recovery or approval incident for an engine that has left the set entirely — its descriptor
 	// gone — has nothing left above to resolve it, so it is closed from the open set,
 	// the same way backup.missing is.
 	for _, inc := range s.incidents.Snapshot().Open {
-		if inc.Kind != incident.KindBackupRecovery {
+		if inc.Kind != incident.KindBackupRecovery && inc.Kind != incident.KindBackupApproval {
 			continue
 		}
-		if _, ok := engineByID(s.engines, strings.TrimPrefix(inc.ID, incident.KindBackupRecovery+":")); !ok {
+		if _, ok := engineByID(s.engines, strings.TrimPrefix(inc.ID, inc.Kind+":")); !ok {
 			s.incidents.Resolve(inc.ID)
 		}
 	}

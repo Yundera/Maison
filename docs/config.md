@@ -99,6 +99,7 @@ docker exec maison-app maison settings get
 | `settings release <name>` | Clear the value, unmanage it, delete its secrets. **A no-op if the setting is not managed**, so a deployment can call it every night while its feature is off without touching a user's value. |
 | `secret set <name>` / `secret rm <name>` | Store (value on stdin, one trailing newline dropped) / delete a secret. |
 | `stores ensure <url>` | Add the store unless it is already listed; the catalog refreshes in the background. |
+| `backup approve <engine>` | Approve a backup engine the deployment provisioned, without the container check the dashboard's Enable button makes. Idempotent. See backup.md › "The adapter image is provisioned, and approved before it runs". |
 
 Every command waits up to 30 s for the socket (a self-check runs right after
 redeploying the container) and exits non-zero with the server's reason on any failure.

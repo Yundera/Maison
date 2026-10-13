@@ -74,6 +74,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Put("/secrets/{name}", s.handleAdminSetSecret)
 	r.Delete("/secrets/{name}", s.handleAdminDeleteSecret)
 	r.Post("/stores/ensure", s.handleAdminEnsureStore)
+	r.Post("/backup/engines/{id}/approve", s.handleAdminApproveEngine)
 	return r
 }
 

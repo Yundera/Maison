@@ -42,6 +42,9 @@ func (p *Provider) call(ctx context.Context, timeout time.Duration, emit func(ap
 // configured because this storage holds backups you have no key for" is a very
 // different page from plain "not configured". See probe.
 func (p *Provider) callRaw(ctx context.Context, timeout time.Duration, emit func(apps.Event), verb string, args ...string) (json.RawMessage, error) {
+	if !p.Approved() {
+		return nil, ErrNotApproved
+	}
 	full := append([]string{verb}, args...)
 	full = append(full, "--repo-dir="+p.dir())
 

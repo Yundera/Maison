@@ -183,6 +183,45 @@ func TestSyncCreatesEnvForAFreshInstall(t *testing.T) {
 	}
 }
 
+// A password is the app's from its first start: editing .env.app must not change it
+// under an installed app (its database was initialised with it), while everything
+// else keeps following the deployment.
+func TestSyncKeepsAnInstalledAppsPassword(t *testing.T) {
+	cfg := newCfg(t, "APP_DOMAIN=new.example\nAPP_DEFAULT_PASSWORD=new-pw\nDefaultPassword=new-pw\n")
+
+	installed := appDir(t, cfg, "APP_DOMAIN=old.example\nAPP_DEFAULT_PASSWORD=old-pw\nDefaultPassword=old-pw\n")
+	if err := Sync(cfg, "psitransfer", installed); err != nil {
+		t.Fatal(err)
+	}
+	got := readEnv(t, installed)
+	if got["APP_DEFAULT_PASSWORD"] != "old-pw" || got["DefaultPassword"] != "old-pw" {
+		t.Errorf("installed app's password changed: %v", got)
+	}
+	if got["APP_DOMAIN"] != "new.example" {
+		t.Errorf("APP_DOMAIN = %q, want it still refreshed", got["APP_DOMAIN"])
+	}
+
+	// A fresh install, or an app whose value is empty, gets the deployment's.
+	for _, dotEnv := range []string{"", "APP_DEFAULT_PASSWORD=\n"} {
+		dir := filepath.Join(cfg.AppsDir(), "fresh")
+		_ = os.RemoveAll(dir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if dotEnv != "" {
+			if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(dotEnv), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := Sync(cfg, "fresh", dir); err != nil {
+			t.Fatal(err)
+		}
+		if got := readEnv(t, dir)["APP_DEFAULT_PASSWORD"]; got != "new-pw" {
+			t.Errorf(".env %q: APP_DEFAULT_PASSWORD = %q, want new-pw", dotEnv, got)
+		}
+	}
+}
+
 // The editor round-trips the file as text, so what it reads back must be the file
 // byte for byte — comments, ordering and empty values included. Load's map keeps
 // none of those (it drops empties entirely), which is why ReadRaw exists.

@@ -164,7 +164,8 @@ Maison is in **Community Applications**:
    receives: the network, your domain, and a default admin password. **Change
    `APP_DEFAULT_PASSWORD`** before you install anything you will expose. It ships as the
    same placeholder on every install. You can edit the file in *Settings → App
-   environment*. Changes take effect the next time each app starts. Details are in
+   environment*. Changes take effect the next time each app starts — except the
+   password, which only applies to apps installed afterwards. Details are in
    [`docs/app-env.md`](./docs/app-env.md).
 2. **Install an app.** Open the **App Store** tile, pick an app, and click **Install**. The
    tile shows two progress bars, one for the image download and one for the stack start.
@@ -246,7 +247,7 @@ Maison does.
 | `APP_NET` | `mesh` | External network each app's main service joins. It must already exist. |
 | `APP_DOMAIN` | (empty) | Base domain apps are routed on (`myapp-${APP_DOMAIN}`). |
 | `APP_PUBLIC_IP*` | (empty) | Public IP(s), used in fallback `sslip.io` / `nip.io` routes. |
-| `APP_EMAIL`, `APP_DEFAULT_PASSWORD` | (empty), `changeme-please` | Seeded into apps that create an admin account on first boot. **Change the password.** |
+| `APP_EMAIL`, `APP_DEFAULT_PASSWORD` | (empty), `changeme-please` | Seeded into apps that create an admin account on first boot; an installed app keeps the password it got. **Change the password.** |
 
 Full reference: [`docs/app-env.md`](./docs/app-env.md).
 

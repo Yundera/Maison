@@ -115,6 +115,14 @@ func merge(base, over map[string]any) map[string]any {
 // below. That is what makes a hand-run `docker compose up -d --remove-orphans` in
 // the app's folder do exactly what this function does.
 func Up(ctx context.Context, cfg config.Config, project, dir string, files []string) error {
+	return UpWithPrior(ctx, cfg, project, dir, files, readEnvFile(dir))
+}
+
+// UpWithPrior is Up for a caller that has already synced the app's .env itself —
+// the installer — and so must say what the file held before it did. prior is what
+// a seeded secret (`${APP_DEFAULT_PASSWORD}|alnum:32`) reads: nil for a fresh
+// install, which then generates, rather than the password Sync just wrote in.
+func UpWithPrior(ctx context.Context, cfg config.Config, project, dir string, files []string, prior []byte) error {
 	files = SyncRoutes(cfg, project, dir, files)
 	// After SyncRoutes: the vars Maison owns win over its seeds.
 	if err := appenv.Sync(cfg, project, dir); err != nil {
@@ -123,7 +131,7 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 	}
 	spec := Load(files)
 
-	captures, err := Converge(ctx, cfg, project, dir, spec)
+	captures, err := Converge(ctx, cfg, project, dir, spec, envinject.EnvFileVars(prior))
 	if err != nil {
 		return err
 	}
@@ -166,7 +174,10 @@ func Up(ctx context.Context, cfg config.Config, project, dir string, files []str
 //
 // Later steps in this sequence (init, seed, files) are added by their own files
 // in this package.
-func Converge(ctx context.Context, cfg config.Config, project, dir string, spec Spec) (map[string]string, error) {
+//
+// prior is the app's .env as it stood before this operation synced it — what a
+// seeded secret reads (see EnsureSecrets).
+func Converge(ctx context.Context, cfg config.Config, project, dir string, spec Spec, prior map[string]string) (map[string]string, error) {
 	if err := Prepare(cfg, project, dir, spec); err != nil {
 		return nil, err
 	}
@@ -174,7 +185,7 @@ func Converge(ctx context.Context, cfg config.Config, project, dir string, spec 
 	// everything rendered after it — the seed tree and `files`. It lives only for
 	// this converge: a derived value is re-derived, not remembered.
 	captures := map[string]string{}
-	if err := EnsureSecrets(cfg, project, dir, spec.Secrets, captures); err != nil {
+	if err := EnsureSecrets(cfg, project, dir, spec.Secrets, prior, captures); err != nil {
 		return nil, err
 	}
 	if err := EnsureVariables(cfg, project, dir, spec.Variables, captures); err != nil {

@@ -95,7 +95,7 @@
   "republishing": "Apps werden neu veröffentlicht…",
   "app_env": "App-Umgebung",
   "app_env_hint": "Die Variablen, die {app} an jede installierte App weitergibt — Domain, Netzwerk und die Identität, mit der Apps initialisiert werden. Die Kommentare in der Datei erklären jede einzelne. Ein leerer Wert bedeutet „nicht gesetzt“: Der Schlüssel wird übersprungen statt leer weitergegeben.",
-  "app_env_applies": "Gespeicherte Änderungen erreichen jede App beim nächsten Start. Hier wird nichts neu gestartet.",
+  "app_env_applies": "Gespeicherte Änderungen erreichen jede App beim nächsten Start – außer den Passwörtern, die nur für danach installierte Apps gelten. Hier wird nichts neu gestartet.",
   "app_env_ignored": "Diese setzt {app} pro App selbst — die Werte hier haben keine Wirkung:",
   "save": "Speichern",
   "saved": "Gespeichert",

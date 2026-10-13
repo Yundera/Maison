@@ -53,9 +53,8 @@ func (r *Registry) SetEnv(ctx context.Context, id string, vars []envinject.Var) 
 		return err // invalid key / duplicate / multi-line value — rejected before writing
 	}
 	if next == nil {
-		// Every variable was removed. Keep an empty file rather than deleting it:
-		// its absence is how the installer decides to re-seed the base vars, and
-		// an operator who cleared it on purpose shouldn't get them back.
+		// Every variable was removed. Keep an empty file rather than deleting it;
+		// the start below re-ensures what .env.app and Maison provide either way.
 		next = []byte{}
 	}
 	if err := os.WriteFile(envPath, next, 0o644); err != nil {

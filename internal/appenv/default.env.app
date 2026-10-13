@@ -8,6 +8,7 @@
 # key in the app's own .env — a key already there is set to the value here, a key
 # missing is appended. Order does not matter, in either file. Nothing else in an
 # app's .env is touched: keys you add there yourself are the app's, and survive.
+# The passwords below are the exception: an app keeps the one it was installed with.
 #
 # That is the whole separation. What an app receives is stated here. What Maison
 # needs to run itself stays in its own environment (DATA_ROOT, APPSTORE_URL,
@@ -46,7 +47,9 @@ domain=
 # --- identity --------------------------------------------------------------
 # Seeded into apps that provision an admin account on first boot. These are
 # consumed once, when the app initialises its own database — changing them later
-# does not rotate anything already provisioned.
+# does not rotate anything already provisioned. So the two passwords are written
+# into an app's .env only when it has none, and never refreshed: a change here
+# applies to apps installed afterwards, and an installed app keeps its own.
 #
 # Keep the password at 12 characters or more. Several store apps refuse a shorter
 # one outright (FileBrowser >= v2.63 rejects it with "password is too short,

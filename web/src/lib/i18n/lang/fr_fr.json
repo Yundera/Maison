@@ -100,7 +100,7 @@
   "republishing": "Republication des applications…",
   "app_env": "Environnement des apps",
   "app_env_hint": "Les variables que {app} transmet à chaque app qu'il installe — le domaine, le réseau, l'identité initiale des apps. Les commentaires du fichier expliquent chacune d'elles. Une valeur vide signifie « non définie » : la clé est ignorée plutôt que transmise vide.",
-  "app_env_applies": "Les modifications enregistrées atteignent chaque app à son prochain démarrage. Rien n’est redémarré ici.",
+  "app_env_applies": "Les modifications enregistrées atteignent chaque app à son prochain démarrage — sauf les mots de passe, qui ne valent que pour les apps installées ensuite. Rien n’est redémarré ici.",
   "app_env_ignored": "{app} définit lui-même ces variables, par app — les valeurs saisies ici n'ont aucun effet :",
   "save": "Enregistrer",
   "saved": "Enregistré",

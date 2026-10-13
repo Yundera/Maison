@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/envinject"
@@ -32,7 +33,17 @@ import (
 // The bcrypt spec's argument is a template, rendered strictly before hashing:
 // bcrypt of an unresolved ${VAR} is a hash of the literal string, which would
 // authenticate nobody and report nothing.
-func EnsureSecrets(cfg config.Config, project, dir string, secrets xcomposeapp.StringMap, captures map[string]string) error {
+//
+// A spec may name seeds before its generator — `${APP_DEFAULT_PASSWORD}|alnum:32`
+// (see secretgen.ParseSpec). A seed is looked up in prior, the app's .env as it
+// stood BEFORE this operation brought it in line with .env.app, and the first
+// non-empty one becomes the secret instead of a generated value. That is what
+// moves an installed app off a shared password without changing it: its database
+// was initialised with the old value, and an update keeps it. A fresh install has
+// no prior .env, so it gets the generator — even though Sync has by now written
+// APP_DEFAULT_PASSWORD into its .env, which is exactly why the current file is not
+// what a seed reads. A seed with no value is not an error; that is the fresh case.
+func EnsureSecrets(cfg config.Config, project, dir string, secrets xcomposeapp.StringMap, prior, captures map[string]string) error {
 	if len(secrets) == 0 {
 		return nil
 	}
@@ -40,12 +51,34 @@ func EnsureSecrets(cfg config.Config, project, dir string, secrets xcomposeapp.S
 	envFile := readEnvFile(dir)
 	have := envinject.EnvFileVars(envFile)
 
+	// A bcrypt spec hashes a template, and the natural thing for it to hash is a
+	// sibling — `ADMIN_HASH: bcrypt:${ADMIN_PASSWORD}` beside `ADMIN_PASSWORD:
+	// password:24`. So the hashes go last, and what this pass has already
+	// produced overlays what they render against; on a fresh install the
+	// sibling is not in the .env yet.
+	keys := sortedKeys(secrets)
+	sort.SliceStable(keys, func(i, j int) bool {
+		return !isBcrypt(secrets[keys[i]]) && isBcrypt(secrets[keys[j]])
+	})
+
 	out := map[string]string{}
-	for _, key := range sortedKeys(secrets) {
+	overlay := map[string]string{}
+	for k, v := range captures {
+		overlay[k] = v
+	}
+next:
+	for _, key := range keys {
 		if have[key] != "" {
 			continue // already generated (or pinned by the operator)
 		}
-		spec, err := envinject.RenderStrict(secrets[key], cfg, project, envFile, captures)
+		seeds, gen := secretgen.ParseSpec(secrets[key])
+		for _, s := range seeds {
+			if v := prior[s]; v != "" {
+				out[key], overlay[key] = v, v
+				continue next
+			}
+		}
+		spec, err := envinject.RenderStrict(gen, cfg, project, envFile, overlay)
 		if err != nil {
 			return fmt.Errorf("secret %s: %w", key, err)
 		}
@@ -54,7 +87,7 @@ func EnsureSecrets(cfg config.Config, project, dir string, secrets xcomposeapp.S
 			// Deliberately reports the spec, never the value.
 			return fmt.Errorf("secret %s: %w", key, err)
 		}
-		out[key] = value
+		out[key], overlay[key] = value, value
 	}
 	if len(out) == 0 {
 		return nil
@@ -102,4 +135,10 @@ func sortedKeys(m xcomposeapp.StringMap) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// isBcrypt reports whether a raw spec hashes a template (see EnsureSecrets).
+func isBcrypt(raw string) bool {
+	_, gen := secretgen.ParseSpec(raw)
+	return strings.HasPrefix(strings.ToLower(gen), "bcrypt:")
 }

@@ -9,7 +9,8 @@
 // so there is no question of which one wins.
 //
 // The file is read on install and on every start, and each of its keys is ensured
-// in the app's own .env (see Sync). It is the deployment's to write — Maison
+// in the app's own .env (see Sync) — except the passwords, which an app keeps from
+// its first start (see seedOnce). It is the deployment's to write — Maison
 // creates it once with a documented default and never overwrites it.
 package appenv
 
@@ -134,10 +135,35 @@ func Load(cfg config.Config) map[string]string {
 // Writing the values into the .env, rather than relying on the environment
 // `docker compose` inherits from Maison, is the point: a `docker compose up -d`
 // run by hand in the app's folder must bring the app up exactly as Maison does.
+//
+// The one exception is seedOnce: those keys are written into an app's .env when it
+// has no value for them, and never refreshed after that.
 func Sync(cfg config.Config, appID, appDir string) error {
+	envPath := filepath.Join(appDir, ".env")
+	have := map[string]string{}
+	if raw, err := os.ReadFile(envPath); err == nil {
+		have = envinject.EnvFileVars(raw)
+	}
 	vars := envinject.BaseVars(cfg, appID)
 	for k, v := range Load(cfg) {
+		if seedOnce[k] && have[k] != "" {
+			continue // the app was set up with this one; keep it
+		}
 		vars[k] = v
 	}
-	return envinject.EnsureVars(filepath.Join(appDir, ".env"), vars)
+	return envinject.EnsureVars(envPath, vars)
+}
+
+// seedOnce are the .env.app keys an app keeps from the first time it got them.
+//
+// Unlike a domain or a network, a password is not a description of where the app
+// runs: an app consumes it once, to create its admin account or initialise its
+// database, and from then on it is part of the app's data. Refreshing it would
+// change nothing inside the app and break everything that connects to it — a store
+// app that wired POSTGRES_PASSWORD to $APP_DEFAULT_PASSWORD could no longer reach
+// its own database after an edit to .env.app. So the deployment states the value
+// for apps installed from now on; an installed app keeps the one it has.
+var seedOnce = map[string]bool{
+	"APP_DEFAULT_PASSWORD": true,
+	"DefaultPassword":      true,
 }

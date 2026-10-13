@@ -404,7 +404,13 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	// Maison computes per app), so its compose resolves offline and the operator
 	// can hand-edit it afterwards — see docs/app-model.md and internal/appenv.
 	// Keys are ensured one by one, so a reinstall over a restored archive refreshes
-	// what the deployment provides and keeps everything the user added.
+	// what the deployment provides and keeps everything the user added (and the
+	// password it was set up with — see appenv.Sync).
+	//
+	// What the .env held before this is kept for stackup.UpWithPrior: a seeded
+	// secret reads it, so a fresh install (nothing) generates while a restored one
+	// keeps the value its data was initialised with.
+	prior, _ := os.ReadFile(filepath.Join(appDir, ".env"))
 	if err := appenv.Sync(in.cfg, project, appDir); err != nil {
 		return err
 	}
@@ -443,7 +449,7 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 
 	// Track 2 — Start: bring the stack up, then follow Docker until it is running.
 	emit(Event{Phase: "start", Message: "Starting containers", Download: 100, Start: 15})
-	if err := stackup.Up(ctx, in.cfg, project, appDir, files); err != nil {
+	if err := stackup.UpWithPrior(ctx, in.cfg, project, appDir, files, prior); err != nil {
 		return err
 	}
 	if h := spec.Hooks.PostInstall; h != "" {

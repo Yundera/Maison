@@ -46,6 +46,14 @@ key in the app's own `.env`:
 
 Keys are ensured one at a time, so neither file's ordering matters.
 
+**Except the passwords.** `APP_DEFAULT_PASSWORD` and `DefaultPassword` are written into
+an app's `.env` only when it has no value for them, and never refreshed. A domain
+describes where the app runs; a password is something the app consumed once — its
+admin account, its database — and is part of its data from then on. Refreshing it
+would change nothing inside the app and break whatever connects to it. So an edit to
+these in `.env.app` applies to apps installed **afterwards**; an installed app keeps
+the one it has (change it in its own `.env`, knowingly, if you must).
+
 Merged in alongside are the few variables Maison computes per app and per install,
 which a deployment cannot state: `AppID`, `PUID`, `PGID`, `TZ`, `DATA_ROOT`,
 `DATA_HOST_PATH`. Setting those in `.env.app` has no effect.
@@ -125,7 +133,9 @@ only how far they have to reach.
 
 `APP_DEFAULT_PASSWORD` is being phased out. Its successor is an app-declared
 [`credentials`](./x-compose-app.md#credentials) block backed by a per-app secret, which
-Maison shows the operator when the app is first opened.
+Maison shows the operator when the app is first opened. A listing moves an installed
+app over with a [seeded secret](./x-compose-app.md#seeded-secrets--moving-an-installed-app-off-a-shared-value)
+(`${APP_DEFAULT_PASSWORD}|alnum:32`), which keeps the value the app was set up with.
 
 ## The default
 

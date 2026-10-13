@@ -144,7 +144,9 @@ type App struct {
 	// already carrying a value is reused, never regenerated, because a rotated
 	// signing key is indistinguishable from data loss to the app that signed with
 	// the old one. Values are generator specs (see internal/secretgen), never
-	// literals: that is what lets a plain map be read unambiguously.
+	// literals: that is what lets a plain map be read unambiguously. A spec may
+	// be seeded — `${APP_DEFAULT_PASSWORD}|alnum:32` — to keep the value an
+	// installed app already had (secretgen.ParseSpec, stackup.EnsureSecrets).
 	Secrets StringMap `yaml:"secrets,omitempty"`
 
 	// Files are individual files Maison writes into the app's tree. It is the

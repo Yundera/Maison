@@ -339,6 +339,9 @@ an install event.
   reused, never regenerated: a signing key that rotates behind an app's back is
   indistinguishable from data loss. Pinning one by hand in `.env` is supported and
   survives. Rotation is an explicit act.
+- **A `bcrypt:` spec may hash a sibling** — `ADMIN_HASH: bcrypt:${ADMIN_PASSWORD}`
+  beside `ADMIN_PASSWORD: password:24`. Hashes are generated after every other
+  secret, so the sibling exists even on a fresh install.
 - **Variables are re-rendered on every up**, so a derived value follows a domain
   change instead of freezing at install time.
 - Both are written key-by-key into the app's `.env`, the same path `.env.app` uses,
@@ -346,6 +349,38 @@ an install event.
 - Do **not** write a generator inside `${…}`. `docker compose` interpolates this
   file too, and `${random.hex(32)}` fails as an invalid interpolation before Maison
   ever reads it.
+
+### Seeded secrets — moving an installed app off a shared value
+
+```yaml
+x-compose-app:
+  secrets:
+    DB_PASSWORD: ${APP_DEFAULT_PASSWORD}|alnum:32
+```
+
+Alternatives separated by `|`; the first one with a value wins, and the last must be
+a generator. Each `${NAME}` before it is looked up in the app's `.env` **as it stood
+before this install, update or start** — not in `.env.app`, not in the current file.
+
+| The app | Its prior `.env` | `DB_PASSWORD` becomes |
+|---|---|---|
+| already installed, being updated to this listing | holds `APP_DEFAULT_PASSWORD` | that password — what its database was initialised with |
+| freshly installed | none | 32 generated characters, its own |
+| reinstalled over a restored backup | the restored one | the restored password |
+
+After that it is an ordinary secret: generated (or seeded) once, never replaced.
+
+This is the whole migration for a listing that wired an internal secret to the
+box-wide password: point the service at `${DB_PASSWORD}` and declare the seed. A
+password the app consumed once — an admin account, a database, an encryption key —
+cannot simply change under an installed app; this keeps the old value where data
+depends on it and stops handing it to every new install.
+
+- A seed must be exactly `${NAME}` — no default, no surrounding text. Anything else
+  is read as one ordinary spec, so `bcrypt:${APP_DEFAULT_PASSWORD}` is unaffected.
+- A seed with no value is not an error: that is the fresh install.
+- A seeded value is a secret like any other: it is never written to a log, an
+  install event, or an error.
 
 > `secrets` writes plaintext into the app's `.env`, on a box that has no auth and
 > whose `.env.app` already holds `APP_DEFAULT_PASSWORD` in the clear (see
@@ -405,7 +440,10 @@ friction, not the need for a trusted network: the values are the same ones the a
 > `${APP_DEFAULT_PASSWORD}` (no behaviour change, the dialog works at once), then move
 > the app to its own `secrets` entry. Moving an *already installed* app needs care —
 > its database was initialised with the old password, and a newly generated secret
-> would be shown but would not work.
+> would be shown but would not work. Declare the secret
+> [seeded](#seeded-secrets--moving-an-installed-app-off-a-shared-value)
+> (`ADMIN_PASSWORD: ${APP_DEFAULT_PASSWORD}|password:20`): an installed app keeps — and
+> shows — the password it has, and a fresh install gets its own.
 
 ---
 

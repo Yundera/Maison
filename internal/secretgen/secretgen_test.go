@@ -122,3 +122,30 @@ func TestGenerateRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSpec(t *testing.T) {
+	for _, tc := range []struct {
+		raw   string
+		seeds []string
+		gen   string
+	}{
+		// The form an installed app is moved off APP_DEFAULT_PASSWORD with.
+		{"${APP_DEFAULT_PASSWORD}|alnum:32", []string{"APP_DEFAULT_PASSWORD"}, "alnum:32"},
+		{" ${A} | ${B} | hex:8 ", []string{"A", "B"}, "hex:8"},
+		// Every spec written before the form is returned whole.
+		{"hex:32", nil, "hex:32"},
+		{"bcrypt:${APP_DEFAULT_PASSWORD}", nil, "bcrypt:${APP_DEFAULT_PASSWORD}"},
+		// Not exactly ${NAME} before a `|`: no seeds, so Generate reports it.
+		{"foo|alnum:8", nil, "foo|alnum:8"},
+		{"$A|alnum:8", nil, "$A|alnum:8"},
+		{"${A:-x}|alnum:8", nil, "${A:-x}|alnum:8"},
+		{"bcrypt:${A}|alnum:8", nil, "bcrypt:${A}|alnum:8"},
+		// A seed with no generator after it is the generator's error to report.
+		{"${A}|", []string{"A"}, ""},
+	} {
+		seeds, gen := ParseSpec(tc.raw)
+		if strings.Join(seeds, ",") != strings.Join(tc.seeds, ",") || gen != tc.gen {
+			t.Errorf("ParseSpec(%q) = %q, %q; want %q, %q", tc.raw, seeds, gen, tc.seeds, tc.gen)
+		}
+	}
+}

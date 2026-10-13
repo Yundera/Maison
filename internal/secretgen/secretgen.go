@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -101,6 +102,40 @@ func Generate(spec string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%q: unknown generator %q — use hex:N, base64:N, alnum:N, password:N, uuid or bcrypt:TEXT", spec, kind)
+}
+
+// seedRe is one seed alternative: exactly a `${NAME}` reference, nothing around it.
+var seedRe = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
+// ParseSpec splits a raw, unrendered `secrets` spec into the variables it seeds
+// from and the generator that runs when none of them has a value:
+//
+//	${APP_DEFAULT_PASSWORD}|alnum:32   → seeds [APP_DEFAULT_PASSWORD], gen "alnum:32"
+//	hex:32                             → no seeds, gen "hex:32"
+//
+// The form exists to move an installed app off a shared value without changing
+// it under the app: the caller resolves each seed against what the app already
+// had, and only a fresh install reaches the generator.
+//
+// It must run on the RAW spec. Splitting after rendering would let a `|` inside a
+// password cut it in two — and is why a spec only counts as seeded when every
+// part before the last is exactly one `${NAME}`. Anything else is returned whole
+// as the generator, so `bcrypt:${X}` and every spec written before this form
+// behave exactly as they did.
+func ParseSpec(raw string) (seeds []string, gen string) {
+	raw = strings.TrimSpace(raw)
+	parts := strings.Split(raw, "|")
+	if len(parts) < 2 {
+		return nil, raw
+	}
+	for _, p := range parts[:len(parts)-1] {
+		m := seedRe.FindStringSubmatch(strings.TrimSpace(p))
+		if m == nil {
+			return nil, raw
+		}
+		seeds = append(seeds, m[1])
+	}
+	return seeds, strings.TrimSpace(parts[len(parts)-1])
 }
 
 // size parses and bounds the N of a sized generator.

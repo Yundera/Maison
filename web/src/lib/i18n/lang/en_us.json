@@ -100,7 +100,7 @@
   "more": "More",
   "app_env": "App environment",
   "app_env_hint": "The variables {app} passes into every app it installs — the domain, the network, the identity apps are seeded with. The comments in the file explain each one. An empty value means \"not set\": the key is skipped rather than passed on blank.",
-  "app_env_applies": "Saved changes reach each app the next time it starts. Nothing is restarted here.",
+  "app_env_applies": "Saved changes reach each app the next time it starts — except the passwords, which apply only to apps installed afterwards. Nothing is restarted here.",
   "app_env_ignored": "{app} sets these itself, per app — the values here have no effect:",
   "save": "Save",
   "saved": "Saved",

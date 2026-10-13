@@ -8,6 +8,7 @@ import (
 
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/xcomposeapp"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // appDir makes an app folder with the given .env content.
@@ -36,7 +37,7 @@ func TestEnsureSecretsGeneratesOnceAndStaysStable(t *testing.T) {
 	dir := appDir(t, "APP_DOMAIN=example.test\n")
 	secrets := xcomposeapp.StringMap{"SEARXNG_SECRET": "hex:32"}
 
-	if err := EnsureSecrets(cfg, "odysseus", dir, secrets, nil); err != nil {
+	if err := EnsureSecrets(cfg, "odysseus", dir, secrets, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	first := envVars(t, dir)["SEARXNG_SECRET"]
@@ -49,7 +50,7 @@ func TestEnsureSecretsGeneratesOnceAndStaysStable(t *testing.T) {
 	// Three more converges — a restart, an update, a config save — must not
 	// rotate a key the app has already encrypted things with.
 	for i := 0; i < 3; i++ {
-		if err := EnsureSecrets(cfg, "odysseus", dir, secrets, nil); err != nil {
+		if err := EnsureSecrets(cfg, "odysseus", dir, secrets, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		if got := envVars(t, dir)["SEARXNG_SECRET"]; got != first {
@@ -65,7 +66,7 @@ func TestEnsureSecretsKeepsOperatorValueAndOtherLines(t *testing.T) {
 	err := EnsureSecrets(cfg, "outline", dir, xcomposeapp.StringMap{
 		"OUTLINE_SECRET_KEY": "hex:32",
 		"OUTLINE_OIDC":       "hex:32",
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestEnsureSecretsRefillsEmptyValue(t *testing.T) {
 	cfg := testConfig(t)
 	dir := appDir(t, "APP_SECRET=\n")
 
-	if err := EnsureSecrets(cfg, "docmost", dir, xcomposeapp.StringMap{"APP_SECRET": "hex:32"}, nil); err != nil {
+	if err := EnsureSecrets(cfg, "docmost", dir, xcomposeapp.StringMap{"APP_SECRET": "hex:32"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := envVars(t, dir)["APP_SECRET"]; len(got) != 64 {
@@ -105,7 +106,7 @@ func TestEnsureSecretsBcryptRendersItsTemplate(t *testing.T) {
 	dir := appDir(t, "APP_DEFAULT_PASSWORD=hunter2\n")
 
 	if err := EnsureSecrets(cfg, "outline", dir,
-		xcomposeapp.StringMap{"DEX_HASH": "bcrypt:${APP_DEFAULT_PASSWORD}"}, nil); err != nil {
+		xcomposeapp.StringMap{"DEX_HASH": "bcrypt:${APP_DEFAULT_PASSWORD}"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := envVars(t, dir)["DEX_HASH"]
@@ -122,13 +123,90 @@ func TestEnsureSecretsFailsLoudly(t *testing.T) {
 
 	// An unresolvable reference must fail the up rather than hash an empty string.
 	if err := EnsureSecrets(cfg, "app", appDir(t, ""),
-		xcomposeapp.StringMap{"H": "bcrypt:${NOPE_NOT_SET}"}, nil); err == nil {
+		xcomposeapp.StringMap{"H": "bcrypt:${NOPE_NOT_SET}"}, nil, nil); err == nil {
 		t.Fatal("want an error for an unresolved variable")
 	}
 	// So must a generator nobody implements — the store author needs telling.
 	if err := EnsureSecrets(cfg, "app", appDir(t, ""),
-		xcomposeapp.StringMap{"K": "openssl rand -hex 32"}, nil); err == nil {
+		xcomposeapp.StringMap{"K": "openssl rand -hex 32"}, nil, nil); err == nil {
 		t.Fatal("want an error for an unknown generator")
+	}
+}
+
+// An installed app moved to a seeded spec keeps the shared password its database
+// was initialised with; a fresh install of the same listing gets its own.
+func TestEnsureSecretsSeedFromPrior(t *testing.T) {
+	cfg := testConfig(t)
+	secrets := xcomposeapp.StringMap{"DB_PASSWORD": "${APP_DEFAULT_PASSWORD}|alnum:32"}
+
+	// Update of an installed app: its .env had the shared password before this up.
+	prior := map[string]string{"APP_DEFAULT_PASSWORD": "old|shared:pw"}
+	dir := appDir(t, "APP_DEFAULT_PASSWORD=old|shared:pw\n")
+	if err := EnsureSecrets(cfg, "immich", dir, secrets, prior, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := envVars(t, dir)["DB_PASSWORD"]; got != "old|shared:pw" {
+		t.Fatalf("update: DB_PASSWORD = %q, want the prior shared password", got)
+	}
+
+	// Fresh install: Sync has written APP_DEFAULT_PASSWORD into the .env by now,
+	// but there was no .env before — so the generator runs.
+	dir = appDir(t, "APP_DEFAULT_PASSWORD=old|shared:pw\n")
+	if err := EnsureSecrets(cfg, "immich", dir, secrets, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	fresh := envVars(t, dir)["DB_PASSWORD"]
+	if len(fresh) != 32 || fresh == "old|shared:pw" {
+		t.Fatalf("fresh install: DB_PASSWORD = %q, want 32 generated characters", fresh)
+	}
+
+	// Once there, it is an ordinary secret: a later prior never replaces it.
+	if err := EnsureSecrets(cfg, "immich", dir, secrets, prior, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := envVars(t, dir)["DB_PASSWORD"]; got != fresh {
+		t.Fatalf("seed replaced an existing secret: %q → %q", fresh, got)
+	}
+
+	// An empty prior value counts as absent, and the next seed is tried.
+	dir = appDir(t, "")
+	if err := EnsureSecrets(cfg, "immich", dir,
+		xcomposeapp.StringMap{"K": "${A}|${B}|hex:4"},
+		map[string]string{"A": "", "B": "from-b"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := envVars(t, dir)["K"]; got != "from-b" {
+		t.Fatalf("K = %q, want the first non-empty seed", got)
+	}
+}
+
+// A hash of a sibling secret works on a fresh install, though the hash's key
+// sorts first and the sibling is not in the .env yet.
+func TestEnsureSecretsBcryptOfASibling(t *testing.T) {
+	cfg := testConfig(t)
+	dir := appDir(t, "")
+	if err := EnsureSecrets(cfg, "outline", dir, xcomposeapp.StringMap{
+		"A_ADMIN_HASH":     "bcrypt:${Z_ADMIN_PASSWORD}",
+		"Z_ADMIN_PASSWORD": "password:24",
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := envVars(t, dir)
+	if err := bcrypt.CompareHashAndPassword([]byte(got["A_ADMIN_HASH"]), []byte(got["Z_ADMIN_PASSWORD"])); err != nil {
+		t.Fatalf("A_ADMIN_HASH is not the hash of Z_ADMIN_PASSWORD: %v", err)
+	}
+}
+
+// A seed value is a password: it must never surface in an error.
+func TestEnsureSecretsSeedNeverInErrors(t *testing.T) {
+	cfg := testConfig(t)
+	err := EnsureSecrets(cfg, "app", appDir(t, "APP_DEFAULT_PASSWORD=s3cret-value\n"),
+		xcomposeapp.StringMap{"K": "${APP_DEFAULT_PASSWORD}|rsa:2048"}, nil, nil)
+	if err == nil {
+		t.Fatal("want an error for an unknown generator")
+	}
+	if strings.Contains(err.Error(), "s3cret-value") {
+		t.Fatalf("error leaks the seed value: %v", err)
 	}
 }
 
@@ -175,7 +253,7 @@ func TestRenderersAcceptTheCaptureOverlay(t *testing.T) {
 		t.Fatalf("WEBDAV_PASS = %q", got)
 	}
 	if err := EnsureSecrets(cfg, "seafile", dir,
-		xcomposeapp.StringMap{"H": "bcrypt:${RCLONE_PASS}"}, captures); err != nil {
+		xcomposeapp.StringMap{"H": "bcrypt:${RCLONE_PASS}"}, nil, captures); err != nil {
 		t.Fatal(err)
 	}
 }

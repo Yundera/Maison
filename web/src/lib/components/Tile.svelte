@@ -12,7 +12,7 @@
   } from '../stores/apps'
   import { renderDuration, renderRate, renderSize } from '../format'
   import { removeLink, type Link } from '../stores/links'
-  import { settingsApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
+  import { credentialsApp, settingsApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
   import { openStore } from '../route'
   import { t } from '../i18n'
 
@@ -106,6 +106,13 @@
     else if (tile.kind === 'app') {
       if (settingsOnly) openSettings()
       if (!openable) return
+      // Credentials not yet dismissed: show them first. The modal's "Open app"
+      // opens the app from its own click, so the popup blocker never sees a
+      // window opened after an await.
+      if (tile.app.credentials_pending) {
+        credentialsApp.set({ app: tile.app, launch: true })
+        return
+      }
       openApp(tile.app, ev)
     } else openTarget(tile.link.url, ev)
   }
@@ -181,6 +188,14 @@
               menuOpen = false
               if (tile.kind === 'app') tipsApp.set({ id: tile.app.id, name: tile.app.name })
             }}>{$t('tips')}</button
+          >
+        {/if}
+        {#if tile.app.has_credentials}
+          <button
+            onclick={() => {
+              menuOpen = false
+              if (tile.kind === 'app') credentialsApp.set({ app: tile.app, launch: false })
+            }}>{$t('credentials')}</button
           >
         {/if}
         {#if tile.app.status === 'stopped'}

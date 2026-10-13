@@ -481,5 +481,17 @@
   "feedback_support_instead": "遇到故障需要帮助？请改为联系支持。",
   "feedback_send": "发送",
   "feedback_sending": "正在发送…",
-  "feedback_sent": "谢谢 —— 您的反馈已发送给 {operator}。"
+  "feedback_sent": "谢谢 —— 您的反馈已发送给 {operator}。",
+  "credentials": "凭据",
+  "credentials_title": "登录信息",
+  "credentials_intro": "使用以下信息登录 {name}。",
+  "credentials_initial_hint": "这些是初始凭据。如果您在应用内修改了密码，此页面不会知道。",
+  "username": "用户名",
+  "password": "密码",
+  "show_password": "显示密码",
+  "hide_password": "隐藏密码",
+  "dont_show_again": "打开时不再显示",
+  "open_app": "打开应用",
+  "close": "关闭",
+  "credentials_none": "此应用未声明任何凭据。"
 }

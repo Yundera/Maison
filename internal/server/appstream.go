@@ -250,6 +250,52 @@ func (s *Server) handleRenderTips(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"tips": tips})
 }
 
+// handleShowCredentials returns a managed app's declared x-compose-app
+// credentials, rendered against its .env, plus whether the operator dismissed
+// them. A POST with no-store for the reason handleShowSecret gives: a secret in
+// the response to a navigable URL ends up in history and prefetches. The values
+// are never logged.
+func (s *Server) handleShowCredentials(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	creds, err := s.apps.RenderedCredentials(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such app"})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"credentials": orEmpty(creds),
+		"dismissed":   s.apps.CredentialsDismissed(id),
+	})
+}
+
+type credentialsDismissedBody struct {
+	Dismissed bool `json:"dismissed"`
+}
+
+// handlePutCredentialsDismissed records the operator's "Don't show again" and
+// rebroadcasts the list, so every open dashboard stops (or starts) showing the
+// credentials before opening the app.
+func (s *Server) handlePutCredentialsDismissed(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	var body credentialsDismissedBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if err := s.apps.SetCredentialsDismissed(chi.URLParam(r, "id"), body.Dismissed); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such app"})
+		return
+	}
+	s.broadcastApps()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // handleAppLogs streams a managed/unmanaged app's container logs over a WebSocket.
 func (s *Server) handleAppLogs(w http.ResponseWriter, r *http.Request) {
 	if s.dx == nil {

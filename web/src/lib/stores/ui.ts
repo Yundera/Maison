@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store'
 
 import type { StoreRef } from '../storeref'
+import type { App } from './apps'
 
 // Whether the App Store modal is open. StorePanel (M3) renders when true.
 export const storeOpen = writable(false)
@@ -37,6 +38,12 @@ export const monitorOpen = writable(false)
 
 // The app whose rendered-Tips modal is open (null = closed).
 export const tipsApp = writable<{ id: string; name: string } | null>(null)
+
+// The app whose credentials modal is open (null = closed). `launch` is true when
+// the modal stands in front of opening the app (a click on a tile whose
+// credentials are still pending): it then offers "Open app". From the tile menu
+// it is false — the modal is only a reminder.
+export const credentialsApp = writable<{ app: App; launch: boolean } | null>(null)
 
 // The app pending uninstall confirmation (null = no dialog).
 export const uninstallTarget = writable<{ id: string; name: string } | null>(null)

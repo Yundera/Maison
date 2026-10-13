@@ -296,3 +296,42 @@ func TestParseLifecycle(t *testing.T) {
 		})
 	}
 }
+
+func TestParseCredentials(t *testing.T) {
+	a, err := Parse(map[string]any{
+		"schema_version": 2,
+		"title":          "Outline",
+		"credentials": []any{
+			map[string]any{
+				"label":    "Administrator",
+				"username": "admin",
+				"password": "${ADMIN_PASSWORD}",
+				"note":     map[string]any{"en_us": "Change it", "fr_fr": "Changez-le"},
+			},
+			// A bare number must type as written, not cost the block.
+			map[string]any{"label": map[string]any{"fr_fr": "Lecteur"}, "username": 1000, "password": 123456},
+			// Not a mapping: decoded empty, never an error.
+			"oops",
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if a.Title.Value() != "Outline" {
+		t.Fatalf("the rest of the block was lost: title = %q", a.Title.Value())
+	}
+	if len(a.Credentials) != 3 {
+		t.Fatalf("credentials = %d, want 3", len(a.Credentials))
+	}
+	c := a.Credentials[0]
+	if c.Label.Value() != "Administrator" || c.Username != "admin" || c.Password != "${ADMIN_PASSWORD}" || c.Note.Value() != "Change it" {
+		t.Fatalf("first credential = %+v", c)
+	}
+	c = a.Credentials[1]
+	if c.Label.Value() != "Lecteur" || c.Username != "1000" || c.Password != "123456" || c.Note.Value() != "" {
+		t.Fatalf("second credential = %+v", c)
+	}
+	if c := a.Credentials[2]; c.Username != "" || c.Password != "" || c.Label != nil {
+		t.Fatalf("scalar entry = %+v, want empty", a.Credentials[2])
+	}
+}

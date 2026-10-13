@@ -164,6 +164,53 @@ type App struct {
 	// deployment instead of freezing at install time. Values are always
 	// templates, never generator specs — the counterpart split to Secrets.
 	Variables StringMap `yaml:"variables,omitempty"`
+
+	// Credentials are the app's initial logins, shown to the operator the first
+	// time the app is opened and again from the tile menu. Username and password
+	// are templates rendered against the app's .env (like Tips), so they normally
+	// point at a generated secret — `password: ${ADMIN_PASSWORD}` — or, during the
+	// migration away from it, at ${APP_DEFAULT_PASSWORD}.
+	//
+	// Display-only, so it does not raise SchemaVersion: an older build ignores the
+	// block and the app still installs and runs; only the popup is missing.
+	Credentials []Credential `yaml:"credentials,omitempty"`
+}
+
+// Credential is one initial login an app declares. Maison only displays it: it
+// does not know about a password the operator later changes inside the app,
+// which is why the UI calls these *initial* credentials.
+type Credential struct {
+	Label    Localized `yaml:"label,omitempty"`
+	Username string    `yaml:"username,omitempty"`
+	Password string    `yaml:"password,omitempty"`
+	Note     Localized `yaml:"note,omitempty"`
+}
+
+// UnmarshalYAML decodes through tolerant scalars, so a numeric password or
+// username (`password: 123456`) types as written. An entry that is not a mapping
+// decodes as empty and is dropped at render time rather than failing the block —
+// Parse's error costs the app its whole x-compose-app (see Route).
+func (c *Credential) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		*c = Credential{}
+		return nil
+	}
+	var raw struct {
+		Label    Localized `yaml:"label"`
+		Username text      `yaml:"username"`
+		Password text      `yaml:"password"`
+		Note     Localized `yaml:"note"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	*c = Credential{
+		Label:    raw.Label,
+		Username: string(raw.Username),
+		Password: string(raw.Password),
+		Note:     raw.Note,
+	}
+	return nil
 }
 
 // Ensure modes for a File: written once if absent, or re-rendered on every up.

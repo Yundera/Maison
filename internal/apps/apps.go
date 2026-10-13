@@ -82,6 +82,13 @@ type App struct {
 	// cascading stop, uninstall or backup off it would let one misspelling take
 	// down — or delete the data of — an app that belongs to someone else.
 	Parent string `json:"parent,omitempty"`
+	// HasCredentials says the app declares x-compose-app `credentials`, and
+	// CredentialsPending that the operator has not dismissed them yet — the tile
+	// shows them before opening the app. Booleans only: this struct goes over the
+	// websocket and into the browser's localStorage, so the values themselves are
+	// served on demand by POST /api/apps/{id}/credentials/show.
+	HasCredentials     bool `json:"has_credentials,omitempty"`
+	CredentialsPending bool `json:"credentials_pending,omitempty"`
 	// Busy is set while a lifecycle operation (start/stop/restart/uninstall) is
 	// in flight for this app. The tile then shows a "…" overlay and hides its
 	// burger menu until the operation settles.
@@ -366,6 +373,7 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 		if u := r.localIcon(name); u != "" {
 			app.Icon = u
 		}
+		app.CredentialsPending = app.HasCredentials && !r.CredentialsDismissed(name)
 		app.Busy = r.isBusy(name)
 		out = append(out, app)
 		seen[name] = true
@@ -615,6 +623,8 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 		// Declared only: whether it resolves depends on what else is installed,
 		// which this function cannot see. List() settles it (resolveParents).
 		app.Parent = strings.TrimSpace(ca.Parent)
+		// Managed only: the credentials endpoint renders from the app's own folder.
+		app.HasCredentials = managed && declaresCredentials(ca)
 	}
 	app.View = deriveView(si, ca, svcPorts)
 	lc := lifecycleOf(ca)

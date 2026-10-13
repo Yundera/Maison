@@ -123,6 +123,10 @@ page shows credentials. It was always a readable file on a box with no auth (Mai
 assumes a trusted network — see the README); the page does not change who can read it,
 only how far they have to reach.
 
+`APP_DEFAULT_PASSWORD` is being phased out. Its successor is an app-declared
+[`credentials`](./x-compose-app.md#credentials) block backed by a per-app secret, which
+Maison shows the operator when the app is first opened.
+
 ## The default
 
 ```sh

@@ -570,5 +570,17 @@
   "feedback_sending": "Sending…",
   "feedback_sent": "Thank you — your feedback was sent to {operator}.",
   "settings_managed_by": "Managed by {owner}. This is set and kept up to date by the server's deployment, so it cannot be changed here.",
-  "notifications_smtp_pass_saved": "Saved — type to replace"
+  "notifications_smtp_pass_saved": "Saved — type to replace",
+  "credentials": "Credentials",
+  "credentials_title": "Sign-in details",
+  "credentials_intro": "Use these to sign in to {name}.",
+  "credentials_initial_hint": "These are the initial credentials. If you change the password inside the app, this page will not know.",
+  "username": "Username",
+  "password": "Password",
+  "show_password": "Show password",
+  "hide_password": "Hide password",
+  "dont_show_again": "Don't show again when opening",
+  "open_app": "Open app",
+  "close": "Close",
+  "credentials_none": "This app declares no credentials."
 }

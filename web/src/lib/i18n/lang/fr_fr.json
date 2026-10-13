@@ -570,5 +570,17 @@
   "feedback_sending": "Envoi…",
   "feedback_sent": "Merci — votre avis a été envoyé à {operator}.",
   "settings_managed_by": "Géré par {owner}. Ce réglage est défini et tenu à jour par le déploiement du serveur : il ne peut pas être modifié ici.",
-  "notifications_smtp_pass_saved": "Enregistré — saisissez pour le remplacer"
+  "notifications_smtp_pass_saved": "Enregistré — saisissez pour le remplacer",
+  "credentials": "Identifiants",
+  "credentials_title": "Identifiants de connexion",
+  "credentials_intro": "Utilisez-les pour vous connecter à {name}.",
+  "credentials_initial_hint": "Ce sont les identifiants initiaux. Si vous changez le mot de passe dans l'application, cette page ne le saura pas.",
+  "username": "Nom d'utilisateur",
+  "password": "Mot de passe",
+  "show_password": "Afficher le mot de passe",
+  "hide_password": "Masquer le mot de passe",
+  "dont_show_again": "Ne plus afficher à l'ouverture",
+  "open_app": "Ouvrir l'application",
+  "close": "Fermer",
+  "credentials_none": "Cette application ne déclare aucun identifiant."
 }

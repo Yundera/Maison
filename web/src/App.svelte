@@ -8,6 +8,7 @@
   import SettingsPage from './lib/components/settings/SettingsPage.svelte'
   import AppSettingsModal from './lib/components/AppSettingsModal.svelte'
   import TipsModal from './lib/components/TipsModal.svelte'
+  import CredentialsModal from './lib/components/CredentialsModal.svelte'
   import MonitorPanel from './lib/components/MonitorPanel.svelte'
   import UninstallDialog from './lib/components/UninstallDialog.svelte'
   import InstallHelpModal from './lib/components/InstallHelpModal.svelte'
@@ -21,6 +22,7 @@
     settingsOpen,
     settingsApp,
     tipsApp,
+    credentialsApp,
     uninstallTarget,
     monitorOpen,
   } from './lib/stores/ui'
@@ -110,6 +112,10 @@
 
 {#if $tipsApp}
   <TipsModal target={$tipsApp} />
+{/if}
+
+{#if $credentialsApp}
+  <CredentialsModal target={$credentialsApp} />
 {/if}
 
 {#if $monitorOpen}

@@ -89,6 +89,7 @@ x-compose-app:
 | **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). |
 | **`secrets`** | map | no | Values **generated once** and ensured in the app's `.env`. See [Secrets and variables](#secrets-and-variables). |
 | **`variables`** | map | no | Templates ensured in the app's `.env` on **every** up. See [Secrets and variables](#secrets-and-variables). |
+| **`credentials`** | object[] | no | The app's **initial logins**, shown to the operator the first time the app is opened. See [Credentials](#credentials). | `tips` naming `${APP_DEFAULT_PASSWORD}` |
 | **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
 | **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
@@ -350,6 +351,61 @@ an install event.
 > whose `.env.app` already holds `APP_DEFAULT_PASSWORD` in the clear (see
 > [`app-env.md`](./app-env.md)). It removes a class of *silent failure*; it is not
 > a secrets manager and does not pretend to be one.
+
+---
+
+## Credentials
+
+An app's initial login, stated so Maison can **show** it, instead of a tip telling
+the operator to go and find `APP_DEFAULT_PASSWORD`.
+
+```yaml
+x-compose-app:
+  secrets:
+    ADMIN_PASSWORD: password:20               # generated once, per app
+  credentials:
+    - label: Administrator                    # string or locale map
+      username: admin                         # template
+      password: ${ADMIN_PASSWORD}             # template
+      note: Change it under Settings → Security.   # optional, string or locale map
+```
+
+- `username` and `password` are **templates**, rendered exactly like `tips`: against
+  the app's `.env`, which already carries the deployment's `.env.app` keys. So an app
+  can declare `password: ${APP_DEFAULT_PASSWORD}` today and move to a per-app secret
+  later without touching the UI.
+- An unresolved `${VAR}` stays visible as written, as in tips; an entry with neither
+  username nor password after rendering is dropped. A list rather than one entry,
+  because some apps ship two accounts.
+- An override's `credentials` **replaces** the store's list as a whole.
+
+**What the operator sees.** Clicking the tile of an app that declares credentials
+opens a dialog first — username and password with copy buttons, the password masked
+until revealed, and **Open app**. Ticking *Don't show again* makes the next click open
+the app directly; the tile menu's **Credentials** entry shows them again at any time.
+The choice is a marker file, `.credentials-dismissed`, in the app's own folder, so
+uninstalling clears it and a reinstall — which may come with a freshly generated
+password — shows the dialog again.
+
+**These are *initial* credentials.** Maison only displays what the compose declares;
+it does not know about a password the operator later changes inside the app, and the
+dialog says so.
+
+**Where the values travel.** Never in the app list: `/api/apps` and its websocket
+channel carry only `has_credentials` / `credentials_pending`, because the list is
+cached in the browser's `localStorage`. The values come from
+`POST /api/apps/{id}/credentials/show` (a POST with `Cache-Control: no-store`, so the
+response is never a history entry or a prefetch); `PUT /api/apps/{id}/credentials/dismissed`
+with `{"dismissed": bool}` records the choice. Like `secrets`, this removes a class of
+friction, not the need for a trusted network: the values are the same ones the app's
+`.env` already holds.
+
+> **Successor to `APP_DEFAULT_PASSWORD`.** One box-wide password shared by every app
+> is on its way out. The path is: declare `credentials` pointing at
+> `${APP_DEFAULT_PASSWORD}` (no behaviour change, the dialog works at once), then move
+> the app to its own `secrets` entry. Moving an *already installed* app needs care —
+> its database was initialised with the old password, and a newly generated secret
+> would be shown but would not work.
 
 ---
 

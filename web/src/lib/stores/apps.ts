@@ -25,6 +25,12 @@ export interface App {
    *  ordinary app. Carrying one means: no top-level tile, shown under the
    *  parent's instead. It confers nothing else; lifecycle stays per-app. */
   parent?: string
+  /** The app declares x-compose-app `credentials` (its initial logins), and —
+   *  pending — the operator has not ticked "Don't show again", so a click shows
+   *  them before opening the app. Flags only: the values never travel in the list
+   *  (it is cached in localStorage); showCredentials fetches them on demand. */
+  has_credentials?: boolean
+  credentials_pending?: boolean
   /** Fully-resolved click URL from x-compose-app (webui-*); wins when set. */
   url?: string
   /** Aggregated Docker health-check verdict; drives the tile status dot.
@@ -379,6 +385,25 @@ export async function setTips(id: string, tips: string): Promise<void> {
 export async function renderTips(id: string): Promise<string> {
   const r = await api.get<{ tips: string }>(`/api/apps/${encodeURIComponent(id)}/tips`)
   return r.tips
+}
+
+/** One x-compose-app credential, rendered against the app's .env. */
+export interface AppCredential {
+  label?: string
+  username?: string
+  password?: string
+  note?: string
+}
+
+/** Fetch the app's initial credentials. A POST so the secrets never sit behind
+ *  a navigable URL (history, prefetch). */
+export async function showCredentials(id: string): Promise<{ credentials: AppCredential[]; dismissed: boolean }> {
+  return api.post(`/api/apps/${encodeURIComponent(id)}/credentials/show`)
+}
+
+/** Record (or clear) "Don't show again" for the app's credentials. */
+export async function setCredentialsDismissed(id: string, dismissed: boolean): Promise<void> {
+  await api.put(`/api/apps/${encodeURIComponent(id)}/credentials/dismissed`, { dismissed })
 }
 
 export async function setConfig(id: string, override: string): Promise<void> {

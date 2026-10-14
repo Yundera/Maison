@@ -164,49 +164,72 @@ install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdat
 ```
 1. fetch the store's current compose for the app store-ref names
 2. equal to what's on disk, byte for byte? → nothing to do, report "up to date"
+   a backup or restore of the app running? → REFUSE (backup_busy), nothing changed;
+     otherwise the app is held for the whole update (no nightly, no restore under it)
    data plan (docs/migrations.md): data newer, a malformed manifest, a blocked step,
-     or steps pending with no rollback point → REFUSE, nothing changed
-   room for the rollback point on the local disk? no → REFUSE, nothing changed
+     or steps pending with no backup → REFUSE, nothing changed
+   can an enabled backup destination take the backup? no → REFUSE (no_room)
 3. pull the new version's images, and every pending migration step's
                                   ← while the old version is still serving
-4. back up the app  ← the rollback point, taken before anything is written
-                      (failed? → REFUSE, nothing changed)
+4. back up the app to every enabled destination  ← before anything is written
+                      (failed everywhere? → REFUSE, nothing changed)
 5. stop the old version  (not for an app declaring lifecycle.stoppable: false)
+                      ← the update's time budget starts here
 6. overwrite docker-compose.yml (the strict base only)
 7. refresh .seed and .migrate from the same store sync as the compose above
 8. stackup.UpWith → converge (folders, secrets, variables, migrations — each pending
                  step once, in order, .data-version after each — init, seed, files)
-                 → pre_up → up → post_up
-9. Up failed? → restore the rollback point, start it, watch it, and report
+                 → pre_up → up → post_up      ← in place, on the data already on disk
+9. Up failed? → restore the backup over the app, start it, watch it, and report
 ```
 
-The rollback point (step 4) is **always the local engine**, whatever engine is configured for scheduled
-backups. A rollback happens in the seconds after an update broke something, so it
-has to be a rename; restoring from a repository is a download, and the app would be
-broken for the duration. These are ordinary local archives, so the nightly run prunes
-them under the local engine's own retention like any other — there is no separate
-retention for them, and `retention.Plan` never drops the newest, so a rollback point
-cannot be expired out from under an update.
+The backup (step 4) goes to **every enabled backup destination** — the same ones the
+nightly run and an uninstall write to (Settings → Backups, one *Use this destination*
+switch per engine; see `backup.md`). There is no separate "rollback copy": a repository
+that already holds the app's history takes it as one more incremental snapshot, and a
+box backing up offsite does not need a second copy of every app on its own disk to
+update it. It is an ordinary backup in every destination, expired under that
+destination's own retention.
 
-If the rollback point cannot be taken, **the update is refused** and nothing is
-changed (`installer.ErrNoRollback`; `409` with `no_rollback: true` from
-`POST /api/apps/{id}/update`, `no_rollback` on the run item). Room is checked first,
-before the image pull: the same stat-only measurement as the backup dialog
-(`EstimateBackup` against the local engine: the folder minus its `backup.exclude`,
-times the copy's headroom, against free disk). A copy that fails anyway is a refusal too.
-Each refusal raises an `app.update:<app>` warning that says how to go ahead.
+The local disk is one destination like the others. When it is enabled and the app does
+not fit beside itself (`EstimateBackup` against the local engine: the folder minus its
+`backup.exclude`, times the copy's headroom, against free disk), it is **left out of
+that one backup** and the update goes ahead with the other destinations' copies — the
+run item and the response carry a `warning` saying so. Only when **no** enabled
+destination can take it is the update refused (`no_room`, with the local disk's
+numbers). An immich of 92 GiB on a box with 60 GiB free and Yundera Kopia enabled
+updates; the same app with only the local disk enabled is refused.
 
-Going ahead is the **owner's choice, per app**: `{"noBackup": true}` on
-`POST /api/apps/{id}/update`, or on `POST /api/updates/run` naming exactly one app.
+If the backup cannot be taken, **the update is refused** and nothing is changed
+(`installer.ErrNoRollback`; `no_rollback` with a `reason` on the run item and in the
+`app.update:<app>` warning). The reasons: `no_room` (above), `backup_busy` (a backup or
+restore of the app was already running — retry), `backup_timeout` (the backup's stopped
+pass ran out of time) and `backup_failed` (every destination failed; one that failed
+while another succeeded is a `warning`, not a refusal). Room is checked before the image
+pull, so a refusal costs a size walk, not a download.
+
+**No destination enabled** is the owner having switched backups off: the update goes
+ahead without one, with a `warning`. An app declaring `backup.skip` is the same. Either
+way an update that converts the app's data is still refused (see below).
+
+Going ahead without a backup is the **owner's choice, per app**: `{"noBackup": true}`
+on `POST /api/apps/{id}/update`, or on `POST /api/updates/run` naming exactly one app.
 The Update tab and the refused row on Settings → Updates offer it as *Update without
-backup*. It skips the room check and the rollback point, and the response carries a
-`warning` that the update cannot be undone. "Update all" never asks for it.
+backup*. It skips the room check and the backup, and the result carries a `warning`
+that the update cannot be undone. "Update all" never asks for it.
 
 Why refuse rather than go ahead: the old behaviour updated anyway so the largest apps
 were never pinned on old versions. But it made the one destructive change Maison makes
-irreversible without anyone having chosen that, and it ran the copy until the disk was
-full — failing not just the update but every app still writing to that disk. The
-explicit per-app option keeps the large apps updatable without either.
+irreversible without anyone having chosen that. With the backup going to the enabled
+destinations, a large app is no longer pinned by its own disk — only a box backing up
+to nothing but that disk is — and the per-app option covers the rest.
+
+**Time.** An update's budget (`updateTimeout`, plus its migrations' own) starts at the
+stop (step 5): the backup before it is the app's own time, and the app keeps serving
+through it. A first backup of a large app to a repository takes as long as the upload;
+its stopped pass is still bounded by the backup's downtime limit. Every update — the
+Update tab's too — runs as a one-app background run (`202 {"started": true}`) that
+survives the browser tab; the tile and Settings → Updates follow it.
 
 The copy itself writes through `apps.writebackFile`, which flushes and evicts each
 8 MiB as it goes. Page cache is charged to Maison's cgroup, and an unbounded copy of a
@@ -215,17 +238,33 @@ mid-update (watch.nsl.sh, 2026-09-30).
 
 The old version is **stopped before anything of the new one runs** (step 5). The new
 version's `init` steps run in `pre_up`, against the app's data, and the old containers
-still have that data open — taking the rollback point restarts them on its way out. A
+still have that data open — taking the backup restarts them on its way out. A
 database that takes an exclusive lock fails every such step: FileBrowser's bolt database
 answers `timeout` after a second, and the update is rolled back for nothing. The images
 are pulled first (step 3) so the stop costs the swap rather than the download. A system
 app is not stopped: stopping the dashboard, or the gateway in front of it, takes down the
 process doing the update.
 
-The restore (step 9) replaces the whole folder, so it takes the old compose with it: the app
-returns to the state the rollback point captured rather than to a new compose running
-against old data. A rolled-back update still reports as a **failure** — the app is
-running the old version, and rendering that as success would be a lie.
+The restore (step 9) **writes the backup over the app** and keeps nothing of the failed
+state (`Registry.RestoreOver`). It replaces the whole folder, so it takes the old compose
+with it: the app returns to the state the backup captured rather than to a new compose
+running against old data. It tries every destination holding the backup, the one that
+restores by rename first, and moves to the next when one fails:
+
+- **local** — the failed folder is renamed into the trash and the backup into place.
+  Instant, and needs no free disk.
+- **in place** (a repository, e.g. Kopia) — the engine writes the backup over the live
+  folder and deletes what the backup does not hold. No copy beside the app, so no room
+  needed — the app that did not fit beside itself is exactly the one being restored —
+  and no undo snapshot of the failed state first. No time limit either: the app is down
+  already, and a restore abandoned half-way is the worst outcome. The `.restoring`
+  marker keeps the app from starting on a half-written folder. How long it takes is the
+  engine's: a restore that re-downloads every file costs the whole app in transfer.
+- **fetch** — an engine that cannot restore in place downloads beside the app first,
+  when there is room.
+
+A rolled-back update still reports as a **failure** — the app is running the old
+version, and rendering that as success would be a lie.
 
 Put back is not running, so the rollback does two more things. It **starts** the app —
 `Restore` restarts only an app it found running, and step 5 stopped it — and an app that
@@ -236,16 +275,15 @@ the previous version is not staying up, whatever the restore said.
 
 An update that **converts the app's data** (pending `migrations`, see
 [`migrations.md`](./migrations.md)) is the same sequence with the steps run inside
-step 8, and two differences. It is never applied without a rollback point — *Update
-without backup* is refused for it — and it may take hours, so its time budget is an
-ordinary update's plus every step's own `timeout`, and the Update tab runs it as a
-one-app background run (`202 {"started": true}`) that survives the browser tab. A
-failed step is a failed update: the restore brings back the old compose, data and
-marker together.
+step 8, and two differences. It is never applied without a backup — *Update without
+backup* is refused for it, and so is an app with `backup.skip` or a box with no
+destination enabled — and it may take hours, so its time budget is an ordinary update's
+plus every step's own `timeout`. A failed step is a failed update: the restore brings
+back the old compose, data and marker together.
 
 Every failed update leaves an `app.update:<app>` incident, not just a tile: a warning when
 the previous version is back and running, **critical** when it is not, when the rollback
-itself failed, or when there was no rollback point to undo it. See `incidents.md`.
+itself failed, or when there was no backup to undo it. See `incidents.md`.
 
 The override and `.env` are never touched — that is the entire point of keeping the
 base byte-identical to the store. `pre_install` / `post_install` do **not** re-run;
@@ -255,7 +293,9 @@ base byte-identical to the store. `pre_install` / `post_install` do **not** re-r
 
 Settings → Updates lists every app by what can be done about it: an update available, a
 failed check or a failed update (its `app.update:<app>` incident), no store reference
-(*untracked*), or not Maison's at all (*unmanaged* — a stack it only discovered). The
+(*untracked*), or not Maison's at all (*unmanaged* — a stack it only discovered). An app
+declaring `lifecycle.updatable: false` is not listed at all: something else updates it,
+and its update routes answer `403` (see `x-compose-app.md` › Lifecycle). The
 check behind it is `Installer.CheckAll`: the same byte comparison as the Update tab, but
 each store is synced **once** however many apps follow it, and a store that cannot be
 reached marks its apps as failed, never as up to date. A check runs ten minutes after
@@ -267,14 +307,15 @@ runs the queue on a background context (`server/updates.go`), so closing the pag
 not stop it. Each app goes through exactly the sequence above, under the tile's busy
 overlay. Three rules:
 
-- **Strictly sequential**, like the nightly backup: every update takes a local rollback
-  point, a full copy of the app, and several at once is how a data disk fills. The
-  confirmation dialog asks `GET /api/updates/preflight` first, which names the apps whose
-  rollback point will not fit counting the ones taken before them — those will be
-  refused, untouched, and can then be updated one at a time without a backup.
+- **Strictly sequential**, like the nightly backup: every update backs its app up
+  first, and several backups at once is how a data disk fills or an uplink saturates.
+- **No check across the run.** The button starts the run; there is no preflight and no
+  confirmation. Every check is the app's own (room for its backup, a backup of it
+  running, its data plan), made inside its update, and one that fails refuses that app
+  alone.
 - **Refusals say why.** A refused app carries a reason — `no_room` (with the bytes
-  needed and free), `backup_timeout` or `backup_failed` — on its run item, on the 409
-  of the per-app endpoint and in its `app.update` incident's args; rollback incidents
+  needed and free), `backup_busy`, `backup_timeout` or `backup_failed` — on its run item
+  and in its `app.update` incident's args; rollback incidents
   carry `rolled_back`, `not_running`, `rollback_failed` or `broken`. Settings → Updates
   turns the code into a sentence and keeps the raw error behind *Details*. Every app
   appears in exactly one row; confirmations open in the row that asked, and a plain

@@ -33,20 +33,20 @@ type Set struct {
 	byID  map[string]apps.Provider
 	order []string // registration order, so listing is stable across restarts
 
-	// writers is which engines receive each trigger, by engine ID.
+	// writers is which engines receive backups, by engine ID: every enabled engine.
 	//
-	// A map of slices rather than one `written string`: engines are independent
-	// destinations and a backup can land in several at once. The single writer was
-	// the last thing that made them mutually exclusive for writing, while List and
-	// Locate had always treated them as independent for reading.
-	writers map[apps.Trigger][]string
+	// A slice rather than one `written string`: engines are independent destinations
+	// and a backup lands in every enabled one at once. The single writer was the last
+	// thing that made them mutually exclusive for writing, while List and Locate had
+	// always treated them as independent for reading.
+	writers []string
 
-	// missing is, per trigger, the engines the configuration sends it to that are not
-	// registered on this box. SetWriters cannot hold them — it refuses an unknown ID —
-	// and without them "nothing receives uninstalls" would mean both "the user switched
-	// that off" and "the only destination the user picked has disappeared", which an
-	// uninstall has to answer in opposite ways. See Missing.
-	missing map[apps.Trigger][]string
+	// missing is the engines the configuration enables that are not registered on this
+	// box. SetWriters cannot hold them — it refuses an unknown ID — and without them
+	// "nothing is enabled" would mean both "the user switched backups off" and "the
+	// only destination the user picked has disappeared", which an uninstall has to
+	// answer in opposite ways. See Missing.
+	missing []string
 
 	// listings caches each engine's whole listing for the store's install picker.
 	// See ListForInstall.
@@ -74,10 +74,10 @@ type engineListing struct {
 }
 
 // New builds a Set from the engines a deployment has. The first one registered
-// receives every trigger, which makes the local engine — always present, needing no
+// receives backups, which makes the local engine — always present, needing no
 // configuration — the natural default until the settings say otherwise.
 func New(providers ...apps.Provider) *Set {
-	s := &Set{byID: map[string]apps.Provider{}, writers: map[apps.Trigger][]string{}, missing: map[apps.Trigger][]string{}}
+	s := &Set{byID: map[string]apps.Provider{}}
 	for _, p := range providers {
 		s.Register(p)
 	}
@@ -99,10 +99,8 @@ func (s *Set) Register(p apps.Provider) {
 	s.byID[id] = p
 	// The first engine registered receives everything, so a Set built without any
 	// configuration behaves exactly as Maison always has.
-	for _, t := range apps.Triggers {
-		if len(s.writers[t]) == 0 {
-			s.writers[t] = []string{id}
-		}
+	if len(s.writers) == 0 {
+		s.writers = []string{id}
 	}
 }
 
@@ -121,7 +119,7 @@ func (s *Set) Get(id string) (apps.Provider, bool) {
 	return p, ok
 }
 
-// Writers is every engine a trigger writes to, in registration order.
+// Writers is every engine a backup writes to, in registration order.
 //
 // **The write set governs writes only.** Nothing reads through it — see List and
 // Locate — because a backup written by an engine that no longer receives anything is
@@ -131,12 +129,12 @@ func (s *Set) Get(id string) (apps.Provider, bool) {
 // bearing for a fan-out backup: the local pass is the cheap one and it ignores the
 // context deadline entirely, so running it first leaves the whole remaining downtime
 // budget to the engines that honour one.
-func (s *Set) Writers(t apps.Trigger) []apps.Provider {
+func (s *Set) Writers() []apps.Provider {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]apps.Provider, 0, len(s.writers[t]))
+	out := make([]apps.Provider, 0, len(s.writers))
 	for _, id := range s.order {
-		if slices.Contains(s.writers[t], id) {
+		if slices.Contains(s.writers, id) {
 			if p := s.byID[id]; p != nil {
 				out = append(out, p)
 			}
@@ -145,15 +143,15 @@ func (s *Set) Writers(t apps.Trigger) []apps.Provider {
 	return out
 }
 
-// SetWriters replaces which engines receive a trigger. It refuses an unknown ID
+// SetWriters replaces which engines receive backups. It refuses an unknown ID
 // rather than silently dropping it, because silently writing somewhere other than
 // where the user asked is how a user ends up believing their data is offsite when
 // it is not.
 //
-// An empty set is allowed and means "nothing receives this trigger" — a real state
+// An empty set is allowed and means "nothing is backed up" — a real state
 // the settings page can produce, and one the backup path reports as a refusal rather
 // than backing up nowhere and calling it a success.
-func (s *Set) SetWriters(t apps.Trigger, ids []string) error {
+func (s *Set) SetWriters(ids []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, id := range ids {
@@ -161,27 +159,27 @@ func (s *Set) SetWriters(t apps.Trigger, ids []string) error {
 			return fmt.Errorf("unknown backup engine: %s", id)
 		}
 	}
-	s.writers[t] = append([]string(nil), ids...)
+	s.writers = append([]string(nil), ids...)
 	return nil
 }
 
-// SetMissing records the engines a trigger is configured to write to that this box
-// does not have. Replaced wholesale, like SetWriters, by whoever applies the settings.
-func (s *Set) SetMissing(t apps.Trigger, ids []string) {
+// SetMissing records the engines the configuration enables that this box does not
+// have. Replaced wholesale, like SetWriters, by whoever applies the settings.
+func (s *Set) SetMissing(ids []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.missing[t] = append([]string(nil), ids...)
+	s.missing = append([]string(nil), ids...)
 }
 
-// Missing is every engine a trigger is configured to write to that is not registered.
+// Missing is every engine the configuration enables that is not registered.
 //
 // It is what tells an empty Writers apart: no writers and nothing missing is a box
-// where nobody asked for this trigger to be backed up, while no writers and something
+// where nobody asked for backups, while no writers and something
 // missing is a destination that is failing — the user asked, and it cannot be reached.
-func (s *Set) Missing(t apps.Trigger) []string {
+func (s *Set) Missing() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]string(nil), s.missing[t]...)
+	return append([]string(nil), s.missing...)
 }
 
 // List returns every backup of one app, from every engine, newest first.

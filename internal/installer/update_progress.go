@@ -4,9 +4,9 @@ package installer
 // label the progress bar by phase, so each is a step an owner can recognise — and
 // the one that takes minutes (backup) carries real byte counts.
 const (
-	UpdatePhaseCheck    = "check"    // measuring room for the rollback point
+	UpdatePhaseCheck    = "check"    // checking a backup destination can take the backup
 	UpdatePhasePull     = "pull"     // pulling the new version's images
-	UpdatePhaseBackup   = "backup"   // taking the rollback point
+	UpdatePhaseBackup   = "backup"   // backing the app up
 	UpdatePhaseStop     = "stop"     // stopping the old version
 	UpdatePhaseApply    = "apply"    // writing the new compose and seed tree
 	UpdatePhaseMigrate  = "migrate"  // converting the app's data (only when the update declares steps)

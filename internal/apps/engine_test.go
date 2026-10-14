@@ -64,8 +64,8 @@ func oneName(t *testing.T, res []apps.Result, err error) (string, error) {
 // setWriters points every trigger at one engine — what SetWriter used to mean, which is
 // still what a test wanting "backups go here" is asking for.
 func setWriters(set *backup.Set, ids ...string) error {
-	for _, t := range apps.Triggers {
-		if err := set.SetWriters(t, ids); err != nil {
+	{
+		if err := set.SetWriters(ids); err != nil {
 			return err
 		}
 	}
@@ -507,7 +507,7 @@ func TestBackupWithoutADeclarationCarriesNoExclusions(t *testing.T) {
 // A backup can be written to several engines at once. These pin the parts of that
 // which are not obvious from reading the loop.
 
-// The whole reason fan-out lives inside one BackupWith rather than being a loop over
+// The whole reason fan-out lives inside one BackupTo rather than being a loop over
 // it: the app is stopped ONCE for every destination.
 //
 // Looping outside would stop it per engine, and worse — the first operation's deferred
@@ -619,7 +619,7 @@ func TestFanOutFailsWhenEveryEngineFails(t *testing.T) {
 func TestBackupRefusesWithNoDestination(t *testing.T) {
 	r, _ := newRegistry(t)
 	set := backup.New(backuptest.NewLocalLike(apps.EngineLocal))
-	if err := set.SetWriters(apps.TriggerSchedule, nil); err != nil {
+	if err := set.SetWriters(nil); err != nil {
 		t.Fatal(err)
 	}
 	r.Engines = set
@@ -738,7 +738,7 @@ func TestUninstallRefusesTwoConsumingEngines(t *testing.T) {
 func TestUninstallWithNoEngineSetRemovesWithoutBackup(t *testing.T) {
 	r, cfg := newRegistry(t)
 	set := backup.New(apps.NewLocalProvider(cfg))
-	if err := set.SetWriters(apps.TriggerUninstall, nil); err != nil {
+	if err := set.SetWriters(nil); err != nil {
 		t.Fatal(err)
 	}
 	r.Engines = set
@@ -772,10 +772,10 @@ func TestUninstallRefusesWhenADestinationIsMissing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r, cfg := newRegistry(t)
 			set := backup.New(apps.NewLocalProvider(cfg))
-			if err := set.SetWriters(apps.TriggerUninstall, tc.writers); err != nil {
+			if err := set.SetWriters(tc.writers); err != nil {
 				t.Fatal(err)
 			}
-			set.SetMissing(apps.TriggerUninstall, []string{"kopia"})
+			set.SetMissing([]string{"kopia"})
 			r.Engines = set
 
 			_, err := r.Uninstall(context.Background(), "jellyfin", false, nil)

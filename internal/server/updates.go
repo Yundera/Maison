@@ -6,11 +6,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
 )
@@ -21,12 +19,14 @@ import (
 // report, and a run that updates apps one after another on a background context, so
 // it survives the browser tab that started it. Each app of a run goes through exactly
 // what the Update tab's button does — installer.ApplyUpdate under the tile's busy
-// overlay — so the rollback point, the rollback and the incidents are the ones every
+// overlay — so the backup, the rollback and the incidents are the ones every
 // single update already has.
 //
-// Strictly sequential, for the reason the nightly backup is: every update takes a
-// local rollback point, which is a full copy of the app, and several at once is how
-// a data disk fills.
+// Strictly sequential, for the reason the nightly backup is: every update backs its
+// app up first, and several backups at once is how a data disk fills or an uplink
+// saturates. There is no check across the run: every check an app's update makes is
+// its own (room for its backup, a backup of it already running, its data plan), and
+// one that fails refuses that app and moves on to the next.
 
 const (
 	// updateTimeout is one app's budget inside a run — the same the Update tab's
@@ -57,8 +57,8 @@ type UpdateRunItem struct {
 	RolledBack bool   `json:"rolled_back,omitempty"`
 	Warning    string `json:"warning,omitempty"`
 	Error      string `json:"error,omitempty"`
-	// NoRollback marks an item refused because its rollback point could not be
-	// taken (installer.ErrNoRollback). Nothing was changed; the row offers
+	// NoRollback marks an item refused because its backup could not be taken
+	// (installer.ErrNoRollback). Nothing was changed; the row offers
 	// "Update without backup" for that app alone.
 	NoRollback bool `json:"no_rollback,omitempty"`
 	// Reason says why (installer.NoRollback*), and for no_room how far off it was, so
@@ -95,7 +95,7 @@ type updatesState struct {
 
 var (
 	errRunInProgress = errors.New("an update run is already in progress")
-	// Skipping the rollback point is an owner's decision about one app, made after
+	// Skipping the backup is an owner's decision about one app, made after
 	// seeing that app refused — never something "update all" does wholesale.
 	errNoBackupNeedsOneApp = errors.New("an update without a backup is chosen for one app at a time")
 	errNothingToRun        = errors.New("nothing to update")
@@ -154,7 +154,9 @@ func (s *Server) checkUpdates(ctx context.Context) {
 
 // checkTargets runs installer.CheckAll over the app list — all of it, or only the
 // ids given. Hidden apps are included: they have no tile, but they are installed,
-// they run, and they go out of date like any other.
+// they run, and they go out of date like any other. An app that declares
+// `lifecycle.updatable: false` is not: something else updates it, so it gets no row
+// — and with no row, no run can queue it.
 func (s *Server) checkTargets(ctx context.Context, only map[string]bool) ([]installer.AppUpdate, error) {
 	ctx, cancel := context.WithTimeout(ctx, updateCheckTimeout)
 	defer cancel()
@@ -165,7 +167,7 @@ func (s *Server) checkTargets(ctx context.Context, only map[string]bool) ([]inst
 	}
 	targets := make([]installer.CheckTarget, 0, len(list))
 	for _, a := range list {
-		if only != nil && !only[a.ID] {
+		if (only != nil && !only[a.ID]) || !a.Updatable {
 			continue
 		}
 		targets = append(targets, installer.CheckTarget{
@@ -306,14 +308,16 @@ func (s *Server) runUpdates(q []string, opts installer.UpdateOptions) {
 	for i, id := range q {
 		set(i, func(it *UpdateRunItem) { it.Status = runUpdating })
 
-		ctx, cancel := context.WithTimeout(context.Background(), s.updateBudget(id))
+		// The budget bounds the update from the stop onward; the backup before it is
+		// the app's own time (see installer.UpdateOptions.Budget).
+		o := opts
+		o.Budget = s.updateBudget(id)
 		var res installer.UpdateResult
 		err := s.apps.WithBusy(id, func() error {
 			var e error
-			res, e = s.installer.ApplyUpdate(ctx, id, opts)
+			res, e = s.installer.ApplyUpdate(context.Background(), id, o)
 			return e
 		})
-		cancel()
 		s.broadcastApps()
 
 		// A failure does not stop the run: the next app's update has nothing to do
@@ -413,56 +417,6 @@ func (s *Server) handleCheckUpdates(w http.ResponseWriter, _ *http.Request) {
 	}
 	go s.checkUpdates(context.Background())
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
-}
-
-// UpdatePreflight is what the confirmation dialog says before a run starts.
-type UpdatePreflight struct {
-	Apps []string `json:"apps"`
-	// NoRollback names the apps whose rollback point will not fit on the data disk,
-	// counting the ones taken before them in the same run — each is a full local copy,
-	// and the run does not free them. They will be REFUSED, untouched; each can then
-	// be updated on its own without a backup (see lifecycle.md).
-	NoRollback []string `json:"no_rollback,omitempty"`
-}
-
-// handleUpdatesPreflight resolves a run's queue without starting it, and measures
-// whether its rollback points fit. ?ids=a,b — none means "update all".
-func (s *Server) handleUpdatesPreflight(w http.ResponseWriter, r *http.Request) {
-	if !s.requireUpdates(w) {
-		return
-	}
-	var ids []string
-	if v := strings.TrimSpace(r.URL.Query().Get("ids")); v != "" {
-		ids = strings.Split(v, ",")
-	}
-	s.updates.mu.Lock()
-	q, err := runQueue(s.updates.rows, ids)
-	s.updates.mu.Unlock()
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, UpdatePreflight{Apps: q, NoRollback: s.noRollback(q)})
-}
-
-// noRollback walks the queue in order against the free space left by the rollback
-// points before it. Measuring walks each app's folder, which is why it is asked for
-// once, when the dialog opens, and never on a poll.
-func (s *Server) noRollback(q []string) []string {
-	var out []string
-	var used int64
-	for _, id := range q {
-		est, err := s.apps.EstimateBackup(id, apps.EngineLocal, false)
-		if err != nil || est.Skipped {
-			continue // no rollback point is taken by design, or it cannot be measured
-		}
-		if est.Free-used < est.Needed {
-			out = append(out, id)
-			continue
-		}
-		used += est.Size
-	}
-	return out
 }
 
 func (s *Server) handleRunUpdates(w http.ResponseWriter, r *http.Request) {

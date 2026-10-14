@@ -93,7 +93,7 @@ x-compose-app:
 | **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
 | **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
-| **`lifecycle`** | object | no | `{ stoppable, uninstallable }`, both default `true` — whether Maison may stop or uninstall the app. See [Lifecycle](#lifecycle-what-the-operator-may-do-to-the-app). | — |
+| **`lifecycle`** | object | no | `{ stoppable, uninstallable, updatable }`, all default `true` — whether Maison may stop, uninstall or update the app. See [Lifecycle](#lifecycle-what-the-operator-may-do-to-the-app). | — |
 | **`backup`** | object | no | `{ exclude, skip }` — directories of **derived** data to leave out of backups, or the whole app. See [Backup exclusions](#backup-exclusions) and [Skipping an app entirely](#skipping-an-app-entirely). | — |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
@@ -606,21 +606,30 @@ x-compose-app:
   lifecycle:
     stoppable: false      # default true
     uninstallable: false  # default true
+    updatable: false      # default true
 ```
 
 Some apps take the operator's way back in with them when they go down: the
 dashboard, the gateway in front of it, the login broker. They say so themselves:
 
-| Operation | `stoppable: false` | `uninstallable: false` |
-|---|---|---|
-| **Stop** | Refused. The menu entry is withheld and the API answers `403`. Stopping the dashboard from its own tile takes the UI down with the click that asked for it, and leaves nothing running to bring it back. | — |
-| **Update** | The app is **not stopped** first, is left out of **Update all**, and is updated only when named on its own (see [`lifecycle.md`](./lifecycle.md#update-all)). | — |
-| **Uninstall** | — | Refused, the same way. |
-| **Cleanup** | — | Its containers are never counted as orphans. |
-| **Restart / Start** | **Allowed** — the stack comes back on its own, so it is how a wedged app is recovered without an SSH session. | Allowed. |
+| Operation | `stoppable: false` | `uninstallable: false` | `updatable: false` |
+|---|---|---|---|
+| **Stop** | Refused. The menu entry is withheld and the API answers `403`. Stopping the dashboard from its own tile takes the UI down with the click that asked for it, and leaves nothing running to bring it back. | — | — |
+| **Update** | The app is **not stopped** first, is left out of **Update all**, and is updated only when named on its own (see [`lifecycle.md`](./lifecycle.md#update-all)). | — | **Outside the update system.** No row on Settings → Updates (not even under *Not linked to a store*), no Update tab, never queued by a run; checking, applying and setting the update source answer `403`. |
+| **Uninstall** | — | Refused, the same way. | — |
+| **Cleanup** | — | Its containers are never counted as orphans. | — |
+| **Restart / Start** | **Allowed** — the stack comes back on its own, so it is how a wedged app is recovered without an SSH session. | Allowed. | Allowed. |
 
-The two are independent: an app may be safe to stop but not to remove, or the
-reverse. Neither says anything about backups — an app that must not be stopped
+The three are independent: an app may be safe to stop but not to remove, or the
+reverse.
+
+`updatable: false` is for an app **something other than Maison keeps up to date** —
+a platform stack its installer pins and upgrades (Maison itself, the mesh and auth
+stacks, an admin app). Without it such a stack sits under *Not linked to a store*
+forever, and the page offers to "link" it to whatever store app looks similar — a
+link that would replace the platform's copy with the store's on the next update.
+It says nothing about where the app's version comes from; that is its deployer's
+business. Neither says anything about backups — an app that must not be stopped
 nightly also declares [`backup.skip`](#skipping-an-app-entirely), since backing an
 app up stops it.
 
@@ -641,8 +650,9 @@ Whether a store app may declare either key is a store-review question; Maison do
 not police it.
 
 `lifecycle` does **not** raise `schema_version`, and its polarity is chosen for
-that: a build that predates it ignores a `false` and offers Stop and Uninstall,
-which is the ordinary behaviour of every app.
+that: a build that predates it (or a key of it) ignores a `false` and offers Stop,
+Uninstall or Update, which is the ordinary behaviour of every app — a platform
+stack on such a build is simply listed as *not linked to a store* again.
 
 ### `parent` makes the app an extension of another
 
@@ -917,7 +927,7 @@ app is not a target at all:
 |---|---|
 | Nightly run | not a target — `Scheduler.skip` |
 | Back up now, in the Backups tab | refused, `403`; the tab says why |
-| Update rollback point | not taken; the update proceeds and says so in the log |
+| Backup before an update | not taken; the update proceeds and says so in the log (an update that converts data is refused) |
 | Restore | **works normally** |
 | Uninstall archive | still taken — see below |
 

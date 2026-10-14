@@ -81,6 +81,18 @@ func (s *Server) handleAppAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// refuseNotUpdatable answers 403 for an app that declares x-compose-app
+// `lifecycle.updatable: false`, and says whether it did. Checking, updating and
+// re-pointing its source are all refused: something else keeps it up to date, and a
+// store reference on it would let the next update replace it with a look-alike.
+func (s *Server) refuseNotUpdatable(w http.ResponseWriter, id string) bool {
+	if s.apps.Updatable(id) {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": apps.ErrNotUpdatable.Error()})
+	return true
+}
+
 // handleCheckUpdate reports whether the app's reference store carries a newer
 // docker-compose.yml than the installed copy (see installer.CheckUpdate).
 func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +101,9 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.installer == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
+		return
+	}
+	if s.refuseNotUpdatable(w, chi.URLParam(r, "id")) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
@@ -116,6 +131,9 @@ func (s *Server) handleSetUpdateRef(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.installer == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
+		return
+	}
+	if s.refuseNotUpdatable(w, chi.URLParam(r, "id")) {
 		return
 	}
 	var body struct {
@@ -153,9 +171,12 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
 	}
+	if s.refuseNotUpdatable(w, chi.URLParam(r, "id")) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	// {"noBackup": true} — the owner's explicit retry of an update refused for want
-	// of a rollback point. Body optional: a bare POST is an ordinary update.
+	// of a backup. Body optional: a bare POST is an ordinary update.
 	var body struct {
 		NoBackup bool `json:"noBackup"`
 	}
@@ -165,10 +186,12 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// An update that converts the app's data may take hours and must not die with
-	// the browser tab, so it runs as a one-app update run — background, sequential
-	// with any other, with its migrations' time budget — and the tile follows it.
-	if row, ok := s.refreshUpdateRow(r.Context(), id); ok && row.State == installer.StateAvailable && len(row.Migrations) > 0 {
+	// An update runs as a one-app update run — background, sequential with any other —
+	// and the tile follows it. It must not die with the browser tab: the backup before
+	// it goes to every enabled destination, and a first backup of a large app to a
+	// repository takes as long as the upload does; one that converts the app's data
+	// may take hours more.
+	if row, ok := s.refreshUpdateRow(r.Context(), id); ok && (row.State == installer.StateAvailable || row.State == installer.StateBlocked) {
 		if err := s.startUpdateRun([]string{id}, installer.UpdateOptions{NoBackup: body.NoBackup}); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
@@ -177,13 +200,15 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), updateTimeout)
-	defer cancel()
+	// Not offered by the last check — up to date, or a check that failed. Applied here,
+	// where "already up to date" is answered at once; detached from the request for
+	// the same reason as above, should there be an update after all.
+	ctx := context.WithoutCancel(r.Context())
 
 	var res installer.UpdateResult
 	err := s.apps.WithBusy(id, func() error {
 		var e error
-		res, e = s.installer.ApplyUpdate(ctx, id, installer.UpdateOptions{NoBackup: body.NoBackup})
+		res, e = s.installer.ApplyUpdate(ctx, id, installer.UpdateOptions{NoBackup: body.NoBackup, Budget: updateTimeout})
 		return e
 	})
 	updated := res.Applied

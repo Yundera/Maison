@@ -43,6 +43,20 @@ func TestBuildAppTakesLifecycleFromTheDeclarationNotTheView(t *testing.T) {
 	}
 }
 
+// lifecycle.updatable reaches the tile on its own, without touching the other two.
+func TestBuildAppTakesUpdatableFromTheDeclaration(t *testing.T) {
+	no := false
+	ca := &xcomposeapp.App{View: "system", Lifecycle: xcomposeapp.LifecycleSpec{Updatable: &no}}
+	app := buildApp("x", nil, ca, "", true, StatusRunning, nil)
+	if app.Updatable || !app.Stoppable || !app.Uninstallable {
+		t.Fatalf("updatable/stoppable/uninstallable = %v/%v/%v, want false/true/true",
+			app.Updatable, app.Stoppable, app.Uninstallable)
+	}
+	if plain := buildApp("y", nil, &xcomposeapp.App{}, "", true, StatusRunning, nil); !plain.Updatable {
+		t.Fatal("an app with no declaration must stay updatable")
+	}
+}
+
 // An app with only an x-casaos block that names a web UI — the legacy CasaOS
 // shape — lands in the ordinary grid and stays uninstallable.
 func TestBuildAppDefaultsToTheAppsView(t *testing.T) {

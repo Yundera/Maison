@@ -460,8 +460,7 @@ func (s *Server) checkBackupDestinations(conf backupconfig.Config) {
 // configuredEngines is every engine this box is asking to back up to, by name.
 //
 // Both places the configuration can name one: the legacy single override, and a
-// per-engine entry with a trigger switched on. An entry with both triggers off is
-// deliberately NOT here — that is an engine the user switched away from, whose settings
+// per-engine entry that is enabled. An entry switched off is deliberately NOT here — that is an engine the user switched away from, whose settings
 // are kept only so switching back restores them (see backupconfig.Config.Engines), and
 // alerting on those would mail somebody about a destination they retired on purpose.
 func configuredEngines(conf backupconfig.Config) []string {
@@ -469,8 +468,8 @@ func configuredEngines(conf backupconfig.Config) []string {
 	if conf.Engine != "" {
 		want[conf.Engine] = true
 	}
-	for id, es := range conf.Engines {
-		if (es.Schedule != nil && *es.Schedule) || (es.Uninstall != nil && *es.Uninstall) {
+	for id := range conf.Engines {
+		if conf.Effective(id, backupconfig.Provisioned{}).Enabled {
 			want[id] = true
 		}
 	}
@@ -498,17 +497,15 @@ func engineByID(set *backup.Set, id string) (apps.Provider, bool) {
 	return set.Get(id)
 }
 
-// receivesAnything reports whether any trigger writes to this engine. An engine holding
+// receivesAnything reports whether backups write to this engine. An engine holding
 // only history is not a fault when it cannot be reached — nothing is trying to write.
 func receivesAnything(set *backup.Set, id string) bool {
 	if set == nil {
 		return false
 	}
-	for _, t := range apps.Triggers {
-		for _, p := range set.Writers(t) {
-			if p.ID() == id {
-				return true
-			}
+	for _, p := range set.Writers() {
+		if p.ID() == id {
+			return true
 		}
 	}
 	return false

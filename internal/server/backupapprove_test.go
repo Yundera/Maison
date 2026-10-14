@@ -121,17 +121,17 @@ func TestATickedUnapprovedEngineIsMissingNotAWriter(t *testing.T) {
 	}
 	applyEngineSettings(s.engines, s.backupConf)
 
-	if writesTo(s.engines, apps.TriggerSchedule, "kopia") {
+	if writesTo(s.engines, "kopia") {
 		t.Error("the schedule writes to an engine nobody enabled")
 	}
-	if m := s.engines.Missing(apps.TriggerUninstall); len(m) != 1 || m[0] != "kopia" {
+	if m := s.engines.Missing(); len(m) != 1 || m[0] != "kopia" {
 		t.Errorf("Missing(uninstall) = %v, want [kopia]", m)
 	}
 
 	if err := s.approveEngine(t.Context(), "kopia", false); err != nil {
 		t.Fatal(err)
 	}
-	if !writesTo(s.engines, apps.TriggerSchedule, "kopia") {
+	if !writesTo(s.engines, "kopia") {
 		t.Error("enabling the engine did not make it a writer")
 	}
 }

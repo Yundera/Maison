@@ -60,11 +60,12 @@ export interface RunItem {
   rolled_back?: boolean
   warning?: string
   error?: string
-  /** Refused: no rollback point could be taken. Nothing changed; the app can be
+  /** Refused: the app could not be backed up first. Nothing changed; the app can be
    *  updated on its own without a backup. */
   no_rollback?: boolean
-  /** Why it was refused — no_room | backup_timeout | backup_failed — and, for
-   *  no_room, the bytes the rollback copy needed and what was free. */
+  /** Why it was refused — no_room | backup_timeout | backup_busy | backup_failed —
+   *  and, for no_room, the bytes a backup on this server's disk needed and what was
+   *  free (no other destination being enabled). */
   reason?: string
   needed?: number
   free?: number
@@ -85,13 +86,6 @@ export interface UpdatesReport {
   run: UpdateRun
 }
 
-export interface Preflight {
-  apps: string[]
-  /** Apps whose rollback point will not fit on the disk. They will be refused,
-   *  untouched; each can then be updated on its own without a backup. */
-  no_rollback?: string[]
-}
-
 export const updates = writable<UpdatesReport | null>(null)
 
 /** Read the report. The server checks first when it never has. */
@@ -110,11 +104,6 @@ export function subscribeUpdates(): () => void {
 
 /** Start a fresh check; the result arrives on the channel. */
 export const checkUpdates = () => api.post('/api/updates/check')
-
-/** What a run of `ids` (none = update all) would update, and which of those could
- *  not be rolled back. Measures app folders, so call it when a dialog opens. */
-export const preflightUpdates = (ids: string[] = []) =>
-  api.get<Preflight>(`/api/updates/preflight${ids.length ? `?ids=${ids.map(encodeURIComponent).join(',')}` : ''}`)
 
 /** Start a run. None = every available app except system apps. */
 /** `noBackup` is accepted for exactly one app — the retry after a refusal. */

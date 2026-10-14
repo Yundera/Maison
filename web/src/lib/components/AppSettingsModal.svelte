@@ -17,6 +17,7 @@
     type AppService,
     type UpdateStatus,
     type EnvVar,
+    apps,
   } from '../stores/apps'
   import { ApiError } from '../api/client'
   import { BRAND } from '../brand'
@@ -68,7 +69,12 @@
     'stats',
   ]
   const UNMANAGED_TABS: Tab[] = ['logs', 'stats']
-  const tabs = $derived<Tab[]>(managed ? MANAGED_TABS : UNMANAGED_TABS)
+  // An app that declares `lifecycle.updatable: false` is updated by something else
+  // (its platform installer); the backend refuses its update routes, so no tab.
+  const updatable = $derived($apps.find((a) => a.id === id)?.updatable !== false)
+  const tabsFor = (isManaged: boolean, isUpdatable: boolean): Tab[] =>
+    !isManaged ? UNMANAGED_TABS : isUpdatable ? MANAGED_TABS : MANAGED_TABS.filter((t) => t !== 'update')
+  const tabs = $derived<Tab[]>(tabsFor(managed, updatable))
   const tabLabel: Record<Tab, string> = {
     tips: 'Tips',
     webui: 'Web UI',
@@ -85,7 +91,7 @@
   // default first tab.
   function firstTab(): Tab {
     const wanted = initialTab as Tab | undefined
-    const available = managed ? MANAGED_TABS : UNMANAGED_TABS
+    const available = tabsFor(managed, $apps.find((a) => a.id === id)?.updatable !== false)
     if (wanted && available.includes(wanted)) return wanted
     return managed ? 'tips' : 'logs'
   }
@@ -279,9 +285,9 @@
   let applyingUpdate = $state(false)
   let updateMsg = $state('')
   let updateChecked = $state(false) // one-shot: don't re-auto-check on error
-  // Take a rollback point before updating. On by default; unticking it is the owner's
-  // choice to update an app whose backup would not fit, or would take too long, and to
-  // give up the automatic put-back if the new version fails to start.
+  // Back the app up before updating. On by default; unticking it is the owner's choice
+  // to update an app whose backup keeps failing, and to give up the automatic restore
+  // if the new version fails to start.
   let backupFirst = $state(true)
 
   // The update source, editable: one locator — `<store>/-/<folder>/<app id>` —
@@ -347,10 +353,13 @@
     applyingUpdate = true
     updateMsg = ''
     try {
-      // A data conversion always takes a rollback point (the server refuses otherwise).
+      // A data conversion always takes a backup (the server refuses otherwise).
       const res = await applyUpdate(id, !backupFirst && !update?.migrations?.length)
+      // An update runs in the background — its backup goes to every enabled
+      // destination and can take as long as an upload does — so the tile and Settings
+      // → Updates carry its progress and its outcome.
       updateMsg = res.started
-        ? 'Started — the data is being converted. Follow it on the tile or in Settings → Updates.'
+        ? 'Started — follow it on the tile or in Settings → Updates.'
         : res.updated
           ? 'Updated & recreated.'
           : 'Already up to date.'
@@ -360,7 +369,7 @@
       updateMsg = e instanceof Error ? e.message : String(e)
       // Refused, nothing changed: the way past it is the checkbox beside the button.
       if (e instanceof ApiError && e.body?.no_rollback === true)
-        updateMsg += ' Untick "Backup" to update without a rollback point.'
+        updateMsg += ' Untick "Backup" to update without a backup.'
     } finally {
       applyingUpdate = false
     }
@@ -734,8 +743,8 @@
               <p class="hint">
                 This update converts the app's data (version {update.data_from} →
                 {update.data_to}: {update.migrations.map((m) => m.name).join(', ')}). It
-                runs in the background and may take a while; a rollback point is always
-                taken first, and the app is put back if a step fails.
+                may take a while; the app is always backed up first, and the backup is
+                restored if a step fails.
               </p>
             {/if}
             {#if refDirty && refInput && !refValid}
@@ -763,9 +772,9 @@
           </button>
           <label
             class="check"
-            title="Takes a rollback point first, so a new version that fails to start is put back automatically."
+            title="Backs the app up to your backup destinations first, so a new version that fails to start is restored automatically."
           >
-            <!-- A data conversion always takes a rollback point: unticking it would only get the update refused. -->
+            <!-- A data conversion always takes a backup: unticking it would only get the update refused. -->
             <input
               type="checkbox"
               bind:checked={backupFirst}

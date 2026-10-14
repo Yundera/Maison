@@ -41,14 +41,9 @@ export interface EngineInfo {
   can_change_secret: boolean
   /** What this engine has been told to keep, resolved for it alone. */
   retention?: EngineRetention
-  /** Whether the rollback point an update takes lands here. Always and only the local
-   *  engine: rolling back has to be a rename, and restoring from a repository is a
-   *  download the app stays broken for. Not a setting — a property of the mechanism. */
-  receives_rollback: boolean
-  /** Whether the nightly run writes here. */
-  receives_schedule: boolean
-  /** Whether an uninstall archives here. */
-  receives_uninstall: boolean
+  /** Whether backups are written here: the nightly run, the backup before an app
+   *  update, and the archive an uninstall leaves. Every enabled engine receives each. */
+  enabled: boolean
   /** When this engine last actually took a backup, and whether it is failing.
    *
    *  Per engine because the run's own verdict cannot describe a night where one
@@ -161,14 +156,13 @@ export interface EngineSettings {
   max_age_days?: number
   upload_limit_mb?: number
   unmanaged?: boolean
-  /** Which triggers this engine receives.
+  /** Whether this engine is in use.
    *
    *  Deliberately optional rather than defaulted: absent means "nobody has said", and a
    *  box that has never opened this page must keep writing where it was provisioned to
-   *  rather than reading as "no destination for anything". Writing either of them for
-   *  any engine switches the whole box off that fallback. */
-  schedule?: boolean
-  uninstall?: boolean
+   *  rather than reading as "no destination". Writing it for any engine switches the
+   *  whole box off that fallback. */
+  enabled?: boolean
   /** The image repository this engine is enabled with. Read-only here: the server keeps
    *  it whatever a PUT says, and it changes only through approve/revoke below. */
   approved?: string
@@ -267,10 +261,10 @@ export interface BackupStatus {
   run: RunState
   config: BackupConfig
   targets?: string[]
-  /** Engines ticked to archive uninstalls that are not installed on this box. With no
-   *  engine receiving uninstalls, an empty list means the app is removed without a
-   *  backup; a non-empty one means the uninstall will refuse. */
-  uninstall_missing?: string[]
+  /** Enabled engines that are not installed on this box. With no engine enabled, an
+   *  empty list means an uninstall removes the app without a backup; a non-empty one
+   *  means it will refuse. */
+  missing?: string[]
 
   /** When the schedule last ran, and whether it was failing. Absent on a box that
    *  has never run one.

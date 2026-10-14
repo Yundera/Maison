@@ -217,27 +217,27 @@
     return commit({ engines })
   }
 
-  /** Writes a trigger tick, freezing the ticks that are currently in force.
+  /** Switches one engine on or off, freezing the switches that are currently in force.
    *
    *  A box that has never been configured runs on a fallback: whichever engine it was
    *  provisioned with receives everything, with none of that written down anywhere. The
-   *  first tick anyone sets switches the box off that fallback — so writing ONLY the box
+   *  first switch anyone sets takes the box off that fallback — so writing ONLY the one
    *  that was clicked would silently turn off every engine that had been receiving
-   *  implicitly. Ticking "also keep a local copy" would have quietly stopped the offsite
-   *  backups, which is the single worst thing this page could do.
+   *  implicitly. Switching on "also keep a local copy" would have quietly stopped the
+   *  offsite backups, which is the single worst thing this page could do.
    *
-   *  So a trigger write always sends the whole picture: every engine's current effective
-   *  answer, with the click applied on top. What the checkboxes show is what gets
-   *  stored. */
-  function commitTrigger(id: string, patch: { schedule?: boolean; uninstall?: boolean }) {
+   *  So a write always sends the whole picture: every engine's current effective
+   *  answer, with the click applied on top. What the switches show is what gets stored.
+   *  The per-trigger ticks a config written before the merge may still carry are
+   *  dropped here; the server folds them the same way. */
+  function commitEnabled(id: string, on: boolean) {
     const engines = clone(conf?.engines ?? {})
     for (const e of status?.engines ?? []) {
-      const mine = e.id === id
-      engines[e.id] = {
-        ...(engines[e.id] ?? {}),
-        schedule: mine && patch.schedule !== undefined ? patch.schedule : e.receives_schedule,
-        uninstall: mine && patch.uninstall !== undefined ? patch.uninstall : e.receives_uninstall,
+      const { schedule: _s, uninstall: _u, ...rest } = (engines[e.id] ?? {}) as EngineSettings & {
+        schedule?: boolean
+        uninstall?: boolean
       }
+      engines[e.id] = { ...rest, enabled: e.id === id ? on : e.enabled }
     }
     return commit({ engines })
   }
@@ -547,7 +547,7 @@
     return (status.engines ?? []).map((e) => {
       const held = engines.find((x) => x.engine === e.id)
       const last = held ? newestIn(held) : ''
-      const receives = e.receives_schedule || e.receives_uninstall
+      const receives = e.enabled
       let level: EngineRow['level'] = 'ok'
       let note = ''
       if (!known) {
@@ -579,10 +579,10 @@
       } else if (!last) {
         level = 'warn'
         note = $t('backup_row_nothing_yet')
-      } else if (!conf?.enabled && e.receives_schedule) {
+      } else if (!conf?.enabled && e.enabled) {
         level = 'warn'
         note = $t('backup_row_manual_only')
-      } else if (conf?.paused && e.receives_schedule) {
+      } else if (conf?.paused && e.enabled) {
         level = 'warn'
         note = $t('backup_row_paused')
       }
@@ -924,42 +924,28 @@
       </div>
     </dl>
 
-    <!-- What this engine is for. Checkboxes rather than the single "default engine"
-         picker they replaced: a backup can land in several destinations at once, so
-         "which one" was never the right question — "does this one receive the nightly
-         run" is, and each engine answers it for itself.
+    <!-- Whether this engine is used. One switch rather than the single "default engine"
+         picker, and then the per-trigger ticks, it replaced: a backup lands in every
+         enabled destination, and an enabled destination takes everything — the nightly
+         run, the backup before an app update, and an uninstall's archive. The local disk
+         is a destination like the others and switches off the same way.
 
-         Ticking either of these anywhere switches the box off the setting it was
-         provisioned with, so an engine that has never been configured shows the
-         fallback it is actually running on rather than an unticked box that would read
-         as "nothing goes here". -->
+         Setting it anywhere takes the box off the setting it was provisioned with, so an
+         engine that has never been configured shows the fallback it is actually running
+         on rather than an unticked box that would read as "nothing goes here". -->
     <h4>{$t('backup_prop_receives')}</h4>
     {#if conf && activeInfo}
       <label class="check">
         <input
           type="checkbox"
-          checked={activeInfo.receives_schedule}
+          checked={activeInfo.enabled}
           disabled={busy}
-          onchange={(e) => commitTrigger(activeInfo.id, { schedule: e.currentTarget.checked })}
+          onchange={(e) => commitEnabled(activeInfo.id, e.currentTarget.checked)}
         />
-        {$t('backup_receives_schedule_label')}
+        {$t('backup_enabled_label')}
       </label>
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={activeInfo.receives_uninstall}
-          disabled={busy}
-          onchange={(e) => commitTrigger(activeInfo.id, { uninstall: e.currentTarget.checked })}
-        />
-        {$t('backup_receives_uninstall_label')}
-      </label>
-      <!-- Not a choice, and shown as a fact so it stops looking like one is missing: a
-           rollback has to be a rename, and restoring from a repository is a download the
-           app stays broken for. -->
-      {#if activeInfo.receives_rollback}
-        <p class="hint quiet at-control">{$t('backup_receives_rollback_fact')}</p>
-      {/if}
-      {#if !activeInfo.receives_schedule && !activeInfo.receives_uninstall}
+      <p class="hint quiet at-control">{$t('backup_enabled_hint')}</p>
+      {#if !activeInfo.enabled}
         <p class="note at-control">{$t('backup_receives_nothing')}</p>
       {/if}
     {/if}

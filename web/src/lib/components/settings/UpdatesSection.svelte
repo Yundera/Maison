@@ -11,8 +11,9 @@
    * reassurance, not the content.
    *
    * Confirmations open in the row that asked for them and are worded for that
-   * action. A plain update of one app asks nothing: it is backed up first and put
-   * back if it fails.
+   * action. A plain update asks nothing — of one app or of all of them: each app is
+   * backed up first and restored if its update fails, and every check is that app's
+   * own, so one app refused never holds up the others.
    *
    * The run itself is the server's. This page starts it and follows it on the
    * "updates" channel, so closing the tab does not stop it, and a second tab sees the
@@ -29,11 +30,9 @@
     loadUpdates,
     subscribeUpdates,
     checkUpdates,
-    preflightUpdates,
     runUpdates,
     type AppUpdate,
     type ImageChange,
-    type Preflight,
     type RunItem,
   } from '../../stores/updates'
 
@@ -46,11 +45,7 @@
   let busy = $state(false)
   let error = $state('')
   /** The one confirmation open on the page, and the row it belongs to. */
-  let confirm = $state<
-    | { kind: 'all'; pre: Preflight | null }
-    | { kind: 'nobackup' | 'system' | 'link'; id: string }
-    | null
-  >(null)
+  let confirm = $state<{ kind: 'nobackup' | 'system' | 'link'; id: string } | null>(null)
   let showCurrent = $state(false)
 
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -116,7 +111,10 @@
   /** Refused over the app's data (docs/migrations.md). Nothing changed, and "update
    *  without backup" is no way past any of them. */
   const DATA_REFUSED = ['data_blocked', 'data_newer', 'data_store_error', 'data_no_backup']
-  const REFUSED = new Set(['no_room', 'backup_timeout', 'backup_failed', ...DATA_REFUSED])
+  const REFUSED = new Set(['no_room', 'backup_timeout', 'backup_busy', 'backup_failed', ...DATA_REFUSED])
+  /** Refusals "update without backup" is no way past: the app's data, or a backup or
+   *  restore of the app already running (the update waits for it either way). */
+  const NO_BACKUP_DOES_NOT_HELP = [...DATA_REFUSED, 'backup_busy']
   const BROKEN = new Set(['broken', 'rollback_failed', 'not_running'])
 
   type RowState = 'queued' | 'updating' | 'updated' | 'refused' | 'rolled_back' | 'broken' | 'failed' | 'idle'
@@ -152,6 +150,8 @@
         })
       case 'backup_timeout':
         return $t('updates_why_timeout')
+      case 'backup_busy':
+        return $t('updates_why_backup_busy')
       case 'backup_failed':
         return $t('updates_why_backup_failed')
       case 'rolled_back':
@@ -287,15 +287,9 @@
       confirm = null
     })
 
-  /** Update all asks the preflight first, which names the apps whose rollback point
-   *  will not fit — they will be skipped, so the owner hears it before, not after. */
-  function askAll() {
-    confirm = { kind: 'all', pre: null }
-    act(async () => {
-      const pre = await preflightUpdates([])
-      if (confirm?.kind === 'all') confirm = { kind: 'all', pre }
-    })
-  }
+  /** Update all starts at once. Each app's checks are its own (room for its backup, a
+   *  backup of it already running), and an app refused is reported on its row while
+   *  the run moves on to the next. */
   const startAll = () =>
     act(async () => {
       await runUpdates([])
@@ -380,7 +374,9 @@
       {/if}
       {#if lv}{@render stepBar(lv.p, lv.msg)}{/if}
       {#if p && st !== 'updating' && st !== 'queued'}{@render problemNote(row, p)}{/if}
-      {#if st === 'updated' && item?.warning}<p class="explain warn">{$t('updates_done_no_backup')}</p>{/if}
+      <!-- Updated, with something to say about its backup: none taken as chosen, none
+           enabled, or a destination left out of it. The server's sentence, as is. -->
+      {#if st === 'updated' && item?.warning}<p class="explain warn">{item.warning}</p>{/if}
 
       {#if isOpen('nobackup', row.id)}
         <div class="confirm danger">
@@ -408,7 +404,7 @@
           <button disabled={busy} onclick={() => (row.stays_up ? (confirm = { kind: 'system', id: row.id }) : update(row.id))}>
             {$t('updates_retry')}
           </button>
-          {#if !DATA_REFUSED.includes(p?.reason ?? '')}
+          {#if !NO_BACKUP_DOES_NOT_HELP.includes(p?.reason ?? '')}
             <button class="warn-btn" disabled={busy} onclick={() => (confirm = { kind: 'nobackup', id: row.id })}>
               {$t('updates_no_backup_retry')}
             </button>
@@ -460,35 +456,10 @@
       </p>
       <p class="hint">{$t('updates_hint')}</p>
     </div>
-    {#if available.length >= 2 && !running && confirm?.kind !== 'all'}
-      <button class="primary" disabled={busy} onclick={askAll}>{$t('updates_update_all')}</button>
+    {#if available.length >= 2 && !running}
+      <button class="primary" disabled={busy} onclick={startAll}>{$t('updates_update_all')}</button>
     {/if}
   </div>
-
-  {#if confirm?.kind === 'all'}
-    <div class="confirm">
-      {#if confirm.pre === null}
-        <p class="muted">{$t('updates_preflight')}</p>
-      {:else}
-        <p>{tn('updates_all_confirm', confirm.pre.apps.length)}</p>
-        <p class="muted">{confirm.pre.apps.map((id) => byID.get(id)?.name ?? id).join(', ')}</p>
-        {#if confirm.pre.no_rollback?.length}
-          <p class="warn">
-            {$t('updates_no_rollback', {
-              apps: confirm.pre.no_rollback.map((id) => byID.get(id)?.name ?? id).join(', '),
-            })}
-          </p>
-        {/if}
-        <p class="muted">{$t('updates_run_hint')}</p>
-      {/if}
-      <div class="actions">
-        <button disabled={busy} onclick={() => (confirm = null)}>{$t('cancel')}</button>
-        <button class="primary" disabled={busy || confirm.pre === null} onclick={startAll}>
-          {$t('updates_start')}
-        </button>
-      </div>
-    </div>
-  {/if}
 
   {#if running && runTotal > 0}
     <div class="banner">

@@ -134,7 +134,7 @@ type UpOptions struct {
 	// and before init, the seed tree and `files`, which write create-if-absent
 	// defaults for the new layout and would otherwise take the path a migration is
 	// about to move the user's real data into. Only an update sets it — only an
-	// update has a rollback point to undo a step with.
+	// update has a backup to undo a step with.
 	Migrate *MigratePlan
 	// Progress is told about each migration step as it starts.
 	Progress MigrateProgress

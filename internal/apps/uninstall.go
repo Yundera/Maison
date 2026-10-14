@@ -17,6 +17,11 @@ import (
 // x-compose-app `lifecycle.stoppable: false` (see Registry.Stoppable).
 var ErrNotStoppable = errors.New("this app declares it cannot be stopped")
 
+// ErrNotUpdatable is returned when an update or an update-source change targets an
+// app whose compose declares x-compose-app `lifecycle.updatable: false` (see
+// Registry.Updatable): something other than Maison keeps it up to date.
+var ErrNotUpdatable = errors.New("this app declares it is not updated by Maison")
+
 // ErrNotUninstallable is returned when an uninstall targets an app whose compose
 // declares x-compose-app `lifecycle.uninstallable: false` (see Registry.Uninstallable).
 var ErrNotUninstallable = errors.New("this app declares it cannot be uninstalled")
@@ -290,25 +295,24 @@ func (r *Registry) uninstall(ctx context.Context, id string, uo *UninstallOpts, 
 		return "", nil
 	}
 
-	// Every engine configured to receive an uninstall archive, never a named one. An
-	// uninstall is not a "back this up over there" request — there is no dialog to
-	// choose in and nobody to choose — so it writes wherever the settings say uninstall
-	// archives go.
+	// Every enabled engine, never a named one. An uninstall is not a "back this up over
+	// there" request — there is no dialog to choose in and nobody to choose — so it
+	// writes wherever the settings say backups go.
 	var ps []Provider
 	if !uo.SkipBackup {
 		var err error
-		ps, err = r.enginesFor("", TriggerUninstall)
+		ps, err = r.enginesFor("")
 		switch {
 		case errors.Is(err, ErrNoBackupEngine):
-			// Nothing is set to receive uninstalls: the user switched them off.
+			// No destination is enabled: the user switched backups off.
 			uo.SkipBackup = true
 		case err != nil:
 			return "", err
-		case r.Engines != nil && len(r.Engines.Missing(TriggerUninstall)) > 0:
+		case r.Engines != nil && len(r.Engines.Missing()) > 0:
 			// Some destinations are here and one is not. Writing to the ones that are
 			// would break the all-or-nothing promise below as surely as a failed upload.
-			missing := strings.Join(r.Engines.Missing(TriggerUninstall), ", ")
-			return "", archiveHint(fmt.Errorf("uninstall backups are set to go to %s, which is not installed on this box", missing), missing)
+			missing := strings.Join(r.Engines.Missing(), ", ")
+			return "", archiveHint(fmt.Errorf("backups are set to go to %s, which is not installed on this box", missing), missing)
 		}
 	}
 	if uo.SkipBackup {

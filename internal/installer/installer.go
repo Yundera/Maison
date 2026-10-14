@@ -89,43 +89,42 @@ type Installer struct {
 	// advance live). The server is expected to throttle it. Optional.
 	OnUpdate func()
 
-	// BackupBeforeUpdate takes a rollback point before an update is applied and
-	// returns the backup's name. RollBack restores one.
+	// ReserveUpdate holds the app for the length of an update, so neither the nightly
+	// run nor a manual backup or restore stops and restarts it underneath. An error —
+	// a backup or restore of the app already running — refuses the update with
+	// NoRollbackBusy (the server wraps it in ErrBusy). Nil reserves nothing.
+	ReserveUpdate func(project string) (release func(), err error)
+
+	// BackupRoom checks, before anything else of an update happens, that some enabled
+	// backup destination can take the app's backup. A *RoomError refuses the update
+	// (NoRollbackNoRoom); any other error is left for BackupBeforeUpdate to meet. Nil
+	// skips the check.
+	BackupRoom func(ctx context.Context, project string) error
+
+	// BackupBeforeUpdate backs the app up before an update is applied, to every enabled
+	// backup destination, and returns the backup's name. RollBack restores it over the
+	// app after a failed update and brings the app back up.
 	//
 	// They are func fields rather than a *apps.Registry because the Installer holds
-	// no registry and should keep holding none — it needs two operations, not a
-	// collaborator. The server wires both, and wires them to the **local** engine
-	// specifically: a rollback has to be a rename, and restoring from a repository is
-	// a download. Nil on either disables the rollback point, which is the correct
-	// behaviour on a box with no Docker.
+	// no registry and should keep holding none — it needs the operations, not a
+	// collaborator. Nil on either disables the backup, which is the correct behaviour
+	// on a box with no Docker.
 	//
-	// RollBack also brings the app back up. A failed update has usually left the app
-	// stopped (see StopBeforeUpdate), so putting the files back is not the whole of it,
-	// and an app that does not start again is a rollback that did not work.
+	// name "" with a nil error is no backup by design — the app declares backup.skip,
+	// or the owner has no destination enabled — and warning says why, or that a
+	// destination was left out of this one backup. An error refuses the update.
 	//
-	// RollBack returns the name of the archive it made of what the failed update left
-	// behind ("" for none). See DiscardLeftover.
+	// RollBack restores over the app and keeps nothing of the failed state. A failed
+	// update has usually left the app stopped (see StopBeforeUpdate), so putting the
+	// files back is not the whole of it, and an app that does not start again is a
+	// rollback that did not work.
 	//
-	// report, called as the copy moves, feeds the tile's progress bar during the
+	// report, called as the backup moves, feeds the tile's progress bar during the
 	// backup phase (Pct, byte counts, rate, ETA); Phase is set by the caller.
-	BackupBeforeUpdate func(ctx context.Context, project string, report func(UpdateState)) (string, error)
-	RollBack           func(ctx context.Context, project, name string) (leftover string, err error)
+	BackupBeforeUpdate func(ctx context.Context, project string, report func(UpdateState)) (name, warning string, err error)
+	RollBack           func(ctx context.Context, project, name string) error
 
-	// DiscardLeftover deletes the archive RollBack made of the failed update's state,
-	// once VerifyRunning has confirmed the put-back version stays up. That archive is
-	// the evidence of what failed while the app is down, and dead weight once it runs:
-	// nothing ever offers it, and kept forever it pins the app's disk use at two copies
-	// (a 110 GB one filled watch.nsl.sh's disk a week after a failed update, 2026-10).
-	// It is kept when the app does not come back. Nil keeps it.
-	DiscardLeftover func(ctx context.Context, project, name string) error
-
-	// RollbackRoom checks, before anything else of an update happens, that the
-	// rollback point BackupBeforeUpdate would take fits on its disk. A non-nil error
-	// refuses the update (ErrNoRollback). Nil skips the check; the copy itself then
-	// fails on ENOSPC, which also refuses the update, just later.
-	RollbackRoom func(ctx context.Context, project string) error
-
-	// StopBeforeUpdate stops the app's containers once the rollback point is taken and
+	// StopBeforeUpdate stops the app's containers once the backup is taken and
 	// before the new version is converged. The new version's pre_up init steps run
 	// against the app's data, and the old containers still have it open: a database that
 	// takes an exclusive lock fails every such step, and the update is rolled back for

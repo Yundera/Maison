@@ -319,10 +319,21 @@ never been backed up" rather than as a bug. `Set.Locate` — the engine-less for
 picker used to justify — is now the compatibility path for a request that names no
 engine, and nothing in the UI produces one.
 
-**One write deliberately stays local**, and is an exception rather than an oversight:
-the update rollback point (`BackupWith`). It needs a rename it can undo in seconds, and
-a repository upload is not that. The local engine's own retention prunes it like any
-other local archive — see [Retention](#retention).
+**Every write goes to the enabled engines**, the update's backup included. It used to
+be the exception — an update's "rollback point" was always a full copy on the local
+disk, so it could be undone by a rename — and that is what refused a 92 GiB immich on a
+box backing up to Backblaze B2 with 60 GiB free (mestio, 2026-10-14). The update's
+backup now goes wherever the nightly does; a failed update is undone by restoring it
+over the app from whichever destination holds it, local first. See
+[`lifecycle.md`](./lifecycle.md) › Update.
+
+**One switch per engine.** Each engine is either in use or not
+(`backupconfig.EngineSettings.Enabled`, *Use this destination* in Settings › Backups);
+an engine in use receives the nightly run, the backup before an update and an
+uninstall's archive. It replaced per-trigger ticks (`schedule`, `uninstall`), which a
+`backup.json` written before may still carry: an engine ticked for either reads as
+enabled, one with both off as disabled, and the next save stores `enabled` alone
+(`backupconfig.FoldTriggers`). The local engine switches off like any other.
 
 Archive-on-uninstall used to be listed here as the second exception. It is not one, and
 treating it as one was the mistake this document made: an uninstall archive that only
@@ -398,7 +409,7 @@ Two things keep that from being noisy:
 The local engine is in-process Go and always present. A box with no adapter image, no
 engine container and no repository is not a degraded box — it is the default FOSS install,
 and it must raise nothing. Everything above is conditional on an engine having been
-provisioned and being ticked to receive a trigger.
+provisioned and enabled.
 
 ### The adapter image is provisioned, and approved before it runs
 
@@ -603,10 +614,11 @@ Three consequences worth stating plainly:
   the old behaviour: a failed metashare update on watch.nsl.sh (2026-10-04) filed its
   110 GB cache away as "the state it replaced", the app refilled its cache, and the disk
   was full a week later with nothing in the UI pointing at the archive.
-- **A failed update's leftover is discarded once the rollback is confirmed.** The
-  update path's rollback is that same swap. Its archive is the failed update's state,
-  kept as evidence while the put-back version is down; once `VerifyRunning` says it
-  stays up, the installer deletes it (`DiscardLeftover`), since nothing ever offers it.
+- **A failed update keeps nothing.** Its rollback (`Registry.RestoreOver`) is not
+  that swap: the failed state is renamed into the trash rather than archived, or
+  overwritten in place by a repository engine — no undo snapshot, no leftover. It was
+  kept as an archive until 2026-10, and was a second full copy of the app on the disk
+  for nobody.
 
 Kopia has no per-run ignore flag, so the rules are policy on the source path, written
 by `EnsureIgnore` before the **live** pass — never inside the app's downtime — and
@@ -624,9 +636,9 @@ nothing. The merge already works — an override's `x-compose-app` block wins ke
 `backup.skip: true` is the whole-app form of the same declaration: there is nothing in
 this folder worth keeping. The app is not a target for the nightly run
 (`Scheduler.skip`), a backup of it by hand is refused (`apps.ErrBackupSkipped`, `403`),
-and the update rollback point is not taken — the update proceeds with no way back,
-which is the same state as a box whose local engine has no archive yet, and it says so
-in the log rather than raising the disk-space incident a genuine failure would.
+and the update takes no backup — it proceeds with no way back, which is the same state
+as a box with no destination enabled, and it says so in the log rather than raising the
+incident a genuine failure would.
 
 **Restore is deliberately not gated**, because a declaration is not retroactive: an
 app can be marked skipped while backups taken before it still exist, and those stay
@@ -717,15 +729,15 @@ Settings → Backups and retry.
 An engine's directory is `AppData/<engine>/engine` — inside the engine app's own folder — so
 uninstalling a store-installed engine takes its repository configuration and password with it.
 The uninstall dialog says so and asks for an explicit acknowledgement. The engine stays listed
-afterwards (engines are never removed from the set), its reads fail, and any trigger still
-ticked for it raises `backup.missing`.
+afterwards (engines are never removed from the set), its reads fail, and if it is still
+enabled it raises `backup.missing`.
 
 ### Removing without a backup
 
 Two cases skip the backup and **delete** the app folder after removing the containers:
 
-- **No engine is ticked to receive uninstalls** (`ErrNoBackupEngine` from `enginesFor`).
-  That is the user switching uninstall backups off, and refusing would hold every app on
+- **No engine is enabled** (`ErrNoBackupEngine` from `enginesFor`).
+  That is the user switching backups off, and refusing would hold every app on
   the box hostage to a setting they chose. The uninstall dialog says the data will be
   deleted before it is confirmed.
 - **The user asks for it**: `DELETE /api/apps/<id>?backup=false`, offered only as
@@ -733,7 +745,7 @@ Two cases skip the backup and **delete** the app folder after removing the conta
   second confirmation. It is the way past a failing backup when the data is not worth
   fixing the engine for — never something the uninstall falls back to on its own.
 
-An engine ticked for uninstalls that is **not installed** on the box is neither case: it
+An engine enabled that is **not installed** on the box is neither case: it
 is a failing destination, and the uninstall refuses, whether it is the only one or sits
 beside engines that work (all or nothing, as above). `Set.Missing` carries those engines,
 since `SetWriters` refuses unknown IDs and an empty writer set alone cannot tell "off"
@@ -820,8 +832,8 @@ one of the four numbers that did anything, sitting next to three that were inert
 
 **Nothing can empty the local directory.** `retention.Plan` keeps the newest backup
 whatever the policy says, which is what the old "keep 0 local, but only once another
-engine has actually listed the backup" path existed to guarantee. That guarantee matters
-most for the update rollback point, which is always local and has nowhere else to be.
+engine has actually listed the backup" path existed to guarantee. A box that wants no
+local copies switches the local engine off instead.
 
 Delegating remote retention is clean for kopia. An engine whose policy model differs
 means Maison expresses the *intent* through the provider interface rather than
@@ -1342,8 +1354,8 @@ container, which does what `ensure-backup-config.sh` does on a managed PCS: it r
 3. Maison notices the descriptor on the next container event (or the detector pass, or the
    Look for backup engines button) and lists the engine as waiting, with a
    `backup.approval:<id>` warning.
-4. Enable it in Settings › Backups, tick what it receives, and keep a copy of the repository
-   password.
+4. Enable it in Settings › Backups, switch on *Use this destination*, and keep a copy of the
+   repository password.
 
 The store app is for boxes **without** a platform-provisioned kopia. Maison refuses a store
 install over a folder whose compose declares `lifecycle.uninstallable: false` — the managed

@@ -122,7 +122,7 @@ type App struct {
 	Hooks   Hooks    `yaml:"hooks,omitempty"`
 
 	// Lifecycle is what the app allows the operator to do to it: whether Maison
-	// may stop it, and whether it may uninstall it. Both default to yes.
+	// may stop it, uninstall it, and update it. All three default to yes.
 	//
 	// It is the app's own declaration, like Backup.Skip — and like it, separate
 	// from View, which only picks the grid. See LifecycleSpec.
@@ -549,9 +549,16 @@ func (b *BackupSpec) UnmarshalYAML(n *yaml.Node) error {
 // Uninstallable false is for an app the box cannot do without. Maison refuses
 // Uninstall, and the cleanup sweep never counts its containers as orphans.
 //
-// Both default to true, which is the opposite polarity to Backup.Skip and safe for
-// the opposite reason: a build that predates this field ignores a `false` and offers
-// Stop and Uninstall, which is the ordinary behaviour of every app. Platform stacks
+// Updatable false is for an app something else keeps up to date — a platform
+// stack its installer pins and upgrades. Maison leaves it out of the update system
+// altogether: no row on the Updates page (not even "not linked to a store"), no
+// Update tab, and the update and update-source routes refuse it. Its version is
+// its deployer's business, and offering to "link" it to a look-alike store app
+// would replace it in place on the next update.
+//
+// All three default to true, which is the opposite polarity to Backup.Skip and safe for
+// the opposite reason: a build that predates a field ignores a `false` and offers
+// Stop, Uninstall or Update, which is the ordinary behaviour of every app. Platform stacks
 // that must stay guarded on such a build also keep `view: system`, from which those
 // builds derived the same guard.
 //
@@ -561,10 +568,11 @@ func (b *BackupSpec) UnmarshalYAML(n *yaml.Node) error {
 // declares it at all is a store-review question, not something Maison polices.
 //
 // Pointers, because "unset" must read as true and a bool's zero value cannot say so.
-// Read them through CanStop and CanUninstall, never directly.
+// Read them through CanStop, CanUninstall and CanUpdate, never directly.
 type LifecycleSpec struct {
 	Stoppable     *bool `yaml:"stoppable,omitempty"`
 	Uninstallable *bool `yaml:"uninstallable,omitempty"`
+	Updatable     *bool `yaml:"updatable,omitempty"`
 }
 
 // CanStop reports whether the app allows Maison to stop it. True unless declared false.
@@ -573,6 +581,10 @@ func (l LifecycleSpec) CanStop() bool { return l.Stoppable == nil || *l.Stoppabl
 // CanUninstall reports whether the app allows Maison to uninstall it. True unless
 // declared false.
 func (l LifecycleSpec) CanUninstall() bool { return l.Uninstallable == nil || *l.Uninstallable }
+
+// CanUpdate reports whether the app allows Maison to update it. True unless
+// declared false.
+func (l LifecycleSpec) CanUpdate() bool { return l.Updatable == nil || *l.Updatable }
 
 // Folder is a directory Maison creates (and takes ownership of) before it
 // brings the stack up, so an app that drops privileges can write to its bind

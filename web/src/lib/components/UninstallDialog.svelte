@@ -44,15 +44,15 @@
     .then((s) => {
       isEngine = (s.engines ?? []).some((e) => e.id === target.id)
       receivers = (s.engines ?? [])
-        .filter((e) => e.receives_uninstall)
+        .filter((e) => e.enabled)
         .map((e) => ({ id: e.id, label: engineLabel(e.id, e.name, (k) => $t(k)), offsite: e.offsite }))
-      missing = s.uninstall_missing ?? []
+      missing = s.missing ?? []
       loaded = true
     })
     .catch(() => {})
 
   const engineName = $derived(receivers.map((e) => e.label).join(' and '))
-  /** No engine receives uninstalls and none is missing: this uninstall deletes. */
+  /** No engine is enabled and none is missing: this uninstall deletes. */
   const noBackup = $derived(loaded && receivers.length === 0 && missing.length === 0)
   const onlyLocal = $derived(receivers.length > 0 && receivers.every((e) => !e.offsite))
 

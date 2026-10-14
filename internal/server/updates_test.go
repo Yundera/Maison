@@ -144,7 +144,6 @@ func TestUpdatesRoutesAreReachable(t *testing.T) {
 	h := New(config.Config{DataRoot: t.TempDir()}, fstest.MapFS{})
 	for _, c := range []struct{ method, path string }{
 		{http.MethodPost, "/api/updates/run"},
-		{http.MethodGet, "/api/updates/preflight?ids=nope"},
 	} {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader(`{}`))
 		rec := httptest.NewRecorder()
@@ -157,7 +156,7 @@ func TestUpdatesRoutesAreReachable(t *testing.T) {
 	}
 }
 
-// Skipping the rollback point is chosen per app, after that app was refused. A run of
+// Skipping the backup is chosen per app, after that app was refused. A run of
 // several — or "update all" — cannot ask for it.
 func TestNoBackupRunNeedsExactlyOneApp(t *testing.T) {
 	s := &Server{}

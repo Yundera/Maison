@@ -103,24 +103,29 @@ type EngineSettings struct {
 	// MaxAgeDays is read only under ModeAge.
 	MaxAgeDays int `json:"max_age_days,omitempty"`
 
-	// Schedule and Uninstall are the triggers this engine receives: does the nightly
-	// run write here, and does an uninstall archive here.
+	// Enabled says whether this engine is in use: an enabled engine receives
+	// everything a backup is taken for — the nightly run, the backup before an app
+	// update, and the archive an uninstall leaves behind — and several can be enabled
+	// at once, each written to. The local engine is one of them and is switched on and
+	// off like any other.
 	//
-	// They are what replaced the single "default engine". Engines are independent
-	// repositories — Set.List has always said so — and the last thing tying them
-	// together was that exactly one of them could be written to. A backup can now land
-	// in several at once, and each engine says for itself what it is for.
+	// It replaced two per-trigger ticks (schedule, uninstall), and before them a single
+	// "default engine". A destination is either one the owner uses or one they do not:
+	// keeping it for uninstalls but not for nightlies was a distinction nobody needed,
+	// and the update backup — always the local disk before — made a third.
 	//
-	// POINTERS, because the three states are all real and all different: on, off, and
+	// A POINTER, because the three states are all real and all different: on, off, and
 	// "nobody has said". A box that has never opened the settings page must keep
 	// writing wherever it was provisioned to, and that is the third state — see
-	// engineTriggers in the server, which is where the fallback lives. A plain bool
+	// applyEngineSettings in the server, which is where the fallback lives. A plain bool
 	// would make every unconfigured box read as "off", which is a box that silently
 	// stops backing up.
-	//
-	// The update rollback point is deliberately not here. It is always the local
-	// engine because rolling back has to be a rename, which is a property of the
-	// mechanism rather than a preference — see server.BackupBeforeUpdate.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Schedule and Uninstall are the two ticks Enabled replaced, still read so a
+	// backup.json written before the merge keeps its meaning: an engine ticked for
+	// either is enabled, one with both stated off is not (see enabled). Never written —
+	// any change made through the settings page writes Enabled and clears these.
 	Schedule  *bool `json:"schedule,omitempty"`
 	Uninstall *bool `json:"uninstall,omitempty"`
 
@@ -151,6 +156,36 @@ type EngineSettings struct {
 	// which first checks that the descriptor's container belongs to the engine's own app
 	// and runs the image it names (see handleApproveEngine).
 	Approved string `json:"approved,omitempty"`
+}
+
+// enabled is this layer's answer to "is the engine in use", nil when it has none:
+// Enabled when stated, else what the legacy per-trigger ticks add up to.
+func (s EngineSettings) enabled() *bool {
+	if s.Enabled != nil {
+		return s.Enabled
+	}
+	if s.Schedule == nil && s.Uninstall == nil {
+		return nil
+	}
+	on := (s.Schedule != nil && *s.Schedule) || (s.Uninstall != nil && *s.Uninstall)
+	return &on
+}
+
+// FoldTriggers rewrites every engine entry's legacy per-trigger ticks into Enabled
+// and clears them, so a config written from here on states the one switch. An entry
+// that already states Enabled keeps it; the ticks are dropped either way.
+func FoldTriggers(c Config) Config {
+	if len(c.Engines) == 0 {
+		return c
+	}
+	out := make(map[string]EngineSettings, len(c.Engines))
+	for id, es := range c.Engines {
+		es.Enabled = es.enabled()
+		es.Schedule, es.Uninstall = nil, nil
+		out[id] = es
+	}
+	c.Engines = out
+	return c
 }
 
 // Provisioned is the deployment's side of the settings — what the host-side
@@ -191,19 +226,18 @@ type Resolved struct {
 	UploadLimitMB int
 	Unmanaged     bool
 
-	// Schedule and Uninstall are the triggers this engine receives, and Stated is
-	// whether anyone actually decided them.
+	// Enabled is whether this engine is in use, and Stated is whether anyone actually
+	// decided it.
 	//
-	// Stated is the whole point of resolving them here rather than reading the
-	// pointers directly: false means no layer has an opinion about this engine, and
-	// the caller must fall back to the engine the box was provisioned with instead of
-	// treating the zero value as "receives nothing". That fallback needs to know which
-	// engine that is, which this package deliberately does not.
-	Schedule  bool
-	Uninstall bool
-	Stated    bool
+	// Stated is the whole point of resolving it here rather than reading the pointer
+	// directly: false means no layer has an opinion about this engine, and the caller
+	// must fall back to the engine the box was provisioned with instead of treating the
+	// zero value as "not in use". That fallback needs to know which engine that is,
+	// which this package deliberately does not.
+	Enabled bool
+	Stated  bool
 
-	// Source is where Mode came from. UploadLimitMB, Unmanaged and the triggers are
+	// Source is where Mode came from. UploadLimitMB, Unmanaged and Enabled are
 	// resolved separately and may come from a different layer; the UI labels the
 	// retention block, which is the part a user can be surprised by.
 	Source Source
@@ -287,19 +321,9 @@ func (c Config) Effective(engineID string, prov Provisioned) Resolved {
 		out.Keep = Keep{Latest: out.Count}
 	}
 
-	// Each trigger resolves on its own, most specific layer that states it. They do not
-	// travel together the way the retention block does: "back this engine up nightly"
-	// and "archive uninstalls here" are unrelated answers, and a deployment that pins
-	// one must not thereby decide the other.
 	for _, l := range layers {
-		if l.s.Schedule != nil {
-			out.Schedule, out.Stated = *l.s.Schedule, true
-			break
-		}
-	}
-	for _, l := range layers {
-		if l.s.Uninstall != nil {
-			out.Uninstall, out.Stated = *l.s.Uninstall, true
+		if on := l.s.enabled(); on != nil {
+			out.Enabled, out.Stated = *on, true
 			break
 		}
 	}

@@ -114,7 +114,7 @@ app with no reference at all can be given one this way, including one Maison mer
 discovered. What that buys is real and so is the risk: the next update overwrites the
 app's `docker-compose.yml` with whatever the new reference names, so pointing an app at a
 *different app* replaces it in place, over its existing volumes. The update takes a
-rollback point first (see [`lifecycle.md`](./lifecycle.md)), which bounds the damage but
+backup first (see [`lifecycle.md`](./lifecycle.md)), which bounds the damage but
 does not undo the choice.
 
 Settings → Updates lists the apps with no reference together, and offers each the store

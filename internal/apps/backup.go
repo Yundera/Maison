@@ -25,8 +25,8 @@ import (
 //
 // A refusal rather than a silent success, because the two callers it reaches want
 // different things and both are better served by being told: the button in the
-// Backups tab should say why, and the update rollback point should record that it has
-// none rather than believe it took one.
+// Backups tab should say why, and the update's backup should record that it has none
+// rather than believe it took one.
 //
 // It does NOT block a restore. An app can be marked skipped while backups taken
 // before the declaration still exist, and those stay restorable.
@@ -275,10 +275,10 @@ func (r *Registry) EstimateBackup(id, engine string, zip bool) (Estimate, error)
 	// Over the WHOLE SET this backup will be written to, not one engine of it. A
 	// backup that goes to a repository *and* the local disk still needs the room the
 	// local copy takes, and asking only the first engine gets this exactly backwards:
-	// on a repository-default box with local also ticked, the estimate would report
+	// on a box with a repository and local both enabled, the estimate would report
 	// "streamed", skip the guard, and let the local mirror fill the data disk — which
 	// does not merely fail the backup, it fails every app still writing to that disk.
-	targets, err := r.enginesFor(engine, TriggerSchedule)
+	targets, err := r.enginesFor(engine)
 	if err != nil {
 		return Estimate{}, err
 	}
@@ -393,6 +393,10 @@ func (r *Registry) StartRestore(ctx context.Context, id, engine, name string) er
 	}
 
 	r.mu.Lock()
+	if r.updating[id] {
+		r.mu.Unlock()
+		return ErrUpdating
+	}
 	if st := r.backups[id]; st != nil && st.Phase != PhaseError {
 		r.mu.Unlock()
 		return nil
@@ -502,10 +506,14 @@ func (r *Registry) BackupTracked(ctx context.Context, id, engine string, zip boo
 var ErrBackupInFlight = errors.New("a backup of this app is already running")
 
 // beginBackup claims the tracking slot for an app, or reports that something else
-// already has it.
+// already has it — another backup, or an update (ReserveUpdate), which the nightly
+// run reads as "skipped" like any backup already running.
 func (r *Registry) beginBackup(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.updating[id] {
+		return fmt.Errorf("%s: %w (%w)", id, ErrBackupInFlight, ErrUpdating)
+	}
 	if st := r.backups[id]; st != nil && st.Phase != PhaseError {
 		return fmt.Errorf("%s: %w", id, ErrBackupInFlight)
 	}
@@ -571,7 +579,7 @@ func (r *Registry) ClearBackup(id string) {
 // The restart is deferred, so a failure anywhere after the stop still brings the
 // app back up. Leaving an app down is a worse outcome than a missing backup.
 func (r *Registry) Backup(ctx context.Context, id, engine string, zip bool, emit func(BackupEvent)) ([]Result, error) {
-	ps, err := r.enginesFor(engine, TriggerSchedule)
+	ps, err := r.enginesFor(engine)
 	if err != nil {
 		return nil, err
 	}
@@ -588,25 +596,6 @@ type Result struct {
 	Engine string
 	Name   string
 	Err    error
-}
-
-// BackupWith runs a backup through one named engine and returns the single name it
-// produced.
-//
-// It exists for the update path, which needs a rollback point it can restore by
-// *rename*: an update is undone in the seconds after it broke something, and a
-// download is not that. It keeps the narrow signature deliberately — that caller hands
-// the name it gets straight to RollBack, and there is exactly one engine involved, so
-// widening it would make every caller unpack a slice to find the one row it wanted.
-func (r *Registry) BackupWith(ctx context.Context, p Provider, id string, zip bool, emit func(BackupEvent)) (string, error) {
-	res, err := r.BackupTo(ctx, []Provider{p}, id, zip, emit)
-	if err != nil {
-		return "", err
-	}
-	if len(res) != 1 {
-		return "", fmt.Errorf("backup %s: expected one result, got %d", id, len(res))
-	}
-	return res[0].Name, res[0].Err
 }
 
 // BackupTo backs one app up to every engine given, inside a SINGLE stop window.
@@ -645,7 +634,7 @@ func (r *Registry) BackupTo(ctx context.Context, ps []Provider, id string, zip b
 	}
 	// THE ONE GATE FOR THE WHOLE MANUAL SIDE, and it is here rather than at the HTTP
 	// handler because this is where every caller funnels: StartBackup for the button,
-	// and BackupWith for the update rollback point — which reaches every app with an
+	// and the server's update backup — which reaches every app with an
 	// update, and takes its own stop/start regardless of installer.StopBeforeUpdate
 	// skipping the stop for an app that declares itself not stoppable.
 	//
@@ -908,8 +897,8 @@ func (r *Registry) engineFor(id string) (Provider, error) {
 
 // enginesFor resolves where a backup should be written.
 //
-// An empty ID means "wherever this trigger is configured to go", which is a set and
-// may be several engines — the nightly run and an uninstall both take this path,
+// An empty ID means "every enabled engine", which is a set and may be several — the
+// nightly run, the backup before an update and an uninstall all take this path,
 // because nobody is there to pick. A named ID narrows THIS ONE operation to that
 // engine: "keep a local copy of this app too", or "push this one offsite now".
 //
@@ -922,7 +911,7 @@ func (r *Registry) engineFor(id string) (Provider, error) {
 // returns success is the worst failure this package can produce: the scheduler would
 // record a healthy run, the incident register would stay quiet, and the box would look
 // backed up while nothing had been written.
-func (r *Registry) enginesFor(id string, t Trigger) ([]Provider, error) {
+func (r *Registry) enginesFor(id string) ([]Provider, error) {
 	if id != "" {
 		p, err := r.engineFor(id)
 		if err != nil {
@@ -933,7 +922,7 @@ func (r *Registry) enginesFor(id string, t Trigger) ([]Provider, error) {
 	if r.Engines == nil {
 		return []Provider{NewLocalProvider(r.cfg)}, nil
 	}
-	ps := r.Engines.Writers(t)
+	ps := r.Engines.Writers()
 	// Deduped by ID rather than trusted: the set is assembled from configuration, and
 	// one engine listed twice would take two passes over the same folder and race its
 	// own staging directory.
@@ -947,19 +936,19 @@ func (r *Registry) enginesFor(id string, t Trigger) ([]Provider, error) {
 		out = append(out, p)
 	}
 	if len(out) == 0 {
-		if missing := r.Engines.Missing(t); len(missing) > 0 {
-			return nil, fmt.Errorf("%s backups are set to go to %s, which is not installed on this box", t, strings.Join(missing, ", "))
+		if missing := r.Engines.Missing(); len(missing) > 0 {
+			return nil, fmt.Errorf("backups are set to go to %s, which is not installed on this box", strings.Join(missing, ", "))
 		}
-		return nil, fmt.Errorf("%w %s backups — choose one in Settings, Backups", ErrNoBackupEngine, t)
+		return nil, fmt.Errorf("%w — enable one in Settings, Backups", ErrNoBackupEngine)
 	}
 	return out, nil
 }
 
-// ErrNoBackupEngine is enginesFor's answer when nothing at all is configured to receive
-// a trigger — not one engine failing, but none asked for. A backup refuses on it; an
-// uninstall reads it as the user having switched uninstall backups off, and removes the
-// app without one (see Registry.Uninstall).
-var ErrNoBackupEngine = errors.New("no backup engine is set to receive")
+// ErrNoBackupEngine is enginesFor's answer when no destination is enabled at all — not
+// one engine failing, but none asked for. A backup refuses on it; an uninstall and an
+// update read it as the user having switched backups off, and go ahead without one
+// (see Registry.Uninstall, server.BackupBeforeUpdate).
+var ErrNoBackupEngine = errors.New("no backup destination is enabled")
 
 // locate finds the engine that holds a backup and the backup itself.
 //
@@ -999,15 +988,6 @@ func (r *Registry) locate(ctx context.Context, id, engine, name string) (Provide
 func (r *Registry) Restore(ctx context.Context, id, engine, name string, emit func(BackupEvent)) error {
 	_, err := r.restore(ctx, id, engine, name, emit)
 	return err
-}
-
-// RestoreForRollback is Restore from the local engine for a failed update, and also
-// returns the name of the archive the swap made of the state it replaced — what the
-// failed update left behind — so the caller can discard it once the put-back version
-// is confirmed running. "" when the restore made no archive (no live folder, or a
-// path that does not archive by rename).
-func (r *Registry) RestoreForRollback(ctx context.Context, id, name string) (string, error) {
-	return r.restore(ctx, id, "", name, nil)
 }
 
 func (r *Registry) restore(ctx context.Context, id, engine, name string, emit func(BackupEvent)) (string, error) {

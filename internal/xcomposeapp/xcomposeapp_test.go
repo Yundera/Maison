@@ -297,6 +297,34 @@ func TestParseLifecycle(t *testing.T) {
 	}
 }
 
+// updatable is independent of the other two, and defaults to true like them.
+func TestParseLifecycleUpdatable(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block map[string]any
+		want  bool
+	}{
+		{"absent", map[string]any{"schema_version": 2}, true},
+		{"empty block", map[string]any{"schema_version": 2, "lifecycle": map[string]any{}}, true},
+		{"stop and uninstall locked", map[string]any{"schema_version": 2, "lifecycle": map[string]any{"stoppable": false, "uninstallable": false}}, true},
+		{"declared false", map[string]any{"schema_version": 2, "lifecycle": map[string]any{"updatable": false}}, false},
+		{"explicit true", map[string]any{"schema_version": 2, "lifecycle": map[string]any{"updatable": true}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Parse(tc.block)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := a.Lifecycle.CanUpdate(); got != tc.want {
+				t.Errorf("CanUpdate = %v, want %v", got, tc.want)
+			}
+			if !a.Lifecycle.CanStop() && tc.name == "declared false" {
+				t.Errorf("updatable: false must not restrict Stop")
+			}
+		})
+	}
+}
+
 func TestParseCredentials(t *testing.T) {
 	a, err := Parse(map[string]any{
 		"schema_version": 2,

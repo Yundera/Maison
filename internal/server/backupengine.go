@@ -126,46 +126,41 @@ func applyEngineSettings(set *backup.Set, store *backupconfig.Store) {
 	}
 
 	if stated {
-		receives := func(id string, t apps.Trigger) bool {
-			r := conf.Effective(id, backupconfig.Provisioned{})
-			return (t == apps.TriggerSchedule && r.Schedule) || (t == apps.TriggerUninstall && r.Uninstall)
+		enabled := func(id string) bool {
+			return conf.Effective(id, backupconfig.Provisioned{}).Enabled
 		}
-		for _, t := range apps.Triggers {
-			var ids []string
-			for _, id := range set.IDs() {
-				if receives(id, t) {
-					ids = append(ids, id)
-				}
+		var ids []string
+		for _, id := range set.IDs() {
+			if enabled(id) {
+				ids = append(ids, id)
 			}
-			// A ticked engine the owner has not enabled cannot be written to, and is
-			// missing in the same sense as one the box does not have.
-			ids, missing := usableWriters(set, ids)
-			if err := set.SetWriters(t, ids); err != nil {
-				log.Printf("backup: %v", err)
-			}
-			// An engine ticked for this trigger that the box does not have. It cannot be a
-			// writer, but it must not vanish either: an uninstall with no writers and
-			// nothing missing goes ahead without a backup, and one whose only destination
-			// is missing has to refuse like any other failing backup.
-			for id := range conf.Engines {
-				if _, ok := set.Get(id); !ok && receives(id, t) {
-					missing = append(missing, id)
-				}
-			}
-			sort.Strings(missing)
-			set.SetMissing(t, missing)
 		}
+		// An enabled engine the owner has not approved cannot be written to, and is
+		// missing in the same sense as one the box does not have.
+		ids, missing := usableWriters(set, ids)
+		if err := set.SetWriters(ids); err != nil {
+			log.Printf("backup: %v", err)
+		}
+		// An engine enabled that the box does not have. It cannot be a writer, but it
+		// must not vanish either: an uninstall with no writers and nothing missing goes
+		// ahead without a backup, and one whose only destination is missing has to
+		// refuse like any other failing backup.
+		for id := range conf.Engines {
+			if _, ok := set.Get(id); !ok && enabled(id) {
+				missing = append(missing, id)
+			}
+		}
+		sort.Strings(missing)
+		set.SetMissing(missing)
 		return
 	}
 
 	// The legacy single writer is never empty and falls back to the local engine when
 	// the chosen one is gone, so nothing is ever missing on this path.
-	for _, t := range apps.Triggers {
-		if err := set.SetWriters(t, []string{legacyWriter(set, conf)}); err != nil {
-			log.Printf("backup: %v", err)
-		}
-		set.SetMissing(t, nil)
+	if err := set.SetWriters([]string{legacyWriter(set, conf)}); err != nil {
+		log.Printf("backup: %v", err)
 	}
+	set.SetMissing(nil)
 }
 
 // legacyWriter is the single engine a box wrote everything to before engines could be
@@ -244,11 +239,11 @@ type engineStatus struct {
 	Config  backupconfig.Config `json:"config"`
 	Targets []string            `json:"targets"`
 
-	// UninstallMissing is every engine ticked to archive uninstalls that this box does
-	// not have. The uninstall dialog needs it to tell "no engine receives uninstalls"
-	// (the app is removed without a backup) from "the one that does is gone" (the
-	// uninstall will refuse) — engines[] cannot say, it lists only installed engines.
-	UninstallMissing []string `json:"uninstall_missing,omitempty"`
+	// Missing is every enabled engine this box does not have. The uninstall dialog
+	// needs it to tell "no destination is enabled" (the app is removed without a
+	// backup) from "the one that is enabled is gone" (the uninstall will refuse) —
+	// engines[] cannot say, it lists only installed engines.
+	Missing []string `json:"missing,omitempty"`
 
 	// LastRun and NextRun are the two facts the settings page leads with, and neither
 	// can be derived from Run above: RunState is in memory, is wiped at the start of
@@ -338,11 +333,10 @@ type engineInfo struct {
 	// Retention is what this engine has been told to keep, resolved for it alone.
 	Retention *retentionView `json:"retention,omitempty"`
 
-	// ReceivesSchedule and ReceivesUninstall are the triggers this engine is set to
-	// receive. They replaced a single box-wide "default engine": a backup can land in
-	// several engines at once, and each says for itself what it is for.
-	ReceivesSchedule  bool `json:"receives_schedule"`
-	ReceivesUninstall bool `json:"receives_uninstall"`
+	// Enabled is whether backups are written here: the nightly run, the backup before
+	// an app update and the archive an uninstall leaves. It replaced a single box-wide
+	// "default engine", then per-trigger ticks: a backup lands in every enabled engine.
+	Enabled bool `json:"enabled"`
 
 	// LastRun is when this engine last actually took a backup, and whether it is
 	// failing. Per engine because the run's own verdict cannot describe a night where
@@ -361,15 +355,6 @@ type engineInfo struct {
 	// RecoveryHelpURL is where a user without the key can start over, when the
 	// deployment offers such a place. Absent, the page offers no link.
 	RecoveryHelpURL string `json:"recovery_help_url,omitempty"`
-
-	// ReceivesRollback is whether the rollback point an update takes lands here.
-	//
-	// It is always and only the local engine (server.go wires BackupBeforeUpdate to a
-	// local provider explicitly, whatever the chosen engine is) because rolling back
-	// has to be a rename: restoring from a repository is a download, and the app would
-	// be broken for its duration. Sent as a fact rather than inferred from a capability
-	// because that is what it is — a hardcoded wiring the page should be able to state.
-	ReceivesRollback bool `json:"receives_rollback"`
 
 	// NeedsApproval is an engine an installed app brought and the owner has not enabled;
 	// Image is what enabling it would approve. Approved is the image repository it is
@@ -390,13 +375,13 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		Chosen: conf.Engine,
 		Config: conf,
 	}
-	// The first engine the schedule writes to, kept because the page still wants one
-	// engine to open its tabs on and to mark. It is no longer "the" destination —
-	// engineInfo.Receives* below is what actually says where a backup goes.
-	if w := s.engines.Writers(apps.TriggerSchedule); len(w) > 0 {
+	// The first enabled engine, kept because the page still wants one engine to open
+	// its tabs on and to mark. It is not "the" destination — engineInfo.Enabled below
+	// is what actually says where a backup goes.
+	if w := s.engines.Writers(); len(w) > 0 {
 		out.Active = w[0].ID()
 	}
-	out.UninstallMissing = s.engines.Missing(apps.TriggerUninstall)
+	out.Missing = s.engines.Missing()
 	for _, id := range s.engines.IDs() {
 		p, _ := s.engines.Get(id)
 		info := engineInfo{ID: id, Offsite: p.Caps().Offsite}
@@ -411,12 +396,10 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		// renders that layer onto a box yet; when the host-side script does, this is
 		// the one call site that has to learn about it.
 		caps := p.Caps()
-		info.ReceivesRollback = id == apps.EngineLocal
 		// Asked of the SET, not of the configuration, so that the page shows what the
 		// box is actually doing — including the legacy fallback a box that has never
 		// been configured is still running on. See applyEngineSettings.
-		info.ReceivesSchedule = writesTo(s.engines, apps.TriggerSchedule, id)
-		info.ReceivesUninstall = writesTo(s.engines, apps.TriggerUninstall, id)
+		info.Enabled = writesTo(s.engines, id)
 		if s.backupSched != nil {
 			if at, failed, ok := s.backupSched.LastRunIn(id); ok {
 				info.LastRun = &lastRunView{At: at, Failed: failed}
@@ -496,6 +479,9 @@ func (s *Server) handlePutBackupConfig(w http.ResponseWriter, r *http.Request) {
 	// Approvals are not the page's to write: a page loaded before one was given would
 	// otherwise withdraw it by saving, and a client could grant one by sending it.
 	in = backupconfig.PreserveOwned(in, s.backupConf.Get())
+	// A client still sending the per-trigger ticks is read as the one switch they
+	// became, and the ticks are not stored.
+	in = backupconfig.FoldTriggers(in)
 	if err := s.backupConf.Set(in); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -651,9 +637,9 @@ func resolvedView(r backupconfig.Resolved, caps apps.Caps) *retentionView {
 	}
 }
 
-// writesTo reports whether a trigger currently writes to one engine.
-func writesTo(set *backup.Set, t apps.Trigger, id string) bool {
-	for _, p := range set.Writers(t) {
+// writesTo reports whether backups currently write to one engine.
+func writesTo(set *backup.Set, id string) bool {
+	for _, p := range set.Writers() {
 		if p.ID() == id {
 			return true
 		}

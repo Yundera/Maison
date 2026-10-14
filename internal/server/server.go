@@ -5,11 +5,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -281,21 +283,41 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	s.installer.Announce = s.incidents.Announce
 	if s.apps != nil {
 		// An update rewrites the app's compose and brings the stack back up — the one
-		// destructive change Maison makes on the user's behalf — so it takes a rollback
-		// point first and puts the app back if the stack fails to start.
+		// destructive change Maison makes on the user's behalf — so it backs the app up
+		// first and restores that backup over it if the stack fails to start.
 		//
-		// Deliberately the local engine, whatever the user's chosen one is: rolling back
-		// has to be a rename. Restoring from a repository is a download, and by the time
-		// it finished the app would have been broken for minutes. These archives are
-		// ordinary local ones, so the nightly run expires them under the local engine's
-		// own retention like any other — and retention.Plan never drops the newest, so a
-		// rollback point cannot be expired out from under the update that took it.
-		local := apps.NewLocalProvider(cfg)
+		// To every enabled destination, the same ones the nightly run and an uninstall
+		// write to: a repository takes it as one more incremental snapshot, so a box
+		// backing up offsite does not need a second copy of every app on its own disk to
+		// update it. The local engine is one destination like the others, left out of a
+		// backup the app does not fit beside, as long as another destination takes it.
+		// See apps.UpdateTargets.
+		//
 		// A delete renames the archive into the trash and removes it in the background;
 		// a restart mid-removal leaves the rest behind, invisible but holding disk.
 		apps.SweepBackupTrash(cfg.BackupsDir())
-		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string, report func(installer.UpdateState)) (string, error) {
-			// The copy's own events, smoothed into a rate and ETA the way the backup
+		s.installer.ReserveUpdate = func(project string) (func(), error) {
+			return s.apps.ReserveUpdate(project)
+		}
+		s.installer.BackupRoom = func(_ context.Context, project string) error {
+			_, _, err := s.apps.UpdateTargets(project)
+			return updateBackupErr(err)
+		}
+		s.installer.BackupBeforeUpdate = func(ctx context.Context, project string, report func(installer.UpdateState)) (string, string, error) {
+			targets, dropped, err := s.apps.UpdateTargets(project)
+			switch {
+			// No backup by design rather than by failure, reported as "none taken" with
+			// the reason as the warning. The installer already treats an empty name as no
+			// way back; an error here would refuse every update of such an app.
+			case errors.Is(err, apps.ErrBackupSkipped):
+				log.Printf("update %s: no backup — the app declares backup.skip", project)
+				return "", "", nil
+			case errors.Is(err, apps.ErrNoBackupEngine):
+				return "", "updated without a backup: no backup destination is enabled", nil
+			case err != nil:
+				return "", "", updateBackupErr(err)
+			}
+			// The backup's own events, smoothed into a rate and ETA the way the backup
 			// tile's are, so the update's backup phase reads like any other backup.
 			tr := &apps.Tracker{}
 			emit := func(ev apps.BackupEvent) {
@@ -304,59 +326,46 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 					return // a moment (start, done), not a stretch with progress
 				}
 				p := tr.Observe(ev.Phase+"/"+ev.Engine, pct, ev.Done, ev.Total)
-				msg := "Copying (the app keeps running)"
+				msg := "Backing up (the app keeps running)"
 				if ev.Phase == apps.PhaseSync {
 					msg = "Final sync (the app is stopped)"
 				}
 				report(installer.UpdateState{Message: msg, Pct: pct, Done: ev.Done, Total: ev.Total,
 					Rate: p.Rate, ETA: int(p.ETA.Seconds())})
 			}
-			name, err := s.apps.BackupWith(ctx, local, project, false, emit)
-			// An app that declares backup.skip has no rollback point by design rather
-			// than by failure, so it is reported as "none taken" ("", nil) rather than as
-			// an error. The installer already treats an empty name as no way back; an
-			// error here would instead warn the owner on every update of such an app and
-			// raise an incident whose text blames a full disk. The translation lives here
-			// because this closure is the only thing that knows both packages — the
-			// installer holds a function field precisely so it need not import apps.
-			if errors.Is(err, apps.ErrBackupSkipped) {
-				log.Printf("update %s: no rollback point — the app declares backup.skip", project)
-				return "", nil
+			res, err := s.apps.BackupTo(ctx, targets, project, false, emit)
+			if err != nil {
+				return "", "", err
 			}
-			return name, err
+			// BackupTo fails only when every destination failed. One that failed while
+			// another took the backup is said, not refused: the app has a way back.
+			name, warnings := "", []string{}
+			if dropped != "" {
+				warnings = append(warnings, dropped)
+			}
+			for _, r := range res {
+				if r.Err != nil {
+					warnings = append(warnings, "not backed up to "+r.Engine+" before updating: "+r.Err.Error())
+					continue
+				}
+				if name == "" {
+					name = r.Name
+				}
+			}
+			return name, strings.Join(warnings, "; "), nil
 		}
-		// The same measurement the backup dialog makes, against the local engine the
-		// rollback point is written to: a stat-only walk of the folder minus its
-		// declared exclusions, times the copy's headroom, against free disk. Without it
-		// the copy runs until the disk is full — failing not just this update but every
-		// app still writing to that disk.
-		s.installer.RollbackRoom = func(_ context.Context, project string) error {
-			est, err := s.apps.EstimateBackup(project, apps.EngineLocal, false)
-			if err != nil || est.Skipped || est.Enough {
-				// Unmeasurable: let the copy try and fail honestly on ENOSPC rather
-				// than refusing on a guess. Skipped: no rollback point by design.
+		s.installer.RollBack = func(ctx context.Context, project, name string) error {
+			if err := s.apps.RestoreOver(ctx, project, name); err != nil {
+				return err
+			}
+			// A failed update has usually left the app stopped: StopBeforeUpdate took it
+			// down before the converge that failed. Started here, and its failure
+			// returned rather than logged — an app that does not come back is a rollback
+			// that did not work.
+			if s.apps.Running(ctx, project) {
 				return nil
 			}
-			return &installer.RoomError{Needed: est.Needed, Free: est.Free}
-		}
-		s.installer.RollBack = func(ctx context.Context, project, name string) (string, error) {
-			leftover, err := s.apps.RestoreForRollback(ctx, project, name)
-			if err != nil {
-				return leftover, err
-			}
-			// Restore restarts only an app it found running, and a failed update has
-			// usually left it stopped: StopBeforeUpdate took it down before the converge
-			// that failed. Started here, and its failure returned rather than logged — an
-			// app that does not come back is a rollback that did not work.
-			if s.apps.Running(ctx, project) {
-				return leftover, nil
-			}
-			return leftover, s.apps.EnsureStarted(ctx, project)
-		}
-		// The failed update's leftover goes the way any deleted archive does: renamed
-		// into the trash, its bytes removed in the background.
-		s.installer.DiscardLeftover = func(_ context.Context, project, name string) error {
-			return apps.DeleteBackup(cfg.BackupsDir(), project, name)
+			return s.apps.EnsureStarted(ctx, project)
 		}
 		// An app that declares itself not stoppable keeps running through its update:
 		// stopping the dashboard, or the gateway in front of it, takes down the process
@@ -380,8 +389,8 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		s.installer.VerifyRunning = func(ctx context.Context, project string) error {
 			return installer.Steady(ctx, s.dx, project, installer.SteadyWindow)
 		}
-		// Install-from-backup, which — unlike the rollback point above — goes through
-		// whichever engine holds the backup the user picked. A store reinstall is not a
+		// Install-from-backup, which goes through whichever engine holds the backup the
+		// user picked. A store reinstall is not a
 		// rollback: it is reached from the catalog, minutes or months later, and the copy
 		// that matters may be the only one left, in a repository.
 		s.installer.FetchBackup = func(ctx context.Context, project, engine, name string, onProgress func(float64, string)) error {
@@ -490,7 +499,6 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// Settings → Updates. Top-level, clear of the /apps/{id}/{action} catch-all.
 		r.Get("/updates", s.handleGetUpdates)
 		r.Post("/updates/check", s.handleCheckUpdates)
-		r.Get("/updates/preflight", s.handleUpdatesPreflight)
 		r.Post("/updates/run", s.handleRunUpdates)
 
 		r.Get("/backups", s.handleGlobalBackups)
@@ -874,4 +882,20 @@ func (s *Server) watchDocker() {
 			s.rescanEngines()
 		}
 	}()
+}
+
+// updateBackupErr translates the apps package's refusals for an update's backup into
+// the installer's, which cannot import apps: no room into a RoomError with its numbers,
+// a backup already running into ErrBusy.
+func updateBackupErr(err error) error {
+	var room *apps.NoRoomError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &room):
+		return &installer.RoomError{Needed: room.Needed, Free: room.Free}
+	case errors.Is(err, apps.ErrBackupInFlight), errors.Is(err, apps.ErrUpdating):
+		return fmt.Errorf("%w: %v", installer.ErrBusy, err)
+	}
+	return err
 }

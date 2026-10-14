@@ -72,6 +72,10 @@ type App struct {
 	// value that matters.
 	Stoppable     bool `json:"stoppable"`
 	Uninstallable bool `json:"uninstallable"`
+	// Updatable is x-compose-app `lifecycle.updatable`, defaulting to true. When
+	// false the app is outside the update system: no row on the Updates page, no
+	// Update tab, and the update routes answer 403. Resolved with the other two.
+	Updatable bool `json:"updatable"`
 	// Parent is the app this one extends, by project id — declared by the app's
 	// own x-compose-app `parent` and kept only when it actually resolves (see
 	// resolveParents). An app carrying one is an *extension*: the dashboard nests
@@ -196,6 +200,7 @@ type Registry struct {
 	busy       map[string]int             // app id -> in-flight operation count
 	uninstalls map[string]*UninstallState // app id -> live uninstall progress
 	backups    map[string]*BackupState    // app id -> live backup/restore progress
+	updating   map[string]bool            // app id -> an update holds it (ReserveUpdate)
 }
 
 // workingDirTimeout bounds the container lookup that locates an unmanaged stack's
@@ -212,6 +217,7 @@ func New(cfg config.Config, dx *dockerx.Client) *Registry {
 		busy:       map[string]int{},
 		uninstalls: map[string]*UninstallState{},
 		backups:    map[string]*BackupState{},
+		updating:   map[string]bool{},
 	}
 	r.containers = &containerCache{
 		list: func(ctx context.Context) ([]dockerx.Container, error) {
@@ -442,15 +448,19 @@ func resolveParents(list []App) {
 }
 
 // lifecycle is an app's resolved x-compose-app `lifecycle` declaration.
-type lifecycle struct{ stoppable, uninstallable bool }
+type lifecycle struct{ stoppable, uninstallable, updatable bool }
 
 // lifecycleOf resolves the declaration from an app's metadata; an app with none
 // allows both.
 func lifecycleOf(ca *xcomposeapp.App) lifecycle {
 	if ca == nil {
-		return lifecycle{stoppable: true, uninstallable: true}
+		return lifecycle{stoppable: true, uninstallable: true, updatable: true}
 	}
-	return lifecycle{stoppable: ca.Lifecycle.CanStop(), uninstallable: ca.Lifecycle.CanUninstall()}
+	return lifecycle{
+		stoppable:     ca.Lifecycle.CanStop(),
+		uninstallable: ca.Lifecycle.CanUninstall(),
+		updatable:     ca.Lifecycle.CanUpdate(),
+	}
 }
 
 // rememberLifecycles caches the lifecycle resolved for each app on the last listing.
@@ -463,7 +473,7 @@ func lifecycleOf(ca *xcomposeapp.App) lifecycle {
 func (r *Registry) rememberLifecycles(list []App) {
 	m := make(map[string]lifecycle, len(list))
 	for _, a := range list {
-		m[a.ID] = lifecycle{stoppable: a.Stoppable, uninstallable: a.Uninstallable}
+		m[a.ID] = lifecycle{stoppable: a.Stoppable, uninstallable: a.Uninstallable, updatable: a.Updatable}
 	}
 	r.mu.Lock()
 	r.lifecycles = m
@@ -628,7 +638,7 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 	}
 	app.View = deriveView(si, ca, svcPorts)
 	lc := lifecycleOf(ca)
-	app.Stoppable, app.Uninstallable = lc.stoppable, lc.uninstallable
+	app.Stoppable, app.Uninstallable, app.Updatable = lc.stoppable, lc.uninstallable, lc.updatable
 	// Prefer the container's ACTUAL published host port so "Open" works without a
 	// gateway. Only when x-compose-app gave no URL and no hostname (gateway route)
 	// is configured — and never for a service: the port it publishes is the
@@ -854,6 +864,10 @@ func (r *Registry) Stoppable(id string) bool { return r.lifecycleOf(id).stoppabl
 // Uninstallable reports whether the app allows Maison to uninstall it —
 // x-compose-app `lifecycle.uninstallable`, true unless declared false.
 func (r *Registry) Uninstallable(id string) bool { return r.lifecycleOf(id).uninstallable }
+
+// Updatable reports whether the app allows Maison to update it — x-compose-app
+// `lifecycle.updatable`, true unless declared false.
+func (r *Registry) Updatable(id string) bool { return r.lifecycleOf(id).updatable }
 
 // lifecycleOf resolves an app's declared lifecycle: from the last listing when it
 // is known, else straight from the app's compose.

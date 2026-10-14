@@ -37,7 +37,7 @@ func TestReadingIgnoresTheSelectedEngine(t *testing.T) {
 	remote.Seed("jellyfin", newer)
 
 	s := New(local, remote)
-	if err := s.SetWriters(apps.TriggerSchedule, []string{"kopia"}); err != nil {
+	if err := s.SetWriters([]string{"kopia"}); err != nil {
 		t.Fatalf("SetWriters: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestDeleteUnknownBackupIsAnError(t *testing.T) {
 // refusal rather than a fallback.
 func TestSetWritersRefusesUnknownEngine(t *testing.T) {
 	s := New(backuptest.NewLocalLike(apps.EngineLocal))
-	if err := s.SetWriters(apps.TriggerSchedule, []string{"kopia"}); err == nil {
+	if err := s.SetWriters([]string{"kopia"}); err == nil {
 		t.Fatal("SetWriters accepted an unregistered engine")
 	}
 	if got := writerID(s); got != apps.EngineLocal {
@@ -536,7 +536,7 @@ func expireListings(s *Set) {
 
 // writerID is the first engine the schedule writes to, for a test that set up one.
 func writerID(s *Set) string {
-	w := s.Writers(apps.TriggerSchedule)
+	w := s.Writers()
 	if len(w) == 0 {
 		return ""
 	}

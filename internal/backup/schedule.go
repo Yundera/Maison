@@ -352,7 +352,7 @@ func (s *Scheduler) userDataEngine() UserDataEngine {
 	if s.set == nil {
 		return nil
 	}
-	for _, p := range s.set.Writers(apps.TriggerSchedule) {
+	for _, p := range s.set.Writers() {
 		if e, ok := p.(UserDataEngine); ok {
 			return e
 		}
@@ -503,7 +503,7 @@ func (s *Scheduler) backupOne(ctx context.Context, t Target, emit func(TargetSta
 	// Per destination, and with that destination's own resolved policy: engines differ
 	// in what expiry their storage can survive, so one set of tiers pushed into all of
 	// them would be wrong for at least one. See backupconfig.Config.Effective.
-	for _, p := range s.set.Writers(apps.TriggerSchedule) {
+	for _, p := range s.set.Writers() {
 		re, ok := p.(RetentionEngine)
 		if !ok {
 			continue
@@ -566,8 +566,8 @@ type RetentionEngine interface {
 // Local archives are Maison's to expire whatever the writer engine is: the local
 // provider declares Caps.Retention false — there is no policy engine to delegate to —
 // and this runs after every app target because the local directory also accumulates
-// the rollback points an update takes (installer.BackupBeforeUpdate, which is always
-// local because a rollback has to be a rename). Nothing else ever deletes them.
+// the backups an update takes when the local engine is enabled
+// (installer.BackupBeforeUpdate). Nothing else ever deletes them.
 //
 // The policy comes from Config.Effective for the local engine specifically, not from
 // the box-wide tiers. Both floors that used to be spelled out here now belong to the
@@ -575,8 +575,8 @@ type RetentionEngine interface {
 //
 //   - retention.Plan never drops the newest backup, whatever the policy says. That
 //     replaces the old "keep N local, and at N=0 only delete what another engine has
-//     actually listed" dance: keeping zero locally is no longer expressible, and it
-//     was never right for the rollback point anyway.
+//     actually listed" dance: keeping zero locally is no longer expressible — switching the
+//     local engine off is how a box stops keeping local copies.
 //   - Effective degrades tiers to a count for this engine, because a local archive is
 //     a full second copy rather than incremental history. See the comment there.
 func (s *Scheduler) pruneLocal(app string, conf backupconfig.Config) {

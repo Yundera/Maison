@@ -173,7 +173,7 @@ func (u *UserData) engineFor(id string) UserDataRestoreEngine {
 	if id == "" {
 		// The set goes to the first scheduled engine that can hold it — see
 		// Scheduler.userDataEngine, which picks the same one for the write side.
-		for _, w := range u.set.Writers(apps.TriggerSchedule) {
+		for _, w := range u.set.Writers() {
 			if _, ok := w.(UserDataRestoreEngine); ok {
 				p = w
 				break
@@ -235,7 +235,7 @@ func (u *UserData) isWriter(id string) bool {
 	// "Is this engine one the schedule writes to", not "is it THE writer": with several
 	// destinations the question the caller is really asking — does the user-data switch
 	// govern this tab — is about membership.
-	for _, w := range u.set.Writers(apps.TriggerSchedule) {
+	for _, w := range u.set.Writers() {
 		if w.ID() == id {
 			return true
 		}

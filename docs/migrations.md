@@ -1,6 +1,8 @@
 # App data migrations
 
-> **Status: implemented**, except the [open questions](#open-questions) at the end.
+> **Status: implemented in v1.1.58, not yet on the fleet** — see
+> [Where it stands](#where-it-stands) for what shipped, what was tested and what is
+> left; the [open questions](#open-questions) are deliberately deferred.
 > Code: `internal/xcomposeapp/migrations.go` (manifest), `internal/stackup/dataversion.go`
 > (marker, start check), `internal/stackup/migrate.go` (runner), `internal/installer/update.go`
 > (`PlanData`, the update sequence). The update sequence this extends is the one in
@@ -24,7 +26,7 @@ Its companions:
 ## Why
 
 An update today is a byte comparison: the store's compose differs from the one on
-disk, so Maison takes a rollback point, swaps the file and brings the stack up. There
+disk, so Maison backs the app up, swaps the file and brings the stack up. There
 is no notion of *which* version an install is on, so there is nowhere to hang "and
 before the new version starts, convert the data".
 
@@ -177,7 +179,7 @@ steps 3, 4, 5, 6 in a row with only the version-6 compose on hand. A migration t
 needs an intermediate *app* running brings it itself, as a pinned image in its own
 step. Maison does not replay historical composes: fetching them by commit depends on
 store history, their assets may be gone, and every replayed update would need its own
-rollback point.
+backup.
 
 ## When each step runs
 
@@ -226,9 +228,9 @@ Changes against [`lifecycle.md`](./lifecycle.md#update) are marked `◆`.
 ◆     a step in from+1..to missing or malformed → REFUSE  (store authoring error)
 ◆     a step in from+1..to blocked → REFUSE with its message, nothing pulled
 ◆     steps pending and NoBackup → REFUSE  (see below)
-   room for the rollback point? no → REFUSE
+   can an enabled destination take the backup? no → REFUSE
 3. pull the new version's images ◆ and every pending step's image(s)
-4. rollback point
+4. back up to every enabled destination
 5. stop the old version
 6. overwrite docker-compose.yml
 7. refresh .seed ◆ and .migrate from the same store sync
@@ -236,7 +238,7 @@ Changes against [`lifecycle.md`](./lifecycle.md#update) are marked `◆`.
      folders → secrets → variables
 ◆    → migrations from+1 … to, in order; .data-version written after each
      → init(pre_up) → seed → files → pre_up → compose up → init(post_up) → post_up
-9. any failure → restore the rollback point (compose, data and marker together)
+9. any failure → restore the backup over the app (compose, data and marker together)
 ```
 
 **Why after `variables`**: a migration may need what the new version introduces — a
@@ -252,26 +254,27 @@ find its target taken, or worse, `files` would have rendered over it.
 backup, no stop. A blocked step discovered after the stop would cost the user an
 outage for a refusal.
 
-**No migration without a rollback point.** *Update without backup* exists so a large
+**No migration without a backup.** *Update without backup* exists so a large
 app is not pinned on an old version; with migrations pending it would make an
 irreversible data conversion with no undo. The update is refused, and the refusal says
-so. This is the one place `NoBackup` is not honoured.
+so. This is the one place `NoBackup` is not honoured — and the same refusal applies to an
+app with `backup.skip` or a box with no backup destination enabled.
 
 **An app that is not stoppable** (`lifecycle.stoppable: false`) is not stopped at step 5,
 so its migrations run against a live old version. Its maintainer writes them for that.
 
-**Time.** An ordinary update gets five minutes; one with pending steps gets that plus
-every step's `timeout`. The Update tab hands such an update to a one-app background run
-(`202 {"started": true}`), so it outlives the browser tab, and the tile's progress bar
+**Time.** An ordinary update gets five minutes from the stop onward (the backup before
+it is not counted); one with pending steps gets that plus every step's `timeout`. The
+Update tab hands every update to a one-app background run (`202 {"started": true}`), so
+it outlives the browser tab, and the tile's progress bar
 names the step (`Migrating data (2/3): pg-14-to-16`).
 
-**Update all** is unchanged — it is already strictly sequential, one rollback point at a
-time. A blocked app appears on Settings → Updates as *blocked*, with its message,
+**Update all** is unchanged — it is already strictly sequential, one backup at a time. A blocked app appears on Settings → Updates as *blocked*, with its message,
 rather than as *update available*; "Update all" leaves it out.
 
 ## Start refuses pending migrations
 
-Only an update takes a rollback point, so only an update runs migrations. Every other
+Only an update takes a backup to undo them with, so only an update runs migrations. Every other
 path into `stackup.Up` — Start, a config save, an added domain — checks the marker
 against the compose first:
 
@@ -351,10 +354,67 @@ it unnecessary.
 - Incidents — a blocked update raises `app.update:<app>` as a warning carrying the
   maintainer's message; a failed step reports like any failed update.
 
+## Where it stands
+
+*As of 2026-10-13.*
+
+### Shipped
+
+| Release | Commit | What |
+|---|---|---|
+| v1.1.56 | `63e067c` | The manifest (`data_version`, `migrations`, validated, base compose only; `version` display-only), the `.data-version` marker and its baseline rule, install writing it, every start refusing a marker that disagrees with the compose, install-from-backup refusing data of another version, and an update **refusing any pending step** (no runner yet). |
+| v1.1.58 | `9e321be` | The runner: container and script steps between `variables` and `init`, marker after each step, per-step timeout, rollback on failure; `data_no_backup` refusal; step images pulled with the app's; `.migrate/migrations/` refreshed per update; a `migrate` progress phase; the `blocked` update state, left out of "Update all"; the Update tab running a migrating update as a background one-app run with the steps' time budget; UI for all of it (en/fr). |
+
+v1.1.57 (`6e6c049`, backup-engine approval) is unrelated and sits between the two.
+
+The store side (Yundera/AppStore): `beef35f` swept an optional `version` into 79 apps,
+and `6bbd981` documents `version` (optional, display-only) and `data_version` /
+`migrations` in CONTRIBUTING.md. No store app declares a migration yet.
+
+### Tested on a box
+
+holyhorse, 2026-10-13, with a throwaway store app (`migtest`, Postgres) served from an
+nginx container on the box and Maison built from the working tree:
+
+| Case | Result |
+|---|---|
+| install v1 (`postgres:14`) | marker written as 1 |
+| v2 (`postgres:16` + `pgautoupgrade` container step) with *Update without backup* | refused `data_no_backup` before anything ran |
+| v2, normal update | background run; phases pull → backup → stop → `Migrating data (1/1): pg-14-to-16` (30 s) → start; `PG_VERSION` 16, marker 2, rows intact |
+| v3 (+ a script step that exits 1) | step ran and failed; rolled back to v2 — compose, data (3 rows) and marker 2 |
+| v4 (+ a `blocked` step) | check reports *blocked* with the message; apply returns `409 data_blocked` before any pull; "Update all" skips it |
+
+The test found one bug, fixed before the release: the store's `migrations/` folder was
+copied flat into `.migrate/`, so a step's `script: migrations/…` did not resolve. It is
+now copied to `.migrate/migrations/`, and a script path must start with `migrations/`.
+
+Not tested: the UI in a browser (Update tab wording, the *blocked* row on Settings →
+Updates, the tile's "Migrating data…" label) — only its API.
+
+### Remaining
+
+1. **Rollout.** The template's `main` channel pins maison **1.1.57** (staging: phase 1,
+   refusals only) and `stable` pins **1.1.55** (no migration support at all). Pin
+   **1.1.58** in `mesh-router-template-root/stacks/maison/docker-compose.yml` on `main`,
+   let it run on the staging boxes, then promote to `stable`; bump the `maison` and
+   template pointers in `mesh-router-root`, then `yundera-root`.
+2. **No store migration before step 1 reaches the fleet.** A Maison older than v1.1.56
+   ignores the fields and updates straight past a step onto unconverted data.
+3. **Odoo 18 → 19** is the first real one: a `blocked` step with the OpenUpgrade
+   instructions. Check the installed Odoo versions first — an install that predates
+   the marker is read as data version 1 from its compose, so one already on 19.0 would
+   be refused as blocked although its data is fine. yunderateam is pinned to 18.0 and
+   unlinked from the store.
+4. **A browser pass** over the UI above.
+5. **holyhorse cleanup**: the `migtest` app, the `migtest-store` container and
+   `/DATA/AppData/.migtest-store/`. The nightly self-check restores the pinned Maison
+   image but not these.
+6. **de/zh strings** for the new UI text (they fall back to English).
+
 ## Open questions
 
 - **Disk room.** `pg_upgrade` in copy mode, or a dump/restore, needs space beyond the
-  rollback point. A per-step `space:` hint (a multiple of a folder's size) could join
+  app's data, on the box's own disk whatever the backup destinations are. A per-step `space:` hint (a multiple of a folder's size) could join
   the existing room check. Not designed until a real migration needs it.
 - **Getting past `blocked`.** As written, a blocked app stays on its version until the
   maintainer replaces the step with a real one, while fresh installs get the new

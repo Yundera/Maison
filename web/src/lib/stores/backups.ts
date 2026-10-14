@@ -170,7 +170,7 @@ export function estimateBackup(app: string, zip: boolean, engine = ''): Promise<
  *  install. Rejects up front on an unknown app or too little free space. */
 export function startBackup(app: string, zip: boolean, engine = ''): Promise<void> {
   // A target for this one backup, not a stored preference: the nightly run, an
-  // uninstall and the update rollback point all keep using the default engine, so
+  // uninstall and an update's backup all keep using the enabled engines, so
   // nothing chosen here can quietly change where this app stops being backed up to.
   return api.post(
     `/api/apps/${encodeURIComponent(app)}/backup?zip=${zip}&engine=${encodeURIComponent(engine)}`,

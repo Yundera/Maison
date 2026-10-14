@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -82,40 +83,53 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 type UpdateResult struct {
 	// Applied is false when the app was already current.
 	Applied bool `json:"applied"`
-	// Backup names the rollback point taken before the update, empty when none was.
+	// Backup names the backup taken before the update, empty when none was.
 	Backup string `json:"backup,omitempty"`
 	// RolledBack is true when the update failed and the app was put back.
 	RolledBack bool `json:"rolled_back,omitempty"`
-	// Warning explains an update applied without a rollback point (NoBackup), or a
-	// rollback that itself failed. It is not an error — the update still happened —
-	// but it is the thing the operator most needs to see.
+	// Warning explains an update applied without a backup (NoBackup, or no destination
+	// enabled), a destination left out of the backup, or a rollback that itself failed.
+	// It is not an error — the update still happened — but it is the thing the
+	// operator most needs to see.
 	Warning string `json:"warning,omitempty"`
 }
 
-// ErrNoRollback marks an update refused because its rollback point could not be
-// taken — not enough free disk for a second copy of the app, or the copy itself
-// failing. Nothing was changed. The caller may retry that one app with
-// UpdateOptions.NoBackup, which is an owner's explicit choice and never what
-// "update all" does.
-var ErrNoRollback = errors.New("no rollback point")
+// ErrNoRollback marks an update refused because its backup could not be taken — no
+// enabled destination with room for it, a backup of the app already running, or the
+// backup itself failing. Nothing was changed. The caller may retry that one app with
+// UpdateOptions.NoBackup, which is an owner's explicit choice and never what "update
+// all" does.
+var ErrNoRollback = errors.New("no backup before the update")
+
+// ErrBusy is what a ReserveUpdate failure is wrapped in: a backup or restore of the
+// app is running, and the update would stop the app under it.
+var ErrBusy = errors.New("a backup or restore of this app is running")
 
 // UpdateOptions are the choices an owner makes for one update.
 type UpdateOptions struct {
-	// NoBackup applies the update without taking a rollback point, so a failed
-	// update cannot be undone. The owner's choice, for one app at a time: the
-	// app's Update tab offers it up front (a "Backup" box, ticked by default), and
-	// it is the way past an update refused with ErrNoRollback.
+	// NoBackup applies the update without taking a backup, so a failed update cannot
+	// be undone. The owner's choice, for one app at a time: the app's Update tab
+	// offers it up front (a "Backup" box, ticked by default), and it is the way past
+	// an update refused with ErrNoRollback.
 	NoBackup bool
+
+	// Budget bounds the update from the moment the old version is stopped: writing,
+	// migrating and starting the new one. The backup before it is not counted — a
+	// first backup of a large app to a repository takes as long as the upload does,
+	// and the app keeps running through it (its stopped pass has its own limit). Zero
+	// is no bound beyond the caller's context.
+	Budget time.Duration
 }
 
 // ApplyUpdate pulls the store's current docker-compose.yml, and — if it differs
-// from the installed copy — pulls its images, takes a rollback point, stops the old
-// version, overwrites the strict base and brings the stack back up (base + override)
-// with `docker compose up -d`. The user's override and .env are untouched.
+// from the installed copy — pulls its images, backs the app up to every enabled
+// backup destination, stops the old version, overwrites the strict base and brings
+// the stack back up (base + override) with `docker compose up -d`, in place, on the
+// data already on disk. The user's override and .env are untouched.
 //
 // An update is the most common way an app breaks, and it is the one destructive
-// change Maison makes on the user's behalf, so it takes a backup first and puts the
-// app back if bringing it up fails.
+// change Maison makes on the user's behalf, so it takes a backup first and restores
+// it over the app if bringing it up fails.
 func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts UpdateOptions) (UpdateResult, error) {
 	var res UpdateResult
 	dir := filepath.Join(in.cfg.AppsDir(), project)
@@ -138,6 +152,17 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 		return res, nil // already up to date — nothing to do
 	}
 
+	// Held for the whole update, so the nightly run cannot stop and restart the app
+	// under it. A backup already running refuses the update for free: nothing has been
+	// pulled, backed up or stopped yet.
+	if in.ReserveUpdate != nil {
+		release, err := in.ReserveUpdate(project)
+		if err != nil {
+			return res, in.refuseNoRollback(project, fmt.Errorf("%w: %v", ErrBusy, err))
+		}
+		defer release()
+	}
+
 	// From here on the tile shows which step the update is on (UpdateState), and the
 	// bar goes away however the update ends.
 	defer in.endUpdate(project)
@@ -153,11 +178,13 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 		return res, err
 	}
 
-	// Refused before the image pull, so an app whose rollback point cannot fit costs
-	// a size walk, not a download followed by a refusal. The walk is stat-only.
-	if !opts.NoBackup && in.RollbackRoom != nil {
-		step(UpdatePhaseCheck, "Checking free space for the rollback point", 0)
-		if err := in.RollbackRoom(ctx, project); err != nil {
+	// Refused before the image pull, so an app no destination can take a backup of
+	// costs a size walk, not a download followed by a refusal. The walk is stat-only,
+	// and only made when the local disk is one of the destinations.
+	if !opts.NoBackup && in.BackupRoom != nil {
+		step(UpdatePhaseCheck, "Checking where the backup can go", 0)
+		var room *RoomError
+		if err := in.BackupRoom(ctx, project); errors.As(err, &room) {
 			return res, in.refuseNoRollback(project, err)
 		}
 	}
@@ -169,45 +196,53 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 		in.pullList(ctx, append(composeImages(f), migrationImages(plan)...), func(ev Event) { step(UpdatePhasePull, ev.Message, ev.Download) })
 	}
 
-	// The rollback point, before anything is written.
+	// The backup, before anything is written: to every enabled destination, the same
+	// ones the nightly run writes to. A repository that holds the app's history takes
+	// it as one more incremental snapshot.
 	//
-	// It is deliberately *not* taken with whatever backup engine is configured: a
-	// rollback has to be fast, and restoring from a repository is a download. The
-	// server wires this to the local engine specifically, so putting the app back is
-	// a rename.
-	//
-	// A rollback point that cannot be taken REFUSES the update: nothing has been
-	// stopped or written yet, so refusing costs nothing, and going ahead would make
-	// the one destructive change Maison makes irreversible without anyone having
-	// chosen that. The owner can choose it — UpdateOptions.NoBackup, per app — which
-	// is what keeps a too-large app from being pinned on an old version.
+	// A backup that cannot be taken REFUSES the update: nothing has been stopped or
+	// written yet, so refusing costs nothing, and going ahead would make the one
+	// destructive change Maison makes irreversible without anyone having chosen that.
+	// The owner can choose it — UpdateOptions.NoBackup, per app — which is what keeps
+	// an app whose backup keeps failing from being pinned on an old version.
 	switch {
 	case opts.NoBackup:
-		res.Warning = "updated without a rollback point, as requested: a failed update cannot be undone"
+		res.Warning = "updated without a backup, as requested: a failed update cannot be undone"
 		log.Printf("update %s: %s", project, res.Warning)
 	case in.BackupBeforeUpdate != nil:
-		step(UpdatePhaseBackup, "Taking the rollback point", 0)
-		name, err := in.BackupBeforeUpdate(ctx, project, func(st UpdateState) {
+		step(UpdatePhaseBackup, "Backing up", 0)
+		name, warning, err := in.BackupBeforeUpdate(ctx, project, func(st UpdateState) {
 			st.Phase = UpdatePhaseBackup
 			in.setUpdate(project, st)
 		})
 		if err != nil {
 			return res, in.refuseNoRollback(project, err)
 		}
-		res.Backup = name
+		res.Backup, res.Warning = name, warning
+		if warning != "" {
+			log.Printf("update %s: %s", project, warning)
+		}
 	}
-	// An app that opts out of backups gets no rollback point even when one is asked
-	// for. Nothing has been stopped or written yet, so a conversion that could not be
-	// undone is still refused for free.
+	// An app that opts out of backups, or a box with no destination enabled, gets no
+	// backup even when one is asked for. Nothing has been stopped or written yet, so a
+	// conversion that could not be undone is still refused for free.
 	if len(plan.Steps) > 0 && res.Backup == "" {
 		return res, in.refuseData(project, &DataRefusedError{Reason: DataRefusedNoBackup,
-			Title:  "it converts the app's data, which needs a rollback point",
-			Detail: "This update converts the app's data, and no rollback point was taken to undo it — the app does not take backups."})
+			Title:  "it converts the app's data, which needs a backup",
+			Detail: "This update converts the app's data, and no backup was taken to undo it — the app does not take backups, or no backup destination is enabled."})
+	}
+
+	// The budget starts here: the backup above is the app's own time, and the app was
+	// running through all of it.
+	if opts.Budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Budget)
+		defer cancel()
 	}
 
 	// Stop the old version before anything of the new one runs. The new version's init
 	// steps run in pre_up against the app's data, and the old containers still have that
-	// data open — taking the rollback point restarts them on its way out — so a database
+	// data open — taking the backup restarts them on its way out — so a database
 	// that takes an exclusive lock fails every step that opens it (FileBrowser's bolt
 	// answers "timeout") and the update is rolled back for nothing. Nothing has been
 	// written yet, so a stop that fails needs no undo.
@@ -268,11 +303,12 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	return res, nil
 }
 
-// rollBack puts the app back after a failed update.
+// rollBack puts the app back after a failed update, by restoring the backup taken
+// before it over the app.
 //
 // The restore replaces the whole folder, so it takes the old compose with it — the
-// app returns to exactly the state the rollback point captured, not to a new compose
-// running against old data.
+// app returns to exactly the state the backup captured, not to a new compose running
+// against old data. Nothing of the failed state is kept.
 //
 // A failed rollback is reported alongside the failure that caused it rather than
 // replacing it: the operator needs to know both that the update failed *and* that
@@ -287,24 +323,23 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 		in.report(incident.Report{
 			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
 			Title:  project + " is broken after a failed update",
-			Detail: "The update failed and there was no rollback point to put the old version back from:\n" + cause.Error() + "\n\nThe new version is in place and did not come up. Its logs, from the tile's menu, will say why.",
+			Detail: "The update failed and there was no backup to put the old version back from:\n" + cause.Error() + "\n\nThe new version is in place and did not come up. Its logs, from the tile's menu, will say why.",
 			Args:   map[string]string{"app": project, "reason": "broken"},
 		})
 		return res, fmt.Errorf("update failed and could not be undone: %w", cause)
 	}
 	// Deliberately not the request's context: it may already be cancelled by the
 	// failure, and abandoning a rollback half-done is the worst available outcome.
-	in.setUpdate(project, UpdateState{Phase: UpdatePhaseRollback, Message: "Putting the previous version back", Pct: 100})
-	leftover, err := in.RollBack(context.WithoutCancel(ctx), project, res.Backup)
-	if err != nil {
-		res.Warning = "the update failed AND rolling back failed: " + err.Error()
+	in.setUpdate(project, UpdateState{Phase: UpdatePhaseRollback, Message: "Restoring the backup", Pct: 100})
+	if err := in.RollBack(context.WithoutCancel(ctx), project, res.Backup); err != nil {
+		res.Warning = "the update failed AND restoring the backup failed: " + err.Error()
 		log.Printf("update %s: %s", project, res.Warning)
 		// The worst state Maison can leave an app in: neither the old version nor the
 		// new one. Nothing else in this codebase is more deserving of an alert.
 		in.report(incident.Report{
 			ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
 			Title:  project + " is broken after a failed update",
-			Detail: "The update failed and putting the old version back failed too:\n" + err.Error() + "\n\nThe app is in neither state and needs attention. Its previous version is in the backup named " + res.Backup + ".",
+			Detail: "The update failed and restoring the backup taken before it failed too:\n" + err.Error() + "\n\nThe app is in neither state and needs attention. Its previous version is in the backup named " + res.Backup + ", which can be restored from the app's Backups tab.",
 			Args:   map[string]string{"app": project, "reason": "rollback_failed"},
 		})
 		return res, fmt.Errorf("update failed and the rollback failed too (%v): %w", err, cause)
@@ -320,19 +355,10 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 			in.report(incident.Report{
 				ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Critical,
 				Title:  project + " is down after a failed update",
-				Detail: "The update failed:\n" + cause.Error() + "\n\nThe previous version was put back from the backup named " + res.Backup + ", but it is not running: " + err.Error() + "\n\nIts logs, from the tile's menu, will say why. What the failed update left behind was archived with the app's other backups.",
+				Detail: "The update failed:\n" + cause.Error() + "\n\nThe previous version was restored from the backup named " + res.Backup + ", but it is not running: " + err.Error() + "\n\nIts logs, from the tile's menu, will say why.",
 				Args:   map[string]string{"app": project, "reason": "not_running"},
 			})
 			return res, fmt.Errorf("update failed and was rolled back, but %s is not running (%v): %w", project, err, cause)
-		}
-		// Confirmed up, so what the failed update left behind has no further use. Only
-		// here: without VerifyRunning nothing confirmed it, and it stays.
-		if leftover != "" && in.DiscardLeftover != nil {
-			if err := in.DiscardLeftover(context.WithoutCancel(ctx), project, leftover); err != nil {
-				log.Printf("update %s: keeping %s, the failed update's leftover: %v", project, leftover, err)
-			} else {
-				log.Printf("update %s: rolled back and running; discarded %s, the failed update's leftover", project, leftover)
-			}
 		}
 	}
 	// Rolled back and running is still a failed update: the app is on the old version,
@@ -340,7 +366,7 @@ func (in *Installer) rollBack(ctx context.Context, project string, res UpdateRes
 	in.report(incident.Report{
 		ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
 		Title:  project + " could not be updated",
-		Detail: "The update failed and the previous version was put back; it is running.\n\n" + cause.Error() + "\n\nThe store will keep offering this update. If it fails the same way again, the store's version of the app needs a fix.",
+		Detail: "The update failed and the previous version was restored from its backup; it is running.\n\n" + cause.Error() + "\n\nThe store will keep offering this update. If it fails the same way again, the store's version of the app needs a fix.",
 		Args:   map[string]string{"app": project, "reason": "rolled_back"},
 	})
 	return res, fmt.Errorf("update failed and was rolled back: %w", cause)
@@ -463,33 +489,39 @@ func (in *Installer) SetUpdateRef(ctx context.Context, project, refStr string) (
 	return st, nil
 }
 
-// Why an update was refused for want of a rollback point. Carried on the error, the
-// run item and the incident's args, so the Updates page can say it in plain words
-// instead of relaying an engine's error string.
+// Why an update was refused for want of a backup. Carried on the error, the run item
+// and the incident's args, so the Updates page can say it in plain words instead of
+// relaying an engine's error string.
 const (
-	// NoRollbackNoRoom: the rollback copy would not fit on the disk (Needed > Free).
+	// NoRollbackNoRoom: no enabled destination can take the backup — the local disk
+	// is the only one, and the copy would not fit (Needed > Free).
 	NoRollbackNoRoom = "no_room"
-	// NoRollbackTimeout: the copy ran out of time — in practice the stopped pass of
+	// NoRollbackTimeout: the backup ran out of time — in practice the stopped pass of
 	// an app with a very large number of files outrunning its downtime budget.
 	NoRollbackTimeout = "backup_timeout"
-	// NoRollbackFailed: the copy failed for any other reason.
+	// NoRollbackBusy: a backup or restore of the app was already running. Retrying
+	// once it is done is the whole answer.
+	NoRollbackBusy = "backup_busy"
+	// NoRollbackFailed: the backup failed for any other reason.
 	NoRollbackFailed = "backup_failed"
 )
 
-// RoomError is what a RollbackRoom check returns when the copy would not fit: the
-// numbers are what let the owner see how far off it is.
+// RoomError is what a BackupRoom check or the backup returns when no enabled
+// destination can take it: the local disk's numbers are what let the owner see how
+// far off it is.
 type RoomError struct {
 	Needed, Free int64
 }
 
 func (e *RoomError) Error() string {
-	return fmt.Sprintf("the rollback copy needs %s of free disk, %s is free", humanBytes(e.Needed), humanBytes(e.Free))
+	return fmt.Sprintf("the backup needs %s of free disk on this server, %s is free, and no other backup destination is enabled",
+		humanBytes(e.Needed), humanBytes(e.Free))
 }
 
-// NoRollbackError is an update refused because its rollback point could not be
-// taken. errors.Is(err, ErrNoRollback) holds for it.
+// NoRollbackError is an update refused because its backup could not be taken.
+// errors.Is(err, ErrNoRollback) holds for it.
 type NoRollbackError struct {
-	Reason       string // NoRollbackNoRoom | NoRollbackTimeout | NoRollbackFailed
+	Reason       string // NoRollbackNoRoom | NoRollbackTimeout | NoRollbackBusy | NoRollbackFailed
 	Needed, Free int64  // NoRollbackNoRoom only
 	Cause        error
 }
@@ -498,11 +530,13 @@ func (e *NoRollbackError) Error() string {
 	var why string
 	switch e.Reason {
 	case NoRollbackNoRoom:
-		why = "not enough free disk for the safety backup (" + e.Cause.Error() + ")"
+		why = "no backup destination can take the backup (" + e.Cause.Error() + ")"
 	case NoRollbackTimeout:
-		why = "the safety backup took too long"
+		why = "the backup took too long"
+	case NoRollbackBusy:
+		why = "a backup or restore of this app is running"
 	default:
-		why = "the safety backup failed: " + e.Cause.Error()
+		why = "the backup failed: " + e.Cause.Error()
 	}
 	return "not updated, nothing was changed: " + why
 }
@@ -510,21 +544,23 @@ func (e *NoRollbackError) Error() string {
 func (e *NoRollbackError) Is(target error) bool { return target == ErrNoRollback }
 func (e *NoRollbackError) Unwrap() error        { return e.Cause }
 
-// classifyNoRollback turns the error from RollbackRoom or BackupBeforeUpdate into
-// a NoRollbackError with its reason.
+// classifyNoRollback turns the error from ReserveUpdate, BackupRoom or
+// BackupBeforeUpdate into a NoRollbackError with its reason.
 func classifyNoRollback(cause error) *NoRollbackError {
 	e := &NoRollbackError{Reason: NoRollbackFailed, Cause: cause}
 	var room *RoomError
 	switch {
 	case errors.As(cause, &room):
 		e.Reason, e.Needed, e.Free = NoRollbackNoRoom, room.Needed, room.Free
+	case errors.Is(cause, ErrBusy):
+		e.Reason = NoRollbackBusy
 	case errors.Is(cause, context.DeadlineExceeded):
 		e.Reason = NoRollbackTimeout
 	}
 	return e
 }
 
-// refuseNoRollback reports an update refused for want of a rollback point. The app is
+// refuseNoRollback reports an update refused for want of a backup. The app is
 // untouched, so it is a warning, and the incident says how to go ahead anyway — with
 // advice that fits the cause: an error that leaves the owner no next step, or the
 // wrong one, is a design bug.
@@ -534,14 +570,13 @@ func (in *Installer) refuseNoRollback(project string, cause error) error {
 	var advice string
 	switch err.Reason {
 	case NoRollbackNoRoom:
-		advice = "Free some disk and retry"
+		advice = "Free some disk, enable an offsite backup destination in Settings › Backups, or"
 	case NoRollbackTimeout:
 		advice = "The backup ran out of time — typically an app with a very large number of files. Retry, or"
+	case NoRollbackBusy:
+		advice = "Retry once the backup or restore is done, or"
 	default:
 		advice = "Retry, or"
-	}
-	if err.Reason == NoRollbackNoRoom {
-		advice += ", or"
 	}
 	args := map[string]string{"app": project, "reason": err.Reason}
 	if err.Reason == NoRollbackNoRoom {
@@ -550,7 +585,7 @@ func (in *Installer) refuseNoRollback(project string, cause error) error {
 	}
 	in.report(incident.Report{
 		ID: "app.update:" + project, Kind: incident.KindAppUpdate, Severity: incident.Warning,
-		Title: project + " was not updated: no rollback point could be taken",
+		Title: project + " was not updated: it could not be backed up first",
 		Detail: cause.Error() + "\n\nNothing was changed; the app is still running its current version. " +
 			advice + " update this app on its own with \"Update without backup\" — a failed update then cannot be undone.",
 		Args: args,
@@ -634,7 +669,7 @@ func PlanData(dir string, newBase []byte) (stackup.MigratePlan, error) {
 }
 
 // planUpdateData is PlanData for ApplyUpdate: it adds the refusal only an apply can
-// make — a conversion with no rollback point — and reports every refusal as the
+// make — a conversion with no backup — and reports every refusal as the
 // app's update incident.
 func (in *Installer) planUpdateData(project, dir string, newBase []byte, opts UpdateOptions) (stackup.MigratePlan, error) {
 	plan, err := PlanData(dir, newBase)
@@ -643,8 +678,8 @@ func (in *Installer) planUpdateData(project, dir string, newBase []byte, opts Up
 		// version. With a migration pending it would make an irreversible conversion
 		// with no undo, so this is the one place it is not honoured.
 		err = &DataRefusedError{Reason: DataRefusedNoBackup,
-			Title: "it converts the app's data, which needs a rollback point",
-			Detail: fmt.Sprintf("This update moves the data from version %d to %d. A data conversion is only run with a rollback point to undo it, and this update would have none.",
+			Title: "it converts the app's data, which needs a backup",
+			Detail: fmt.Sprintf("This update moves the data from version %d to %d. A data conversion is only run with a backup to undo it, and this update would have none.",
 				plan.From, plan.To)}
 	}
 	var refused *DataRefusedError

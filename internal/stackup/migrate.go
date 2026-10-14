@@ -35,7 +35,7 @@ type MigrateProgress func(i, n int, m xcomposeapp.Migration)
 // every step that succeeds. See docs/migrations.md.
 //
 // Exit 0 means applied; anything else fails the step, and with it the update —
-// whose rollback point puts the data and the marker back together. There is no
+// whose backup, restored, puts the data and the marker back together. There is no
 // "skipped": a step with nothing to do checks the data and exits 0.
 //
 // captures is the converge's: what secrets and variables resolved so far, so a step

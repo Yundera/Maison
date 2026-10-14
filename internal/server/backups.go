@@ -80,8 +80,8 @@ func (s *Server) handleStartBackup(w http.ResponseWriter, r *http.Request) {
 	// snapshot itself is the backup (docs/lifecycle.md).
 	zip := r.URL.Query().Get("zip") == "true"
 	// engine names where this one backup goes. It is a target for THIS run, not a
-	// stored preference: the nightly run, an uninstall and the update rollback point
-	// all keep using the default engine, so nothing the user picks here can quietly
+	// stored preference: the nightly run, an uninstall and an update's backup all keep
+	// writing to the enabled engines, so nothing the user picks here can quietly
 	// change where their app stops being backed up to.
 	engine := r.URL.Query().Get("engine")
 	if err := s.apps.StartBackup(chi.URLParam(r, "id"), engine, zip); err != nil {

@@ -19,7 +19,7 @@ const writebackWindow = 8 << 20
 // Why this exists: page cache is charged to the cgroup of the process that dirtied
 // it, and Maison runs under a container memory limit. A plain io.Copy of a
 // multi-GB file dirties pages faster than the kernel flushes them, and on
-// watch.nsl.sh (2026-09-30) the pre-update rollback copy of a 5.5 GB Redis
+// watch.nsl.sh (2026-09-30) the pre-update backup copy of a 5.5 GB Redis
 // database filled maison-app's 512 MiB cgroup with 495 MiB of dirty pages and
 // zero under writeback — Maison's own heap was 19 MiB — and the OOM killer took
 // the process, and the in-memory "update all" run with it. Dirty pages cannot be

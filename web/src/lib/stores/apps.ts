@@ -42,6 +42,10 @@ export interface App {
    *  how a wedged platform app is recovered without an SSH session. */
   stoppable?: boolean
   uninstallable?: boolean
+  /** `lifecycle.updatable`: false when something other than Maison keeps the app
+   *  up to date. It then has no Updates row and no Update tab, and the update
+   *  routes answer 403. */
+  updatable?: boolean
   /** True while a lifecycle op (start/stop/restart/uninstall) is in flight:
    *  the tile shows a "…" overlay and hides its burger menu. */
   busy?: boolean
@@ -551,9 +555,10 @@ export function checkUpdate(id: string): Promise<UpdateStatus> {
 }
 
 /** Pull the store's current compose (when it differs) and bring the stack back
- *  up. `noBackup` skips the rollback point — the owner's choice, made with the
- *  Backup box beside "Update now". An update refused because the rollback point
- *  could not be taken is an ApiError whose body has `no_rollback`. */
+ *  up. `noBackup` skips the backup — the owner's choice, made with the Backup box
+ *  beside "Update now". An update refused because the app could not be backed up is
+ *  an ApiError whose body has `no_rollback`, or — run in the background — a refused
+ *  item on the Updates page. */
 export async function applyUpdate(
   id: string,
   noBackup = false,
@@ -563,8 +568,9 @@ export async function applyUpdate(
     noBackup ? { noBackup: true } : undefined,
   )
   await loadApps()
-  // `started`: an update that converts the app's data runs in the background (it may
-  // take hours); the tile's progress bar and the Updates page follow it.
+  // `started`: an update runs in the background (its backup can take as long as an
+  // upload, a data conversion hours); the tile's progress bar and the Updates page
+  // follow it.
   return { updated: res?.updated ?? false, started: res?.started, warning: res?.warning }
 }
 

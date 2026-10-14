@@ -249,14 +249,14 @@ func TestRestoreArchiveLeavesOutDeclaredExclusions(t *testing.T) {
 	t.Cleanup(func() { removeTrash = orig })
 
 	time.Sleep(time.Second) // one-second stamps, see TestRestoreArchivesTheStateItReplaces
-	archived, err := r.RestoreForRollback(context.Background(), "jellyfin", name)
+	archived, err := r.restore(context.Background(), "jellyfin", "", name, nil)
 	if err != nil {
-		t.Fatalf("RestoreForRollback: %v", err)
+		t.Fatalf("restore: %v", err)
 	}
 
 	got := ListBackups(backupsDir, "jellyfin")
 	if len(got) != 1 || got[0].Name != archived {
-		t.Fatalf("ListBackups = %+v; want the one archive RestoreForRollback named (%q)", got, archived)
+		t.Fatalf("ListBackups = %+v; want the one archive the restore named (%q)", got, archived)
 	}
 	arch := filepath.Join(backupsDir, "jellyfin", archived)
 	if s := read(t, filepath.Join(arch, "db", "data.sqlite")); s != "newer" {
@@ -298,9 +298,9 @@ func TestRestoreArchiveWithoutADeclarationKeepsEverything(t *testing.T) {
 	}
 
 	time.Sleep(time.Second)
-	archived, err := r.RestoreForRollback(context.Background(), "jellyfin", name)
+	archived, err := r.restore(context.Background(), "jellyfin", "", name, nil)
 	if err != nil {
-		t.Fatalf("RestoreForRollback: %v", err)
+		t.Fatalf("restore: %v", err)
 	}
 	if s := read(t, filepath.Join(backupsDir, "jellyfin", archived, "cache", "blob")); s != "kept" {
 		t.Errorf("undeclared cache/blob = %q, want it archived", s)

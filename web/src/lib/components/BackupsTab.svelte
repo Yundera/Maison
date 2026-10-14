@@ -69,7 +69,7 @@
         (s.engines ?? []).filter((e) => e.name).map((e) => [e.id, e.name!]),
       )
       engineList = s.engines ?? []
-      scheduled = engineList.filter((e) => e.receives_schedule)
+      scheduled = engineList.filter((e) => e.enabled)
       // Open on an engine the schedule writes to — the one the user is most likely to
       // be asking about — falling back to the first registered.
       if (!engineList.some((e) => e.id === tab)) {
@@ -182,7 +182,7 @@
        pressing this button is asking for.
 
        Narrowing it is a target for THIS RUN, NOT a preference the app keeps. The
-       nightly run, an uninstall and the update rollback point all keep going wherever
+       nightly run, an uninstall and an update's backup all keep going wherever
        the settings send them — so "back up a copy locally before I try something"
        cannot quietly become "this app stopped going offsite". -->
   {#if engineList.length > 1}
@@ -282,10 +282,10 @@
         onclick={() => (tab = e.id)}
       >
         {engineLabel(e.id, e.name, (k) => $t(k))}
-        <!-- Marks every engine the nightly run writes to, not "the" one: there can be
+        <!-- Marks every engine backups are written to, not "the" one: there can be
              several, and which of them a tab is looking at is the thing the strip cannot
              otherwise say. -->
-        {#if e.receives_schedule}
+        {#if e.enabled}
           <span class="badge">{$t('backup_engine_active')}</span>
         {/if}
       </button>

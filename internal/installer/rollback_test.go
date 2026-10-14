@@ -30,7 +30,7 @@ var initFailed = errors.New(`init "add-admin": exit status 1`)
 // the store keeps offering the one that just failed.
 func TestARolledBackUpdateIsStillAnIncident(t *testing.T) {
 	in := &Installer{
-		RollBack:      func(context.Context, string, string) (string, error) { return "", nil },
+		RollBack:      func(context.Context, string, string) error { return nil },
 		VerifyRunning: func(context.Context, string) error { return nil },
 	}
 	got := recordReports(in)
@@ -54,7 +54,7 @@ func TestARolledBackUpdateIsStillAnIncident(t *testing.T) {
 // could not open its own data, and that is the worst outcome short of losing it.
 func TestARollBackThatDoesNotComeBackUpIsCritical(t *testing.T) {
 	in := &Installer{
-		RollBack: func(context.Context, string, string) (string, error) { return "", nil },
+		RollBack: func(context.Context, string, string) error { return nil },
 		VerifyRunning: func(context.Context, string) error {
 			return errors.New("filebrowser keeps restarting (last exit code 1)")
 		},
@@ -76,51 +76,6 @@ func TestARollBackThatDoesNotComeBackUpIsCritical(t *testing.T) {
 	}
 	if len(*got) != 1 || (*got)[0].Severity != incident.Critical || !strings.Contains((*got)[0].Detail, "keeps restarting") {
 		t.Errorf("reports = %+v, want one critical naming why the app is down", *got)
-	}
-}
-
-// What the failed update left behind is discarded once the put-back version is
-// confirmed running. Kept, it sat in the backups for good: watch.nsl.sh, 2026-10-04,
-// a 110 GB metashare leftover that filled the disk a week later.
-func TestARolledBackRunningAppDiscardsTheLeftover(t *testing.T) {
-	var discarded []string
-	in := &Installer{
-		RollBack:      func(context.Context, string, string) (string, error) { return "2026-10-04_143559", nil },
-		VerifyRunning: func(context.Context, string) error { return nil },
-		DiscardLeftover: func(_ context.Context, project, name string) error {
-			discarded = append(discarded, project+"/"+name)
-			return nil
-		},
-	}
-	recordReports(in)
-
-	if _, err := in.rollBack(context.Background(), "metashare", UpdateResult{Backup: "2026-10-04_143520"}, initFailed); err == nil {
-		t.Fatal("a rolled-back update reported success")
-	}
-	if len(discarded) != 1 || discarded[0] != "metashare/2026-10-04_143559" {
-		t.Errorf("discarded = %v; want the leftover RollBack named, not the rollback point", discarded)
-	}
-}
-
-// Down after the rollback, the leftover is the evidence of what failed, and the
-// incident points the owner at it. It stays. So does one nothing confirmed running.
-func TestALeftoverIsKeptUnlessThePutBackAppIsConfirmedRunning(t *testing.T) {
-	for name, verify := range map[string]func(context.Context, string) error{
-		"down":       func(context.Context, string) error { return errors.New("keeps restarting") },
-		"unverified": nil,
-	} {
-		t.Run(name, func(t *testing.T) {
-			in := &Installer{
-				RollBack:      func(context.Context, string, string) (string, error) { return "2026-10-04_143559", nil },
-				VerifyRunning: verify,
-				DiscardLeftover: func(context.Context, string, string) error {
-					t.Error("discarded the leftover of an app not confirmed running")
-					return nil
-				},
-			}
-			recordReports(in)
-			_, _ = in.rollBack(context.Background(), "metashare", UpdateResult{Backup: "2026-10-04_143520"}, initFailed)
-		})
 	}
 }
 
@@ -148,26 +103,26 @@ func updateFixture(t *testing.T) (*Installer, string, string, *[]string) {
 	}
 
 	steps := &[]string{}
-	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, error) {
+	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, string, error) {
 		*steps = append(*steps, "backup")
-		return "2026-01-01_000000", nil
+		return "2026-01-01_000000", "", nil
 	}
 	in.StopBeforeUpdate = func(context.Context, string) error {
 		*steps = append(*steps, "stop")
 		return nil
 	}
-	in.RollBack = func(context.Context, string, string) (string, error) {
+	in.RollBack = func(context.Context, string, string) error {
 		*steps = append(*steps, "rollback")
-		return "", nil
+		return nil
 	}
 	in.VerifyRunning = func(context.Context, string) error { return nil }
 	return in, dir, installed, steps
 }
 
-// The order is the fix. Stopped after the rollback point, because taking the rollback
-// point restarts the app; stopped before the new compose is written and converged,
+// The order is the fix. Stopped after the backup, because taking the backup restarts
+// the app; stopped before the new compose is written and converged,
 // because the new version's init steps open the data the old containers hold.
-func TestApplyUpdateStopsTheOldVersionBetweenTheRollbackPointAndTheWrite(t *testing.T) {
+func TestApplyUpdateStopsTheOldVersionBetweenTheBackupAndTheWrite(t *testing.T) {
 	in, dir, installed, steps := updateFixture(t)
 	stop := in.StopBeforeUpdate
 	in.StopBeforeUpdate = func(ctx context.Context, project string) error {
@@ -208,13 +163,13 @@ func TestApplyUpdateWritesNothingWhenTheStopFails(t *testing.T) {
 	}
 }
 
-// No room for the rollback point: refused before anything happens — no pull, no
+// No destination can take the backup: refused before anything happens — no pull, no
 // backup attempt, no stop, no write — and the error says why and how to go ahead.
-func TestApplyUpdateRefusedWhenTheRollbackPointDoesNotFit(t *testing.T) {
+func TestApplyUpdateRefusedWhenNoDestinationCanTakeTheBackup(t *testing.T) {
 	in, dir, installed, steps := updateFixture(t)
-	in.RollbackRoom = func(context.Context, string) error {
+	in.BackupRoom = func(context.Context, string) error {
 		*steps = append(*steps, "room")
-		return errors.New("it needs 103 GiB, 104 GiB is free")
+		return &RoomError{Needed: 103 << 30, Free: 60 << 30}
 	}
 
 	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
@@ -229,13 +184,13 @@ func TestApplyUpdateRefusedWhenTheRollbackPointDoesNotFit(t *testing.T) {
 	}
 }
 
-// A rollback copy that fails is a refusal too, before the app is stopped. It used to
-// go ahead without a way back.
-func TestApplyUpdateRefusedWhenTheRollbackPointFails(t *testing.T) {
+// A backup that fails is a refusal too, before the app is stopped. It used to go ahead
+// without a way back.
+func TestApplyUpdateRefusedWhenTheBackupFails(t *testing.T) {
 	in, dir, installed, steps := updateFixture(t)
-	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, error) {
+	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, string, error) {
 		*steps = append(*steps, "backup")
-		return "", errors.New("no space left on device")
+		return "", "", errors.New("no space left on device")
 	}
 
 	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
@@ -252,11 +207,11 @@ func TestApplyUpdateRefusedWhenTheRollbackPointFails(t *testing.T) {
 
 // NoBackup is the owner's explicit way past that refusal: no room check, no backup,
 // and — with nothing to restore — no rollback when the new version fails to start.
-func TestApplyUpdateNoBackupSkipsTheRollbackPoint(t *testing.T) {
+func TestApplyUpdateNoBackupSkipsTheBackup(t *testing.T) {
 	in, _, _, steps := updateFixture(t)
-	in.RollbackRoom = func(context.Context, string) error {
+	in.BackupRoom = func(context.Context, string) error {
 		*steps = append(*steps, "room")
-		return errors.New("would refuse")
+		return &RoomError{Needed: 2, Free: 1}
 	}
 
 	// No Docker here, so the up fails; what matters is what ran before it.
@@ -281,10 +236,10 @@ func TestApplyUpdateReportsEachStep(t *testing.T) {
 			}
 		}
 	}
-	in.RollbackRoom = func(context.Context, string) error { return nil }
-	in.BackupBeforeUpdate = func(_ context.Context, _ string, report func(UpdateState)) (string, error) {
+	in.BackupRoom = func(context.Context, string) error { return nil }
+	in.BackupBeforeUpdate = func(_ context.Context, _ string, report func(UpdateState)) (string, string, error) {
 		report(UpdateState{Pct: 50, Done: 5, Total: 10})
-		return "2026-01-01_000000", nil
+		return "2026-01-01_000000", "", nil
 	}
 
 	_, _ = in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{}) // no Docker: start fails
@@ -298,7 +253,8 @@ func TestApplyUpdateReportsEachStep(t *testing.T) {
 }
 
 // The refusal says why, so the Updates page can phrase it: room (with the numbers),
-// a timeout, or any other failure — and every kind still is ErrNoRollback.
+// a timeout, a backup already running, or any other failure — and every kind still is
+// ErrNoRollback.
 func TestApplyUpdateRefusalCarriesItsReason(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -308,14 +264,15 @@ func TestApplyUpdateRefusalCarriesItsReason(t *testing.T) {
 	}{
 		{"no room", &RoomError{Needed: 110 << 30, Free: 98 << 30}, nil, NoRollbackNoRoom},
 		{"timeout", nil, fmt.Errorf("the app's downtime budget was used up: %w", context.DeadlineExceeded), NoRollbackTimeout},
+		{"busy", nil, fmt.Errorf("%w: jellyfin: a backup of this app is already running", ErrBusy), NoRollbackBusy},
 		{"other", nil, errors.New("permission denied"), NoRollbackFailed},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			in, _, _, _ := updateFixture(t)
-			in.RollbackRoom = func(context.Context, string) error { return c.room }
+			in.BackupRoom = func(context.Context, string) error { return c.room }
 			if c.backup != nil {
-				in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, error) { return "", c.backup }
+				in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, string, error) { return "", "", c.backup }
 			}
 			_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
 			if !errors.Is(err, ErrNoRollback) {
@@ -329,5 +286,54 @@ func TestApplyUpdateRefusalCarriesItsReason(t *testing.T) {
 				t.Errorf("needed/free = %d/%d", nr.Needed, nr.Free)
 			}
 		})
+	}
+}
+
+// A backup or restore of the app already running refuses the update before anything
+// happens — the update would stop the app under it.
+func TestApplyUpdateRefusedWhileTheAppIsBeingBackedUp(t *testing.T) {
+	in, dir, installed, steps := updateFixture(t)
+	in.ReserveUpdate = func(string) (func(), error) {
+		*steps = append(*steps, "reserve")
+		return nil, errors.New("jellyfin: a backup of this app is already running")
+	}
+
+	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{})
+	var nr *NoRollbackError
+	if !errors.As(err, &nr) || nr.Reason != NoRollbackBusy {
+		t.Fatalf("err = %v, want a NoRollbackBusy refusal", err)
+	}
+	if got := strings.Join(*steps, " → "); got != "reserve" {
+		t.Errorf("steps = %s, want the reservation alone", got)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dir, "docker-compose.yml")); string(raw) != installed {
+		t.Error("compose was rewritten by a refused update")
+	}
+}
+
+// The reservation is held for the whole update and released however it ends.
+func TestApplyUpdateReleasesItsReservation(t *testing.T) {
+	in, _, _, steps := updateFixture(t)
+	in.ReserveUpdate = func(string) (func(), error) {
+		*steps = append(*steps, "reserve")
+		return func() { *steps = append(*steps, "release") }, nil
+	}
+
+	_, _ = in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{}) // no Docker: start fails
+	if got := strings.Join(*steps, " → "); got != "reserve → backup → stop → rollback → release" {
+		t.Errorf("steps = %s, want the update inside the reservation", got)
+	}
+}
+
+// A destination left out of the backup, or no destination enabled, is said on the
+// result — the update still goes ahead.
+func TestApplyUpdateCarriesTheBackupWarning(t *testing.T) {
+	in, _, _, _ := updateFixture(t)
+	in.BackupBeforeUpdate = func(context.Context, string, func(UpdateState)) (string, string, error) {
+		return "2026-01-01_000000", "not backed up to this server's disk before updating", nil
+	}
+	res, _ := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{}) // no Docker: start fails
+	if res.Backup != "2026-01-01_000000" || !res.RolledBack {
+		t.Errorf("result = %+v, want the backup taken and restored", res)
 	}
 }

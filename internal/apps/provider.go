@@ -130,22 +130,23 @@ type Provider interface {
 // "where is this backup", which must not depend on that choice — otherwise
 // switching engine strands everything the previous one wrote.
 type Engines interface {
-	// Writers is every engine a trigger writes to, in a stable order.
+	// Writers is every engine a backup writes to — every enabled one — in a stable
+	// order. The nightly run, the backup before an update and the archive an uninstall
+	// leaves all write to this one set.
 	//
 	// Plural because engines are independent destinations, not alternatives: a backup
-	// can land in the local archive and a repository at once, and each engine says for
-	// itself which triggers it receives. It replaced a single Writer(), which was the
-	// last thing making engines mutually exclusive for writing while they had always
-	// been independent for reading.
+	// can land in the local archive and a repository at once. It replaced a single
+	// Writer(), which was the last thing making engines mutually exclusive for writing
+	// while they had always been independent for reading.
 	//
-	// An empty result is a real answer — nothing is configured to receive this trigger
-	// — and callers must treat it as a refusal rather than backing up nowhere and
-	// reporting success.
-	Writers(t Trigger) []Provider
-	// Missing is every engine the configuration sends a trigger to that this box does
-	// not have. It is what separates an empty Writers the user chose (nothing is meant
-	// to receive the trigger) from one that is a failure (the destination vanished).
-	Missing(t Trigger) []string
+	// An empty result is a real answer — no destination is enabled — and callers must
+	// decide what that means for them rather than backing up nowhere and reporting
+	// success.
+	Writers() []Provider
+	// Missing is every engine the configuration enables that this box does not have.
+	// It is what separates an empty Writers the user chose (backups switched off) from
+	// one that is a failure (the destination vanished).
+	Missing() []string
 	// Get resolves one engine by ID, for a caller that names its target — a manual
 	// backup aimed at an engine other than the default.
 	Get(id string) (Provider, bool)
@@ -367,32 +368,6 @@ type Caps struct {
 	// engine built before the verb, which hides the change form.
 	ChangeSecret bool
 }
-
-// Trigger is what caused a backup, and therefore which engines receive it.
-//
-// It is deliberately not "the default engine plus some exceptions": each engine states
-// which triggers it takes, so a box can archive uninstalls locally where they are
-// instant while sending the nightly run offsite, and neither choice implies the other.
-//
-// The update rollback point is NOT a trigger. It is always the local engine because
-// rolling back has to be a rename — restoring from a repository is a download, and the
-// app stays broken for its duration — so it is a property of the mechanism rather than
-// a preference anyone gets to express. See server.BackupBeforeUpdate.
-type Trigger string
-
-const (
-	// TriggerSchedule is the nightly run, and the default for a manual "Back up now"
-	// — a backup by hand should mean the same thing as the one that runs at night.
-	TriggerSchedule Trigger = "schedule"
-
-	// TriggerUninstall is the archive an uninstall leaves behind. Separate from the
-	// schedule because the trade is different: it is the only copy of an app nobody
-	// is going to notice is missing until they want it back.
-	TriggerUninstall Trigger = "uninstall"
-)
-
-// Triggers is every trigger there is, for callers that have to cover all of them.
-var Triggers = []Trigger{TriggerSchedule, TriggerUninstall}
 
 // SnapshotOpts carries the per-call knobs the registry passes down.
 type SnapshotOpts struct {

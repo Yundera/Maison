@@ -297,7 +297,11 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// a restart mid-removal leaves the rest behind, invisible but holding disk.
 		apps.SweepBackupTrash(cfg.BackupsDir())
 		s.installer.ReserveUpdate = func(project string) (func(), error) {
-			return s.apps.ReserveUpdate(project)
+			release, err := s.apps.ReserveUpdate(project)
+			if errors.Is(err, apps.ErrUpdating) {
+				return nil, fmt.Errorf("%w: %v", installer.ErrAlreadyUpdating, err)
+			}
+			return release, err
 		}
 		s.installer.BackupRoom = func(_ context.Context, project string) error {
 			_, _, err := s.apps.UpdateTargets(project)

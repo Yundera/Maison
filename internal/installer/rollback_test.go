@@ -311,6 +311,33 @@ func TestApplyUpdateRefusedWhileTheAppIsBeingBackedUp(t *testing.T) {
 	}
 }
 
+// The same update asked for twice is refused quietly: the one already running reports
+// how it went. A "could not be backed up" incident here would sit over a healthy update
+// and, raised after it, outlive its success.
+func TestApplyUpdateAskedTwiceRaisesNothing(t *testing.T) {
+	in, dir, installed, steps := updateFixture(t)
+	var reported []incident.Report
+	in.Report = func(r incident.Report) { reported = append(reported, r) }
+	in.ReserveUpdate = func(string) (func(), error) {
+		*steps = append(*steps, "reserve")
+		return nil, fmt.Errorf("%w: jellyfin: this app is being updated", ErrAlreadyUpdating)
+	}
+
+	_, err := in.ApplyUpdate(context.Background(), "jellyfin", UpdateOptions{NoBackup: true})
+	if !errors.Is(err, ErrAlreadyUpdating) || errors.Is(err, ErrNoRollback) {
+		t.Fatalf("err = %v, want ErrAlreadyUpdating and no backup refusal", err)
+	}
+	if len(reported) != 0 {
+		t.Errorf("reported %+v, want nothing", reported)
+	}
+	if got := strings.Join(*steps, " → "); got != "reserve" {
+		t.Errorf("steps = %s, want the reservation alone", got)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dir, "docker-compose.yml")); string(raw) != installed {
+		t.Error("compose was rewritten by a refused update")
+	}
+}
+
 // The reservation is held for the whole update and released however it ends.
 func TestApplyUpdateReleasesItsReservation(t *testing.T) {
 	in, _, _, steps := updateFixture(t)

@@ -105,6 +105,13 @@ var ErrNoRollback = errors.New("no backup before the update")
 // app is running, and the update would stop the app under it.
 var ErrBusy = errors.New("a backup or restore of this app is running")
 
+// ErrAlreadyUpdating is what a ReserveUpdate failure returns when the app is held by
+// another update: the same update asked for twice (a double click, a second tab). It is
+// refused quietly — no incident — because the update already running is the one that
+// says how it went, and a "could not be backed up" warning over it would be both wrong
+// and the last word if it then succeeds.
+var ErrAlreadyUpdating = errors.New("this app is already being updated")
+
 // UpdateOptions are the choices an owner makes for one update.
 type UpdateOptions struct {
 	// NoBackup applies the update without taking a backup, so a failed update cannot
@@ -157,6 +164,10 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// pulled, backed up or stopped yet.
 	if in.ReserveUpdate != nil {
 		release, err := in.ReserveUpdate(project)
+		if errors.Is(err, ErrAlreadyUpdating) {
+			log.Printf("update %s: refused, already being updated", project)
+			return res, err
+		}
 		if err != nil {
 			return res, in.refuseNoRollback(project, fmt.Errorf("%w: %v", ErrBusy, err))
 		}

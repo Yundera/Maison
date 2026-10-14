@@ -567,6 +567,9 @@ func (s *Server) checkApps(ctx context.Context, d *detector) {
 		if a.Status == apps.StatusRunning {
 			// Everything is up: whatever it was doing, it has stopped doing it.
 			s.incidents.Resolve("app.crashloop:" + a.ID)
+			if a.Health != apps.HealthUnhealthy && a.Health != apps.HealthStarting {
+				s.resolveRepairedUpdate(a.ID)
+			}
 		} else {
 			s.checkCrashLoop(ctx, d, a)
 		}
@@ -599,6 +602,39 @@ func (s *Server) checkApps(ctx context.Context, d *detector) {
 			}
 		}
 	}
+}
+
+// resolveRepairedUpdate clears a failed update's "needs repair" incident once the app
+// is fully up again.
+//
+// Those two reasons say the app is DOWN after its update ("broken": the new version did
+// not start and there was nothing to roll back to; "rollback_failed": neither version
+// runs). Only a later successful update resolved them, but once the owner has repaired
+// the app by hand its compose is usually already the store's, so the next update is a
+// no-op that resolves nothing — and the row said "Needs repair" forever with no way out.
+// An app running and not unhealthy is the repair.
+//
+// The other app.update reasons are deliberately left alone: a refused or rolled-back
+// update means the old version runs fine and the update is still owed, which a running
+// app says nothing about.
+func (s *Server) resolveRepairedUpdate(id string) {
+	inc, ok := s.openIncident("app.update:" + id)
+	if !ok {
+		return
+	}
+	switch inc.Args["reason"] {
+	case "broken", "rollback_failed":
+		s.incidents.Resolve(inc.ID)
+	}
+}
+
+func (s *Server) openIncident(id string) (incident.Incident, bool) {
+	for _, inc := range s.incidents.Snapshot().Open {
+		if inc.ID == id {
+			return inc, true
+		}
+	}
+	return incident.Incident{}, false
 }
 
 // checkCrashLoop reports a container that keeps dying and being brought back.

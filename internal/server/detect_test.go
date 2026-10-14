@@ -323,3 +323,29 @@ func TestAMissingDestinationClearsWhenNobodyAsksForItAnyMore(t *testing.T) {
 		t.Error("the incident outlived the setting that caused it")
 	}
 }
+
+// A failed update with nothing to roll back to says "Needs repair", and only a later
+// successful update cleared it. Once the owner has repaired the app by hand its compose
+// is already the store's, so that update is a no-op and the row stayed broken forever.
+// The app being up again is the repair; an update that is merely still owed is not.
+func TestARepairedAppClearsItsBrokenUpdate(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	s := &Server{cfg: cfg, incidents: incident.New(filepath.Join(cfg.StateDir(), "incidents.json"))}
+	for app, reason := range map[string]string{"seafile": "broken", "immich": "rollback_failed", "jellyfin": "no_room"} {
+		s.incidents.Report(incident.Report{
+			ID: "app.update:" + app, Kind: incident.KindAppUpdate, Severity: incident.Critical,
+			Title: app, Args: map[string]string{"app": app, "reason": reason},
+		})
+	}
+
+	for _, app := range []string{"seafile", "immich", "jellyfin"} {
+		s.resolveRepairedUpdate(app)
+	}
+
+	if s.incidents.IsOpen("app.update:seafile") || s.incidents.IsOpen("app.update:immich") {
+		t.Error("an app that is up again still reads as needing repair")
+	}
+	if !s.incidents.IsOpen("app.update:jellyfin") {
+		t.Error("a refused update was cleared by the app running, but the update is still owed")
+	}
+}

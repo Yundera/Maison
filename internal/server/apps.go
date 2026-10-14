@@ -224,6 +224,9 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 			out["warning"] = res.Warning
 		}
 		status := http.StatusInternalServerError
+		if errors.Is(err, installer.ErrAlreadyUpdating) {
+			status = http.StatusConflict
+		}
 		if errors.Is(err, installer.ErrNoRollback) {
 			// Refused, nothing changed: the UI offers "Update without backup".
 			out["no_rollback"] = true

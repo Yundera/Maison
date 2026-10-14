@@ -167,6 +167,10 @@ Maison is in **Community Applications**:
    environment*. Changes take effect the next time each app starts — except the
    password, which only applies to apps installed afterwards. Details are in
    [`docs/app-env.md`](./docs/app-env.md).
+
+   That shared password is legacy and being phased out. Up-to-date store apps generate
+   their own password per app instead, and Maison shows it to you the first time you
+   open the app (see [Credentials](./docs/x-compose-app.md#credentials)).
 2. **Install an app.** Open the **App Store** tile, pick an app, and click **Install**. The
    tile shows two progress bars, one for the image download and one for the stack start.
 3. **Open it.** Read the next section first.
@@ -247,7 +251,7 @@ Maison does.
 | `APP_NET` | `mesh` | External network each app's main service joins. It must already exist. |
 | `APP_DOMAIN` | (empty) | Base domain apps are routed on (`myapp-${APP_DOMAIN}`). |
 | `APP_PUBLIC_IP*` | (empty) | Public IP(s), used in fallback `sslip.io` / `nip.io` routes. |
-| `APP_EMAIL`, `APP_DEFAULT_PASSWORD` | (empty), `changeme-please` | Seeded into apps that create an admin account on first boot; an installed app keeps the password it got. **Change the password.** |
+| `APP_EMAIL`, `APP_DEFAULT_PASSWORD` | (empty), `changeme-please` | Seeded into apps that create an admin account on first boot; an installed app keeps the password it got. **Change the password.** Legacy: one password shared by every app, replaced by per-app [`secrets`](./docs/x-compose-app.md#secrets-and-variables) and [`credentials`](./docs/x-compose-app.md#credentials). |
 
 Full reference: [`docs/app-env.md`](./docs/app-env.md).
 

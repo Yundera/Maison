@@ -150,13 +150,16 @@ APP_PUBLIC_IPV6=
 APP_PUBLIC_IPV6_DASH=
 domain=                      # lowercase alias: some x-compose-app webui-host use it
 APP_EMAIL=
-APP_DEFAULT_PASSWORD=casaos
+APP_DEFAULT_PASSWORD=changeme-please
 DefaultUserName=admin
-DefaultPassword=casaos
+DefaultPassword=changeme-please
 ```
 
 That default describes a standalone local install: apps on Maison's own `mesh`
-network, no domain, so no reachable web address. A PCS overwrites it with
+network, no domain, so no reachable web address. The password is a placeholder, the
+same on every plain install, and 12+ characters because apps that enforce a minimum
+are the norm (FileBrowser refuses anything shorter). Change it before installing
+anything you expose. A PCS overwrites it with
 `APP_NET=pcs` and its real domain and IP; `dev/docker-compose.yml` does the same
 through its `appenv` init container.
 

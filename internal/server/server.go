@@ -457,6 +457,8 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Put("/apps/{id}/tips", s.handlePutTips)
 		r.Post("/apps/{id}/credentials/show", s.handleShowCredentials)
 		r.Put("/apps/{id}/credentials/dismissed", s.handlePutCredentialsDismissed)
+		r.Post("/apps/{id}/credentials/{index}/generate", s.handleGenerateCredential)
+		r.Post("/apps/{id}/credentials/{index}/change", s.handleChangeCredential)
 		r.Get("/apps/{id}/update", s.handleCheckUpdate)
 		r.Post("/apps/{id}/update", s.handleApplyUpdate)
 		r.Put("/apps/{id}/update/ref", s.handleSetUpdateRef)

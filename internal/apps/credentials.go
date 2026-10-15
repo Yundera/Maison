@@ -18,12 +18,15 @@ import (
 const credentialsDismissedFile = ".credentials-dismissed"
 
 // RenderedCredential is one x-compose-app credential with its templates resolved
-// against the app's .env, ready to display.
+// against the app's .env, ready to display. Index is its position in the declared
+// list — what a change names, since empty entries are dropped from this one.
 type RenderedCredential struct {
-	Label    string `json:"label,omitempty"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-	Note     string `json:"note,omitempty"`
+	Index    int                   `json:"index"`
+	Label    string                `json:"label,omitempty"`
+	Username string                `json:"username,omitempty"`
+	Password string                `json:"password,omitempty"`
+	Note     string                `json:"note,omitempty"`
+	Change   *CredentialChangeInfo `json:"change,omitempty"`
 }
 
 // declaresCredentials reports whether ca carries at least one credential with
@@ -46,30 +49,24 @@ func declaresCredentials(ca *xcomposeapp.App) bool {
 // ${VAR} stays visible as written; an entry with neither username nor password
 // is dropped. The values are secrets: callers must never log them.
 func (r *Registry) RenderedCredentials(id string) ([]RenderedCredential, error) {
-	dir := filepath.Join(r.cfg.AppsDir(), id)
-	base, err := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
+	dir, ca, err := r.mergedApp(id)
 	if err != nil {
 		return nil, err
 	}
-	baseF, err := composefile.Parse(base)
-	if err != nil {
-		return nil, err
-	}
-	override, _ := os.ReadFile(filepath.Join(dir, "docker-compose.override.yml"))
-	overF, _ := composefile.Parse(override)
-	_, ca := mergedMeta(baseF, overF)
 	if ca == nil {
 		return nil, nil
 	}
 	env, _ := os.ReadFile(filepath.Join(dir, ".env"))
 	render := func(s string) string { return strings.TrimSpace(envinject.Render(s, r.cfg, id, env)) }
 	var out []RenderedCredential
-	for _, c := range ca.Credentials {
+	for i, c := range ca.Credentials {
 		rc := RenderedCredential{
+			Index:    i,
 			Label:    render(c.Label.Value()),
 			Username: render(c.Username),
 			Password: render(c.Password),
 			Note:     render(c.Note.Value()),
+			Change:   changeInfo(ca, c),
 		}
 		if rc.Username == "" && rc.Password == "" {
 			continue
@@ -77,6 +74,24 @@ func (r *Registry) RenderedCredentials(id string) ([]RenderedCredential, error) 
 		out = append(out, rc)
 	}
 	return out, nil
+}
+
+// mergedApp reads a managed app's x-compose-app as it runs: base merged with the
+// override. ca is nil when the app declares none.
+func (r *Registry) mergedApp(id string) (dir string, ca *xcomposeapp.App, err error) {
+	dir = filepath.Join(r.cfg.AppsDir(), id)
+	base, err := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
+	if err != nil {
+		return dir, nil, err
+	}
+	baseF, err := composefile.Parse(base)
+	if err != nil {
+		return dir, nil, err
+	}
+	override, _ := os.ReadFile(filepath.Join(dir, "docker-compose.override.yml"))
+	overF, _ := composefile.Parse(override)
+	_, ca = mergedMeta(baseF, overF)
+	return dir, ca, nil
 }
 
 // CredentialsDismissed reports whether the operator asked not to be shown app

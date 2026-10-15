@@ -392,18 +392,79 @@ export async function renderTips(id: string): Promise<string> {
   return r.tips
 }
 
+/** The rules a new credential value must meet (normalized by the server). */
+export interface CredentialPolicy {
+  min_length: number
+  max_length: number
+  charset: 'printable' | 'alnum'
+  require?: ('lower' | 'upper' | 'digit' | 'symbol')[]
+  /** Every character refused, Maison's built-in set included. */
+  forbid: string
+}
+
+/** How a credential may be changed from Maison; absent = initial-only. */
+export interface CredentialChange {
+  apply: 'env' | 'hook'
+  changeable: boolean
+  /** Why it cannot be changed: 'shared' (box-wide password) or 'template'. */
+  reason?: string
+  policy: CredentialPolicy
+}
+
 /** One x-compose-app credential, rendered against the app's .env. */
 export interface AppCredential {
+  /** Position in the declared list — what a change names. */
+  index: number
   label?: string
   username?: string
   password?: string
   note?: string
+  change?: CredentialChange
 }
 
 /** Fetch the app's initial credentials. A POST so the secrets never sit behind
  *  a navigable URL (history, prefetch). */
 export async function showCredentials(id: string): Promise<{ credentials: AppCredential[]; dismissed: boolean }> {
   return api.post(`/api/apps/${encodeURIComponent(id)}/credentials/show`)
+}
+
+/** A fresh password meeting the credential's policy. Nothing is saved. */
+export async function generateCredential(id: string, index: number): Promise<string> {
+  const r = await api.post<{ password: string }>(`/api/apps/${encodeURIComponent(id)}/credentials/${index}/generate`)
+  return r.password
+}
+
+/** Replace a credential's password and apply it to the app (recreates it). A
+ *  refused value rejects with an ApiError whose body carries `rules`. */
+export async function changeCredential(id: string, index: number, password: string): Promise<void> {
+  await api.post(`/api/apps/${encodeURIComponent(id)}/credentials/${index}/change`, { password })
+}
+
+/** Rules a value breaks, mirroring the server's secretgen.Policy.Validate so the
+ *  form can say what is wrong before saving. The server stays the authority. */
+export function credentialRuleViolations(p: CredentialPolicy, v: string): string[] {
+  const out: string[] = []
+  const n = [...v].length
+  if (n < p.min_length) out.push('too_short')
+  if (n > p.max_length) out.push('too_long')
+  let lower = false, upper = false, digit = false, symbol = false, charset = false, forbidden = false
+  for (const ch of v) {
+    const c = ch.codePointAt(0) ?? 0
+    if (c < 0x21 || c > 0x7e) charset = true
+    else if (p.forbid.includes(ch)) forbidden = true
+    else if (ch >= 'a' && ch <= 'z') lower = true
+    else if (ch >= 'A' && ch <= 'Z') upper = true
+    else if (ch >= '0' && ch <= '9') digit = true
+    else {
+      symbol = true
+      if (p.charset === 'alnum') charset = true
+    }
+  }
+  if (charset) out.push('charset')
+  if (forbidden) out.push('forbidden')
+  const has = { lower, upper, digit, symbol }
+  for (const r of p.require ?? []) if (!has[r]) out.push(`require_${r}`)
+  return out
 }
 
 /** Record (or clear) "Don't show again" for the app's credentials. */

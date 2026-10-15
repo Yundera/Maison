@@ -298,6 +298,13 @@ func RunHook(ctx context.Context, cfg config.Config, project, dir, script string
 	return runHook(ctx, cfg, project, dir, script, nil)
 }
 
+// RunHookWith is RunHook with extra variables in the hook's environment, which
+// win over the app's .env — how a credential-change hook is handed the new value
+// before .env holds it.
+func RunHookWith(ctx context.Context, cfg config.Config, project, dir, script string, extraEnv []string) error {
+	return runHook(ctx, cfg, project, dir, script, extraEnv)
+}
+
 // runHook is RunHook with extra variables in the hook's environment — what a
 // migration script is told on top of a hook's (see RunMigrations).
 func runHook(ctx context.Context, cfg config.Config, project, dir, script string, extraEnv []string) error {

@@ -183,14 +183,49 @@ type App struct {
 	Credentials []Credential `yaml:"credentials,omitempty"`
 }
 
-// Credential is one initial login an app declares. Maison only displays it: it
-// does not know about a password the operator later changes inside the app,
-// which is why the UI calls these *initial* credentials.
+// Credential is one login an app declares. Without Change, Maison only displays
+// it: it does not know about a password the operator later changes inside the
+// app, which is why the UI calls these *initial* credentials. With Change, the
+// operator can replace the password from Maison and the app is told how.
 type Credential struct {
-	Label    Localized `yaml:"label,omitempty"`
-	Username string    `yaml:"username,omitempty"`
-	Password string    `yaml:"password,omitempty"`
-	Note     Localized `yaml:"note,omitempty"`
+	Label    Localized         `yaml:"label,omitempty"`
+	Username string            `yaml:"username,omitempty"`
+	Password string            `yaml:"password,omitempty"`
+	Note     Localized         `yaml:"note,omitempty"`
+	Change   *CredentialChange `yaml:"change,omitempty"`
+}
+
+// How a changed credential reaches the app.
+const (
+	// ApplyEnv: the app reads the variable on every start, so writing .env and
+	// recreating the stack is the whole change.
+	ApplyEnv = "env"
+	// ApplyHook: the app keeps its own copy (a user database), so a hook changes
+	// it inside the running app first; .env follows.
+	ApplyHook = "hook"
+)
+
+// CredentialChange says that a credential may be changed from Maison, and how.
+// Absent, the credential is initial-only: writing .env would make the dialog
+// show a password the app does not accept.
+type CredentialChange struct {
+	Apply  string           `yaml:"apply,omitempty"`
+	Policy CredentialPolicy `yaml:"policy,omitempty"`
+	// Hook is a bash snippet run exactly like pre_install (same runner, same
+	// environment and command set), with the secret's variable set to the NEW
+	// value and OLD_<NAME> to the previous one. ApplyHook only.
+	Hook string `yaml:"hook,omitempty"`
+}
+
+// CredentialPolicy constrains a new value, typed or generated. Zero fields take
+// the defaults secretgen.Policy applies; Maison's own forbidden characters apply
+// whatever the app says.
+type CredentialPolicy struct {
+	MinLength int      `yaml:"min_length,omitempty" json:"min_length,omitempty"`
+	MaxLength int      `yaml:"max_length,omitempty" json:"max_length,omitempty"`
+	Charset   string   `yaml:"charset,omitempty" json:"charset,omitempty"`
+	Require   []string `yaml:"require,omitempty" json:"require,omitempty"`
+	Forbid    string   `yaml:"forbid,omitempty" json:"forbid,omitempty"`
 }
 
 // UnmarshalYAML decodes through tolerant scalars, so a numeric password or
@@ -207,6 +242,7 @@ func (c *Credential) UnmarshalYAML(n *yaml.Node) error {
 		Username text      `yaml:"username"`
 		Password text      `yaml:"password"`
 		Note     Localized `yaml:"note"`
+		Change   yaml.Node `yaml:"change"`
 	}
 	if err := n.Decode(&raw); err != nil {
 		return err
@@ -216,8 +252,33 @@ func (c *Credential) UnmarshalYAML(n *yaml.Node) error {
 		Username: string(raw.Username),
 		Password: string(raw.Password),
 		Note:     raw.Note,
+		Change:   decodeChange(&raw.Change),
 	}
 	return nil
+}
+
+// decodeChange reads a credential's `change` block, or nil. A malformed block
+// makes the credential initial-only rather than failing the decode: the login is
+// still worth showing, and a change Maison cannot read must not be offered.
+func decodeChange(n *yaml.Node) *CredentialChange {
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+	var ch CredentialChange
+	if err := n.Decode(&ch); err != nil {
+		return nil
+	}
+	ch.Apply = strings.ToLower(strings.TrimSpace(ch.Apply))
+	switch ch.Apply {
+	case ApplyEnv:
+	case ApplyHook:
+		if strings.TrimSpace(ch.Hook) == "" {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return &ch
 }
 
 // Ensure modes for a File: written once if absent, or re-rendered on every up.

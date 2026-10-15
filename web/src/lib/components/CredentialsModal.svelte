@@ -1,6 +1,16 @@
 <script lang="ts">
   import { credentialsApp } from '../stores/ui'
-  import { openApp, setCredentialsDismissed, showCredentials, type App, type AppCredential } from '../stores/apps'
+  import {
+    changeCredential,
+    credentialRuleViolations,
+    generateCredential,
+    openApp,
+    setCredentialsDismissed,
+    showCredentials,
+    type App,
+    type AppCredential,
+  } from '../stores/apps'
+  import { ApiError } from '../api/client'
   import { t } from '../i18n'
 
   let { target }: { target: { app: App; launch: boolean } } = $props()
@@ -12,6 +22,77 @@
   let revealed = $state<Record<number, boolean>>({})
   let copied = $state('')
   let initial = false
+
+  // The change form, open for at most one credential at a time (by its index).
+  let editing = $state<number | null>(null)
+  let draft = $state('')
+  let draftShown = $state(false)
+  let saving = $state(false)
+  let editError = $state('')
+  let serverRules = $state<string[]>([])
+  let changedFor = $state<number | null>(null)
+
+  let editingCred = $derived(creds.find((c) => c.index === editing))
+  let draftRules = $derived(
+    editingCred?.change && draft ? credentialRuleViolations(editingCred.change.policy, draft) : [],
+  )
+  let anyInitial = $derived(creds.some((c) => !c.change?.changeable))
+
+  function startChange(c: AppCredential) {
+    editing = c.index
+    draft = ''
+    draftShown = false
+    editError = ''
+    serverRules = []
+    changedFor = null
+  }
+
+  function cancelChange() {
+    editing = null
+    draft = ''
+    editError = ''
+    serverRules = []
+  }
+
+  async function regenerate() {
+    if (editing === null) return
+    editError = ''
+    serverRules = []
+    try {
+      draft = await generateCredential(target.app.id, editing)
+      draftShown = true
+    } catch (e) {
+      editError = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  async function saveChange() {
+    if (editing === null || saving || !draft || draftRules.length) return
+    saving = true
+    editError = ''
+    serverRules = []
+    const index = editing
+    try {
+      await changeCredential(target.app.id, index, draft)
+      editing = null
+      draft = ''
+      changedFor = index
+      await load()
+    } catch (e) {
+      if (e instanceof ApiError && Array.isArray(e.body?.rules)) serverRules = e.body.rules as string[]
+      editError = e instanceof Error ? e.message : String(e)
+    } finally {
+      saving = false
+    }
+  }
+
+  function policyHint(c: AppCredential): string {
+    const p = c.change!.policy
+    const parts = [$t('cred_rule_length', { min: String(p.min_length), max: String(p.max_length) })]
+    for (const r of p.require ?? []) parts.push($t(`cred_rule_require_${r}`))
+    if (p.charset === 'alnum') parts.push($t('cred_rule_alnum'))
+    return parts.join(' · ')
+  }
 
   async function load() {
     try {
@@ -38,6 +119,7 @@
   }
 
   function close() {
+    if (saving) return // the change is applying; closing would hide its outcome
     if (loaded && !error) persist()
     credentialsApp.set(null)
   }
@@ -98,7 +180,7 @@
     {:else}
       <p class="intro">{$t('credentials_intro', { name: target.app.name })}</p>
       <div class="list">
-        {#each creds as c, i (i)}
+        {#each creds as c, i (c.index)}
           <section class="cred">
             {#if c.label}<h3>{c.label}</h3>{/if}
             {#if c.username}
@@ -132,10 +214,60 @@
               </div>
             {/if}
             {#if c.note}<p class="note">{c.note}</p>{/if}
+            {#if changedFor === c.index}
+              <p class="ok">{$t('cred_changed')}</p>
+            {/if}
+            {#if c.change && !c.change.changeable}
+              <p class="note">{$t(c.change.reason === 'shared' ? 'cred_not_changeable_shared' : 'cred_not_changeable')}</p>
+            {:else if c.change && editing !== c.index}
+              <button class="link" onclick={() => startChange(c)} disabled={editing !== null || saving}>
+                {$t('cred_change')}
+              </button>
+            {:else if c.change && editing === c.index}
+              <div class="change">
+                <div class="row">
+                  <span class="key">{$t('cred_new_password')}</span>
+                  <input
+                    class="value"
+                    type={draftShown ? 'text' : 'password'}
+                    autocomplete="new-password"
+                    spellcheck="false"
+                    bind:value={draft}
+                    disabled={saving}
+                    oninput={() => (serverRules = [])}
+                  />
+                  <button
+                    class="eye"
+                    title={draftShown ? $t('hide_password') : $t('show_password')}
+                    aria-label={draftShown ? $t('hide_password') : $t('show_password')}
+                    onclick={() => (draftShown = !draftShown)}
+                  >
+                    {#if draftShown}
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 10.6a2 2 0 002.8 2.8M9.9 5.1A9.8 9.8 0 0112 5c5 0 9 4.5 10 7-.4 1-1.3 2.4-2.6 3.7M6.6 6.6C4.4 8 2.7 10.2 2 12c1 2.5 5 7 10 7 1.8 0 3.4-.6 4.8-1.4" /></svg>
+                    {:else}
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12c1-2.5 5-7 10-7s9 4.5 10 7c-1 2.5-5 7-10 7S3 14.5 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+                    {/if}
+                  </button>
+                  <button class="copy" onclick={regenerate} disabled={saving}>{$t('cred_regenerate')}</button>
+                </div>
+                <p class="note">{policyHint(c)}</p>
+                {#each [...new Set([...draftRules, ...serverRules])] as rule (rule)}
+                  <p class="error">{$t(`cred_rule_${rule}`, { min: String(c.change.policy.min_length), max: String(c.change.policy.max_length), forbid: c.change.policy.forbid })}</p>
+                {/each}
+                {#if editError && !serverRules.length}<p class="error">{editError}</p>{/if}
+                <p class="note">{$t(c.change.apply === 'hook' ? 'cred_apply_hook' : 'cred_apply_env', { name: target.app.name })}</p>
+                <div class="change-actions">
+                  <button class="ghost" onclick={cancelChange} disabled={saving}>{$t('cancel')}</button>
+                  <button class="primary" onclick={saveChange} disabled={saving || !draft || draftRules.length > 0}>
+                    {saving ? $t('cred_applying') : $t('save')}
+                  </button>
+                </div>
+              </div>
+            {/if}
           </section>
         {/each}
       </div>
-      <p class="hint">{$t('credentials_initial_hint')}</p>
+      {#if anyInitial}<p class="hint">{$t('credentials_initial_hint')}</p>{/if}
       <label class="dismiss">
         <input type="checkbox" bind:checked={dismissed} />
         {$t('dont_show_again')}
@@ -256,6 +388,51 @@
     gap: 0.45rem;
     margin-top: 0.75rem;
     font-size: 0.875rem;
+  }
+  .ok {
+    margin: 0.4rem 0 0;
+    font-size: 0.8rem;
+    color: var(--green, #1a7f37);
+  }
+  .link {
+    margin-top: 0.4rem;
+    border: none;
+    background: none;
+    padding: 0;
+    color: var(--primary);
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .link:disabled {
+    color: var(--text-subtle);
+    cursor: default;
+  }
+  .change {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border);
+  }
+  input.value {
+    border: 1px solid var(--border);
+    font-family: ui-monospace, monospace;
+  }
+  .change .error {
+    margin-top: 0.3rem;
+  }
+  .change-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+  }
+  .change-actions button {
+    padding: 0.4rem 0.9rem;
+    border-radius: 8px;
+    border: none;
+    font-size: 0.8rem;
+  }
+  .change-actions button:disabled {
+    opacity: 0.6;
   }
   .error {
     color: var(--red);

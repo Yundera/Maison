@@ -422,7 +422,8 @@ The choice is a marker file, `.credentials-dismissed`, in the app's own folder, 
 uninstalling clears it and a reinstall — which may come with a freshly generated
 password — shows the dialog again.
 
-**These are *initial* credentials.** Maison only displays what the compose declares;
+**These are *initial* credentials** unless the entry declares a
+[`change`](#changing-a-credential). Maison only displays what the compose declares;
 it does not know about a password the operator later changes inside the app, and the
 dialog says so.
 
@@ -444,6 +445,90 @@ friction, not the need for a trusted network: the values are the same ones the a
 > [seeded](#seeded-secrets--moving-an-installed-app-off-a-shared-value)
 > (`ADMIN_PASSWORD: ${APP_DEFAULT_PASSWORD}|password:20`): an installed app keeps — and
 > shows — the password it has, and a fresh install gets its own.
+
+### Changing a credential
+
+A credential the operator can replace from Maison — the dialog grows a **Change
+password** form with a **Generate** button. The motivating case is an app whose
+password lives only in its environment (Samba): without this, changing it meant
+editing `.env` by hand.
+
+```yaml
+x-compose-app:
+  secrets:
+    SAMBA_ADMIN_PASSWORD: ${APP_DEFAULT_PASSWORD}|password:24
+  credentials:
+    - label: SMB share
+      username: admin
+      password: ${SAMBA_ADMIN_PASSWORD}
+      change:
+        apply: env                 # env | hook — required
+        policy:                    # all optional
+          min_length: 8            # default 8
+          max_length: 64           # default 128
+          charset: printable       # printable (default) | alnum
+          require: [lower, upper, digit]   # any of lower, upper, digit, symbol
+          forbid: ""               # characters refused on top of Maison's own
+```
+
+**`apply` is how the new value reaches the app** — the one thing Maison cannot
+guess, so the listing states it:
+
+| `apply` | The app… | What Maison does |
+|---|---|---|
+| `env` | reads the variable on **every** start | writes `.env`, recreates the app, waits until it is running (and healthy, where it has a health check). If it does not come back, the previous `.env` is restored and the app recreated on it. |
+| `hook` | keeps its own copy (a user database) but has a way to change it | runs `hook` against the **running** app first; only if it succeeds writes `.env` and recreates. A failed hook changes nothing. Once it has succeeded the app holds the new password, so a failed recreate keeps the new `.env` rather than reverting to a password the app no longer accepts. |
+| *(no `change`)* | read the value once, at first boot | nothing — the credential is initial-only. Writing `.env` would make the dialog show a password the app does not accept. |
+
+```yaml
+      change:
+        apply: hook
+        hook: |
+          docker compose exec -T -e OC_PASS="$ADMIN_PASSWORD" -u www-data nextcloud \
+            php occ user:resetpassword --password-from-env admin
+```
+
+The hook is a [hook](#hooks) in every respect — same runner, command set and
+environment as `pre_install` — plus three variables: the secret's own name holding
+the **new** value (it overrides `.env`), `OLD_<NAME>` the previous one, and
+`COMPOSE_PROJECT_NAME` set to the app, so `docker compose exec <service>` from the
+app folder reaches its container. Pass the value through the environment (`-e NAME`)
+rather than on a command line. The app must be running; Maison refuses otherwise.
+
+**Only an app's own secret can change.** `password` must be exactly `${NAME}` and
+`NAME` a key under [`secrets`](#secrets-and-variables); anything else is shown as not
+changeable. In particular `${APP_DEFAULT_PASSWORD}` is box-wide and re-synced from
+`.env.app` on every up, so it cannot change for one app — moving the app to its own
+[seeded secret](#seeded-secrets--moving-an-installed-app-off-a-shared-value) is what
+makes it changeable.
+
+**Derived secrets follow.** Every other secret whose generator reads the changed one
+(`ADMIN_HASH: bcrypt:${ADMIN_PASSWORD}`) is emptied and regenerated from the new value
+on the same up. `init` steps are **not** re-run: a `once` step that created the
+account would fail the second time — an app that needs more than a restart to take a
+new password uses `apply: hook`.
+
+**The policy applies to typed and generated values alike**, and the server enforces it
+— the form only previews it. On top of whatever the app says, Maison always refuses
+whitespace, control characters, anything outside printable ASCII and
+`` $ ' " \ ` # ``: the value is written raw into `.env`, where compose interpolation,
+quoting and comments would each misread one of them. **Generate** keeps the length of
+the secret's own `password:N` / `alnum:N` when the policy allows it, always includes
+each required class, and draws symbols only from `-_.!@%+=,:`.
+
+**Values never travel back.** `POST /api/apps/{id}/credentials/{index}/generate`
+returns a candidate (`no-store`, nothing written); `POST …/{index}/change` with
+`{"password": …}` applies it — `400` with `rules` (`too_short`, `too_long`, `charset`,
+`forbidden`, `require_<class>`) for a refused value, `409` while the app is updating,
+being backed up, or (for `hook`) stopped. Errors and logs are redacted of both the old
+and the new value, because a hook's or an up's error carries its output. `index` is the
+entry's position in the declared list, which `credentials/show` returns with each
+entry alongside its `change` (apply, normalized policy, and whether it can be offered).
+
+Technical secrets — database passwords, signing and encryption keys — have no change
+form. Rotating one is app-specific at best (a database password must change on both
+sides) and data-destroying at worst (an encryption key), so it is not a generic
+operation.
 
 ---
 
@@ -1003,6 +1088,8 @@ x-compose-app:
     post_up: |
       echo "$AppID up at $(date)" >> /var/log/maison-apps.log
 ```
+
+A credential's [`change.hook`](#changing-a-credential) runs the same way, on demand.
 
 `pre_install` / `post_install` generalise the CasaOS `pre-install-cmd` /
 `post-install-cmd`, and **win over them** when both are present. A store app that

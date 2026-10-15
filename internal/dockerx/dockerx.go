@@ -11,6 +11,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -367,6 +368,9 @@ type Service struct {
 	ID      string `json:"container_id"`
 	State   string `json:"state"`  // running, exited, created, ...
 	Health  string `json:"health"` // "", starting, healthy, unhealthy
+	// Status is Docker's one-line summary ("Exited (0) 2 seconds ago"); not sent,
+	// read by WaitProjectReady to tell a finished one-shot from a crash.
+	Status string `json:"-"`
 }
 
 // ProjectServices lists every container in a compose project as a service,
@@ -388,10 +392,51 @@ func (c *Client) ProjectServices(ctx context.Context, project string) ([]Service
 			ID:      ct.ID,
 			State:   ct.State,
 			Health:  parseHealth(ct.Status),
+			Status:  ct.Status,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
 	return out, nil
+}
+
+// WaitProjectReady polls a project until every container is running and, where
+// it declares a health check, healthy. It fails with what it last saw when the
+// timeout passes first, or at once when a health check reports unhealthy.
+func (c *Client) WaitProjectReady(ctx context.Context, project string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	last := "no containers"
+	for {
+		svcs, err := c.ProjectServices(ctx, project)
+		if err == nil {
+			ready := true
+			for _, s := range svcs {
+				if s.Health == "unhealthy" {
+					return fmt.Errorf("%s: service %s is unhealthy", project, s.Service)
+				}
+				if s.State == "exited" && strings.HasPrefix(s.Status, "Exited (0)") {
+					continue // a one-shot service that finished, not a crash
+				}
+				if s.State != "running" || (s.Health != "" && s.Health != "healthy") {
+					ready = false
+					last = "service " + s.Service + " is " + s.State
+					if s.Health != "" {
+						last += " (" + s.Health + ")"
+					}
+				}
+			}
+			if ready {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not become ready in %s: %s", project, timeout, last)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // ContainerHealth returns one container's health-check status ("" when it has

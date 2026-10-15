@@ -512,6 +512,8 @@
   "cred_rule_require_upper": "至少一个大写字母",
   "cred_rule_require_digit": "至少一个数字",
   "cred_rule_require_symbol": "至少一个符号",
+  "security_intro": "更改 {name} 允许 Maison 管理的密码。保存后新密码会立即应用到应用。",
+  "security_none": "{name} 没有可由 Maison 更改的密码。其凭据可从应用磁贴菜单查看。",
   "backup_row_needs_approval": "installed, not enabled yet",
   "backup_engines_rescan": "Look for backup engines",
   "backup_approve_explain": "The {app} app provides a backup engine. Nothing is backed up to it until you enable it. Enabling it lets Maison run the engine with access to every app's data, so only enable an engine you installed yourself.",

@@ -28,6 +28,7 @@
   import OverrideForm from './OverrideForm.svelte'
   import TipsView from './TipsView.svelte'
   import BackupsTab from './BackupsTab.svelte'
+  import SecurityTab from './SecurityTab.svelte'
 
   let {
     id,
@@ -55,6 +56,7 @@
     | 'override'
     | 'update'
     | 'backups'
+    | 'security'
     | 'logs'
     | 'stats'
   const MANAGED_TABS: Tab[] = [
@@ -65,16 +67,21 @@
     'override',
     'update',
     'backups',
+    'security',
     'logs',
     'stats',
   ]
   const UNMANAGED_TABS: Tab[] = ['logs', 'stats']
   // An app that declares `lifecycle.updatable: false` is updated by something else
   // (its platform installer); the backend refuses its update routes, so no tab.
+  // Security changes the app's declared credentials, so an app without any has none.
   const updatable = $derived($apps.find((a) => a.id === id)?.updatable !== false)
-  const tabsFor = (isManaged: boolean, isUpdatable: boolean): Tab[] =>
-    !isManaged ? UNMANAGED_TABS : isUpdatable ? MANAGED_TABS : MANAGED_TABS.filter((t) => t !== 'update')
-  const tabs = $derived<Tab[]>(tabsFor(managed, updatable))
+  const hasCredentials = $derived(!!$apps.find((a) => a.id === id)?.has_credentials)
+  const tabsFor = (isManaged: boolean, isUpdatable: boolean, hasCreds: boolean): Tab[] =>
+    !isManaged
+      ? UNMANAGED_TABS
+      : MANAGED_TABS.filter((t) => (t !== 'update' || isUpdatable) && (t !== 'security' || hasCreds))
+  const tabs = $derived<Tab[]>(tabsFor(managed, updatable, hasCredentials))
   const tabLabel: Record<Tab, string> = {
     tips: 'Tips',
     webui: 'Web UI',
@@ -83,6 +90,7 @@
     override: 'Override',
     update: 'Update',
     backups: 'Backups',
+    security: 'Security',
     logs: 'Logs',
     stats: 'Stats',
   }
@@ -91,7 +99,8 @@
   // default first tab.
   function firstTab(): Tab {
     const wanted = initialTab as Tab | undefined
-    const available = tabsFor(managed, $apps.find((a) => a.id === id)?.updatable !== false)
+    const app = $apps.find((a) => a.id === id)
+    const available = tabsFor(managed, app?.updatable !== false, !!app?.has_credentials)
     if (wanted && available.includes(wanted)) return wanted
     return managed ? 'tips' : 'logs'
   }
@@ -792,6 +801,8 @@
         </div>
       {:else if tab === 'backups'}
         <BackupsTab {id} />
+      {:else if tab === 'security'}
+        <SecurityTab {id} {name} />
       {:else if tab === 'logs'}
         {@render servicePicker()}
         {#if !servicesLoaded}

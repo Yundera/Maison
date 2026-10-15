@@ -603,6 +603,8 @@
   "cred_rule_require_upper": "Au moins une majuscule",
   "cred_rule_require_digit": "Au moins un chiffre",
   "cred_rule_require_symbol": "Au moins un symbole",
+  "security_intro": "Modifiez les mots de passe que {name} laisse gérer à Maison. L'enregistrement applique aussitôt le nouveau mot de passe à l'application.",
+  "security_none": "{name} n'a aucun mot de passe modifiable par Maison. Ses identifiants s'affichent depuis le menu de la tuile de l'application.",
   "backup_row_needs_approval": "installé, pas encore activé",
   "backup_engines_rescan": "Rechercher des moteurs de sauvegarde",
   "backup_approve_explain": "L'application {app} fournit un moteur de sauvegarde. Rien n'y est sauvegardé tant que vous ne l'avez pas activé. L'activer permet à Maison d'exécuter ce moteur avec accès aux données de toutes les applications : n'activez qu'un moteur que vous avez installé vous-même.",

@@ -514,6 +514,8 @@
   "cred_rule_require_upper": "Mindestens ein Großbuchstabe",
   "cred_rule_require_digit": "Mindestens eine Ziffer",
   "cred_rule_require_symbol": "Mindestens ein Sonderzeichen",
+  "security_intro": "Ändern Sie die Passwörter, die {name} von Maison verwalten lässt. Beim Speichern wird das neue Passwort sofort auf die App angewendet.",
+  "security_none": "{name} hat kein Passwort, das Maison ändern kann. Die Zugangsdaten finden Sie im Menü der App-Kachel.",
   "backup_row_needs_approval": "installed, not enabled yet",
   "backup_engines_rescan": "Look for backup engines",
   "backup_approve_explain": "The {app} app provides a backup engine. Nothing is backed up to it until you enable it. Enabling it lets Maison run the engine with access to every app's data, so only enable an engine you installed yourself.",

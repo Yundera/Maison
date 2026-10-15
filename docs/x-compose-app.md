@@ -448,8 +448,9 @@ friction, not the need for a trusted network: the values are the same ones the a
 
 ### Changing a credential
 
-A credential the operator can replace from Maison — the dialog grows a **Change
-password** form with a **Generate** button. The motivating case is an app whose
+A credential the operator can replace from Maison, in the app settings' **Security**
+tab: a **Change password** form with a **Generate** button. The Credentials dialog
+only shows credentials, it never changes them. The motivating case is an app whose
 password lives only in its environment (Samba): without this, changing it meant
 editing `.env` by hand.
 

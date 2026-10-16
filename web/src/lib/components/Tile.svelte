@@ -1,6 +1,6 @@
 <script lang="ts">
   import { get } from 'svelte/store'
-  import { clickOutside } from '../actions'
+  import { clickOutside, pointerGlow } from '../actions'
   import {
     appAction,
     appProgress,
@@ -137,7 +137,15 @@
   }
 </script>
 
-<div class="tile" class:stopped class:busy={locked} class:unavailable={!openable && !settingsOnly} class:child={isChild}>
+<div
+  class="tile"
+  class:stopped
+  class:busy={locked}
+  class:unavailable={!openable && !settingsOnly}
+  class:child={isChild}
+  class:open={menuOpen}
+  use:pointerGlow
+>
   <div class="glass"></div>
 
   {#if tile.kind !== 'system' && !locked}
@@ -159,7 +167,7 @@
   {/if}
 
   {#if menuOpen && !locked}
-    <div class="menu" use:clickOutside={() => (menuOpen = false)}>
+    <div class="menu popover" use:clickOutside={() => (menuOpen = false)}>
       <!-- A failed install or uninstall is explained here, not in a tooltip: a touch
            screen never shows a tooltip, and the PWA is mostly touch. It sits in the
            menu rather than on the tile so the tile's corners stay free for the burger.
@@ -294,10 +302,60 @@
     position: relative;
     aspect-ratio: 1 / 1;
     border-radius: var(--radius-card);
-    transition: box-shadow 0.2s;
+    box-shadow: var(--shadow-rest);
+    transition:
+      transform var(--dur) var(--ease-ios),
+      box-shadow var(--dur) var(--ease-ios);
   }
   .tile:hover {
-    box-shadow: 0 0 17px 0 rgba(0, 0, 0, 0.2);
+    transform: translateY(-2px) scale(1.02);
+    box-shadow: var(--shadow-lift);
+  }
+  /* Press: the whole card gives, not just its contents. */
+  .tile:has(.body:active:not(:disabled)) {
+    transform: scale(0.97);
+    transition-duration: var(--dur-fast);
+  }
+  /* The hover transform makes the tile a stacking context, so its menu would
+     slide under the next tile; lift the one whose menu is open. */
+  .tile.open {
+    z-index: 6;
+  }
+  /* svelte-dnd-action clones the cell with its computed styles: a lifted or
+     pressed tile would carry its transform into the drag ghost. */
+  :global(.cell.grabbing) .tile,
+  :global([aria-grabbed='true']) .tile {
+    transform: none;
+  }
+  /* Specular highlight following the mouse (see pointerGlow). */
+  .tile::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(
+      140px circle at var(--mx, 50%) var(--my, 0%),
+      rgb(255 255 255 / 0.14),
+      transparent 70%
+    );
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease-ios);
+  }
+  @media (hover: hover) {
+    .tile:hover::after {
+      opacity: 1;
+    }
+  }
+  /* An extension's card is inset in its cell; a shadow on the cell would draw
+     a phantom card around it. */
+  .tile.child,
+  .tile.child:hover {
+    box-shadow: none;
+  }
+  .tile.child::after {
+    inset: 9%;
   }
   .body {
     position: relative;
@@ -321,6 +379,9 @@
     width: 64px;
     height: 64px;
     border-radius: var(--radius-icon);
+    /* Superellipse, not a rounded square; the radius is the fallback. */
+    -webkit-mask: var(--squircle) center / 100% 100% no-repeat;
+    mask: var(--squircle) center / 100% 100% no-repeat;
     display: grid;
     place-items: center;
     overflow: hidden;
@@ -458,13 +519,15 @@
     width: 1.6rem;
     height: 1.6rem;
     border: none;
-    border-radius: 6px;
-    background: rgba(0, 0, 0, 0.25);
+    border-radius: var(--r-pill);
+    background: rgb(0 0 0 / 0.25);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     color: #fff;
     font-size: 1rem;
     line-height: 1;
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity var(--dur-fast) var(--ease-ios);
   }
   /* A failed operation paints the burger itself, because that is where the
      explanation is: the thing to tap and the thing that is red are the same. Always
@@ -481,13 +544,11 @@
     top: 2rem;
     right: 0.5rem;
     z-index: 5;
-    background: #fff;
-    border-radius: 10px;
-    padding: 4px;
+    padding: 5px;
     min-width: 8.5rem;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
     display: flex;
     flex-direction: column;
+    transform-origin: top right;
   }
   .menu button {
     text-align: left;
@@ -495,12 +556,12 @@
     padding: 0 0.6rem;
     border: none;
     background: none;
-    border-radius: 5px;
+    border-radius: calc(var(--r-md) - 5px);
     font-size: 0.875rem;
     color: var(--grey-800);
   }
   .menu button:hover {
-    background: hsla(208, 16%, 96%, 1);
+    background: rgb(118 118 128 / 0.14);
   }
   .menu button.danger {
     color: var(--red);
@@ -609,15 +670,19 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--status-running);
+    background: var(--dot-ok);
+    box-shadow: 0 0 6px var(--dot-ok);
   }
   .dot.unhealthy {
-    background: var(--yellow);
+    background: var(--dot-warn);
+    box-shadow: 0 0 6px var(--dot-warn);
   }
   .dot.failed {
     width: 10px;
     height: 10px;
-    background: var(--red);
-    box-shadow: 0 0 0 2px #fff;
+    background: var(--dot-error);
+    box-shadow:
+      0 0 0 2px #fff,
+      0 0 8px var(--dot-error);
   }
 </style>

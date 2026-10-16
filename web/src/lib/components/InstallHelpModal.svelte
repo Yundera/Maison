@@ -10,8 +10,8 @@
   const close = () => installHelp.set(false)
 </script>
 
-<div class="backdrop" onclick={close} role="presentation">
-  <div class="dialog" onclick={(e) => e.stopPropagation()} role="presentation">
+<div class="backdrop sheet-backdrop" onclick={close} role="presentation">
+  <div class="dialog sheet" onclick={(e) => e.stopPropagation()} role="presentation">
     <h2>{$t('install_ios_title')}</h2>
 
     <ol>
@@ -51,7 +51,7 @@
   .dialog {
     width: min(92vw, 26rem);
     background: #fff;
-    border-radius: 14px;
+    border-radius: var(--r-xl);
     padding: 1.25rem 1.4rem;
     color: var(--grey-800);
   }

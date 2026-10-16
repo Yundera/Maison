@@ -96,7 +96,7 @@
       </button>
 
       {#if open}
-        <div class="dropdown" use:clickOutside={() => (open = false)}>
+        <div class="dropdown popover" use:clickOutside={() => (open = false)}>
           <h3>{$t('settings')}</h3>
 
           <label class="field">
@@ -202,8 +202,19 @@
     align-items: center;
     padding-left: 1rem;
     padding-right: 1rem;
-    background: #fff;
-    border-bottom: 1px solid hsla(208, 16%, 90%, 1);
+    border-bottom: 1px solid rgb(0 0 0 / 0.06);
+  }
+  /* The bar's blur lives on a pseudo-element: a backdrop-filter on .topbar itself
+     would become the backdrop root of the dropdown inside it, and the dropdown
+     could then blur nothing but the bar. */
+  .topbar::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: rgb(255 255 255 / 0.62);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
   }
   .left {
     display: flex;
@@ -218,15 +229,20 @@
     place-items: center;
     width: 2.25rem;
     height: 2.25rem;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background: transparent;
     border: none;
     color: #363636;
     cursor: pointer;
-    transition: background 0.15s;
+    transition:
+      background var(--dur-fast) var(--ease-ios),
+      transform var(--dur-fast) var(--ease-ios);
   }
   .picon:hover {
-    background: rgba(0, 0, 0, 0.05);
+    background: rgb(0 0 0 / 0.06);
+  }
+  .picon:active {
+    transform: scale(0.92);
   }
   /* Only rendered when there is something to say, so it needs no resting state: an
      always-present bell that is usually empty trains people not to look at it. */
@@ -258,15 +274,13 @@
     left: 0;
     top: 2.75rem;
     width: 17rem;
-    background: #fff;
-    border-radius: 12px;
+    border-radius: var(--r-lg);
     padding: 1rem;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
     color: var(--grey-800);
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    border: 1px solid hsla(208, 16%, 90%, 1);
+    transform-origin: top left;
   }
   .dropdown h3 {
     margin: 0;
@@ -283,7 +297,7 @@
   select {
     background: #fff;
     border: 1px solid #cfcfcf;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     color: var(--grey-800);
     padding: 0.4rem 0.5rem;
     font-size: 0.85rem;
@@ -295,7 +309,7 @@
   .thumb {
     width: 3.4rem;
     height: 2.1rem;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background-size: cover;
     background-position: center;
     border: 2px solid transparent;
@@ -327,7 +341,7 @@
     width: 100%;
     padding: 0.5rem;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--grey-800);
     font-size: 0.85rem;

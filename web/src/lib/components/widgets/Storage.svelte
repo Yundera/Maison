@@ -41,15 +41,15 @@
     display: inline-block;
     font-size: 0.7rem;
     font-weight: 600;
-    color: var(--green);
-    border: 1px solid var(--green);
-    border-radius: 4px;
-    padding: 0 0.35rem;
-    line-height: 1.1rem;
+    color: var(--dot-ok);
+    background: rgb(52 199 89 / 0.24);
+    border-radius: var(--r-pill);
+    padding: 0 0.55rem;
+    line-height: 1.25rem;
   }
   .badge.warn {
-    color: var(--orange);
-    border-color: var(--orange);
+    color: #ff9f0a;
+    background: rgb(255 159 10 / 0.24);
   }
   .lines {
     display: flex;

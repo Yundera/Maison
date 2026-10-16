@@ -39,10 +39,15 @@
     position: relative;
     border-radius: var(--radius-card);
     margin-bottom: 1rem;
-    transition: box-shadow 0.2s;
+    box-shadow: var(--shadow-rest);
+    transition:
+      transform var(--dur) var(--ease-ios),
+      box-shadow var(--dur) var(--ease-ios);
   }
+  /* A wide card lifts less than a tile does, or the scale reads as a zoom. */
   .widget:hover {
-    box-shadow: 0 0 17px 0 rgba(0, 0, 0, 0.2);
+    transform: translateY(-2px) scale(1.01);
+    box-shadow: var(--shadow-lift);
   }
   .widget-content {
     position: relative;

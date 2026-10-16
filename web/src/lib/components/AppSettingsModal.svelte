@@ -484,14 +484,14 @@
   const liveHealth = $derived(stat?.health || selectedSvc?.health || '')
 </script>
 
-<div class="backdrop" onclick={onclose} role="presentation">
-  <div class="modal" onclick={(e) => e.stopPropagation()} role="presentation">
+<div class="backdrop sheet-backdrop" onclick={onclose} role="presentation">
+  <div class="modal sheet" onclick={(e) => e.stopPropagation()} role="presentation">
     <header>
       <h2>{name}</h2>
       <button class="close" aria-label="Close" onclick={onclose}>✕</button>
     </header>
 
-    <nav class="tabs">
+    <nav class="tabs segmented">
       {#each tabs as t (t)}
         <button class:active={tab === t} onclick={() => (tab = t)}>{tabLabel[t]}</button>
       {/each}
@@ -881,7 +881,7 @@
     height: min(88vh, 680px);
     background: var(--surface);
     backdrop-filter: blur(14px);
-    border-radius: 14px;
+    border-radius: var(--r-xl);
     padding: 1.1rem 1.35rem;
     color: var(--text);
     display: flex;
@@ -902,23 +902,10 @@
     color: var(--text-muted);
     font-size: 1.1rem;
   }
+  /* Drawn by the global .segmented control; this only places it. */
   .tabs {
-    display: flex;
-    gap: 0.25rem;
+    align-self: flex-start;
     margin: 0.75rem 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .tabs button {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    padding: 0.5rem 0.9rem;
-    border-bottom: 2px solid transparent;
-    font-size: 0.9rem;
-  }
-  .tabs button.active {
-    color: var(--text);
-    border-bottom-color: var(--primary);
   }
   .content {
     flex: 1;
@@ -949,20 +936,22 @@
     gap: 0.15rem;
     padding: 0.15rem;
     margin-bottom: 0.6rem;
-    background: var(--surface-sunken);
-    border-radius: 8px;
+    background: rgb(118 118 128 / 0.12);
+    border-radius: var(--r-sm);
   }
   .views button {
     background: none;
     border: none;
     color: var(--text-muted);
-    border-radius: 6px;
+    border-radius: calc(var(--r-sm) - 2px);
     padding: 0.3rem 0.8rem;
     font-size: 0.78rem;
+    transition: background var(--dur-fast) var(--ease-ios);
   }
   .views button.active {
-    background: var(--surface-3);
+    background: var(--surface);
     color: var(--text);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
   }
   .hint {
     color: var(--text-muted);

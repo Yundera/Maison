@@ -51,8 +51,8 @@
   }
 </script>
 
-<div class="backdrop" onclick={close} role="presentation">
-  <div class="dialog" onclick={(e) => e.stopPropagation()} role="presentation">
+<div class="backdrop sheet-backdrop" onclick={close} role="presentation">
+  <div class="dialog sheet" onclick={(e) => e.stopPropagation()} role="presentation">
     <header>
       <h2>{$t('monitor')}</h2>
       <button class="close" aria-label={$t('back')} onclick={close}>✕</button>
@@ -104,7 +104,7 @@
     display: flex;
     flex-direction: column;
     background: var(--surface);
-    border-radius: 14px;
+    border-radius: var(--r-xl);
     padding: 1.25rem 1.4rem;
     color: var(--text);
   }

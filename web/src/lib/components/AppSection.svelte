@@ -177,7 +177,7 @@
       <div class="add-wrap">
         <button class="add" title="Add" aria-label="Add" onclick={() => (addMenu = !addMenu)}>+</button>
         {#if addMenu}
-          <div class="add-menu" use:clickOutside={() => (addMenu = false)}>
+          <div class="add-menu popover" use:clickOutside={() => (addMenu = false)}>
             <button
               onclick={() => {
                 addMenu = false
@@ -220,6 +220,8 @@
     font-size: 1.5rem;
     font-weight: 600;
     margin: 0;
+    /* The heading sits on bare wallpaper, not glass: a light wallpaper erases it. */
+    text-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
   }
   /* The heading becomes the switch: same type, the inactive view dimmed rather
      than boxed, so the row still reads as a title and not as a toolbar. */
@@ -249,25 +251,32 @@
   .add {
     width: 1.75rem;
     height: 1.75rem;
-    border-radius: 8px;
+    border-radius: var(--r-pill);
     border: none;
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--glass-color);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow: var(--glass-shadow);
     color: var(--grey-100);
     font-size: 1.1rem;
     line-height: 1;
+    transition:
+      background var(--dur-fast) var(--ease-ios),
+      transform var(--dur-fast) var(--ease-ios);
   }
   .add:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgb(60 62 70 / 0.5);
+  }
+  .add:active {
+    transform: scale(0.9);
   }
   .add-menu {
     position: absolute;
     right: 0;
     top: 2.1rem;
     z-index: 10;
-    background: #fff;
-    border-radius: 10px;
-    padding: 4px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    padding: 5px;
+    transform-origin: top right;
   }
   .add-menu button {
     display: block;
@@ -278,12 +287,12 @@
     padding: 0 0.6rem;
     border: none;
     background: none;
-    border-radius: 5px;
+    border-radius: calc(var(--r-md) - 5px);
     font-size: 0.875rem;
     color: var(--grey-800);
   }
   .add-menu button:hover {
-    background: hsla(208, 16%, 96%, 1);
+    background: rgb(118 118 128 / 0.14);
   }
   /*
    * App grid column counts ported verbatim from casa-img's `.app-list`:

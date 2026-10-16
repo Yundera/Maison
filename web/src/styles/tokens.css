@@ -1,7 +1,8 @@
 /*
- * Maison design tokens — ported verbatim from CasaOS-UI SCSS variables so the
- * dashboard reads as CasaOS. Source: casa-img/CasaOS-UI/src/assets/scss/common/
- * _variables.scss + _others.scss (.blur-background).
+ * Maison design tokens. The colour ramp started as a port of CasaOS-UI's SCSS
+ * variables; the material, radius and motion tokens below deliberately move
+ * the desktop towards iOS (heavy frosted glass, one radius scale, spring-like
+ * easing) without changing the CasaOS layout.
  */
 :root {
   /* Brand / semantic */
@@ -64,6 +65,14 @@
   /* Status dots */
   --status-running: #779e2a;
   --status-exited: #ff1616;
+  /* iOS system colours for glowing dots on the dark desktop glass. Too light
+     for text on a white panel — that is what --status-running is for. */
+  --dot-ok: #34c759;
+  --dot-warn: #ffcc00;
+  --dot-error: #ff3b30;
+
+  /* Squircle (superellipse) mask for app icons. */
+  --squircle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 0C88 0 100 12 100 50S88 100 50 100 0 88 0 50 12 0 50 0Z'/%3E%3C/svg%3E");
 
   /* Progress. An app shows ONE bar at a time and the colour says which
      operation it is — see appProgress() in lib/stores/apps.ts. The tile and the
@@ -81,18 +90,46 @@
 
   /* Frosted glass (the single most load-bearing visual).
      DELIBERATELY DARK, and not covered by the light-surface tokens above: the
-     dashboard is the CasaOS look the project commits to, glass over the user's
-     wallpaper with light text on it. The light tokens are for panels — modals,
-     the store, settings — everything that is a *page*, not the desktop. */
-  --glass-color: rgba(53, 54, 58, 0.4);
-  --glass-blur: blur(5px) saturate(180%);
-  --glass-radius: 10px;
-  --glass-shadow: rgb(255 255 255 / 12.5%) 0.5px 1px 1px 0px inset;
+     desktop is glass over the user's wallpaper with light text on it. The light
+     tokens are for panels — modals, the store, settings — everything that is a
+     *page*, not the desktop. The tint is as light as it can go while white text
+     stays readable over the bundled light wallpaper (wallpaper01); a lighter
+     one looks more "iOS" on a dark wallpaper and washes out on a light one. */
+  --glass-color: rgb(28 30 36 / 0.42);
+  --glass-blur: blur(30px) saturate(180%);
+  --glass-radius: var(--r-lg);
+  /* Hairline edge + a top lip of light: what makes the pane read as glass. */
+  --glass-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12),
+    inset 0 1px 0 rgb(255 255 255 / 0.18);
+  --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / 0.1), rgb(255 255 255 / 0) 55%);
 
-  /* Radii */
-  --radius-card: 10px;
-  --radius-icon: 11.5px;
-  --radius-thumb: 4px;
+  /* Light material — popovers, menus and the top bar sitting over the desktop.
+     Translucent, unlike the solid --surface of dialogs, which hold long text. */
+  --material-light: rgb(250 250 252 / 0.78);
+  --material-light-blur: blur(30px) saturate(180%);
+  --material-light-edge: rgb(255 255 255 / 0.55);
+
+  /* Radius scale. Nested shapes follow inner = outer − padding. */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 22px;
+  --r-pill: 999px;
+  --radius-card: var(--r-lg);
+  --radius-icon: 22.5%;
+  --radius-thumb: var(--r-xs);
+
+  /* Elevation: a tight contact shadow plus a wide ambient one. */
+  --shadow-rest: 0 1px 2px rgb(0 0 0 / 0.08), 0 8px 24px rgb(0 0 0 / 0.1);
+  --shadow-lift: 0 2px 4px rgb(0 0 0 / 0.1), 0 18px 40px rgb(0 0 0 / 0.22);
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.08), 0 20px 50px rgb(0 0 0 / 0.28);
+  --shadow-sheet: 0 1px 3px rgb(0 0 0 / 0.08), 0 30px 80px rgb(0 0 0 / 0.35);
+
+  /* Motion — close to the iOS sheet curve. */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 180ms;
+  --dur: 300ms;
 
   /* Typography */
   --font-sans: BrittiSans, -apple-system, BlinkMacSystemFont, "Segoe UI",

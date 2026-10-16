@@ -282,7 +282,7 @@
     height: 128px;
     flex: none;
     object-fit: cover;
-    border-radius: 18.75%;
+    border-radius: var(--radius-icon);
     background: linear-gradient(180deg, #f7fafc 0%, #f0f2f5 100%);
     box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.2);
   }

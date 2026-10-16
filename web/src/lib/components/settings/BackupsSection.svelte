@@ -49,6 +49,7 @@
     changeEngineSecret,
     generateSecret,
     recoverBackupEngine,
+    initBackupEngine,
     approveBackupEngine,
     revokeBackupEngine,
     rescanBackupEngines,
@@ -401,6 +402,63 @@
     }
   }
 
+  // --- setting the first password ---------------------------------------------------
+  // Provisioned, empty storage: nothing to recover and nothing lost, but no backup runs
+  // there until the owner chooses the password its repository is created with. Usually
+  // done during the deployment's onboarding; this is the same step for an owner who
+  // skipped it, or who turned backups back on later.
+  //
+  // Same rules as the change form, for the same reason: the password is not mailed, so
+  // the owner takes the copy here, enters it twice and says they saved it.
+  let initSecretValue = $state('')
+  let initRepeat = $state('')
+  let initSaved = $state(false)
+  let initing = $state(false)
+  let initError = $state('')
+  let initCopied = $state(false)
+
+  function generateInit() {
+    initSecretValue = generateSecret()
+    initRepeat = ''
+    initCopied = false
+  }
+
+  async function copyInitSecret() {
+    try {
+      await navigator.clipboard.writeText(initSecretValue)
+      initCopied = true
+    } catch {
+      initCopied = false
+    }
+  }
+
+  const initTooShort = $derived(initSecretValue.trim().length > 0 && initSecretValue.trim().length < 16)
+  const initMismatch = $derived(initRepeat.length > 0 && initRepeat.trim() !== initSecretValue.trim())
+  const canInit = $derived(
+    !initing && initSecretValue.trim().length >= 16 && initRepeat.trim() === initSecretValue.trim() && initSaved,
+  )
+
+  async function initEngine(id: string) {
+    initing = true
+    initError = ''
+    keyNote = ''
+    try {
+      await initBackupEngine(id, initSecretValue.trim())
+      initSecretValue = ''
+      initRepeat = ''
+      initSaved = false
+      initCopied = false
+      keyNote = $t('backup_init_done')
+      await loadStatus()
+    } catch (e) {
+      // A 409 is storage that is no longer empty, or no longer waiting; both carry the
+      // server's sentence, which says what to do instead.
+      initError = (e as Error).message
+    } finally {
+      initing = false
+    }
+  }
+
   // --- recovery -------------------------------------------------------------------
   // The rebuilt box. Its storage already holds the backups a previous installation
   // made, and this box has no key for them, so it takes no backups there and cannot
@@ -565,6 +623,11 @@
         // that earns would hide the one state where everything the user owns is at stake.
         level = 'bad'
         note = $t('backup_row_needs_key')
+      } else if (e.needs_secret) {
+        // Before "receives" for the same reason: an engine with no repository yet is
+        // routed nothing, and idle grey would hide the one step left to take.
+        level = 'warn'
+        note = $t('backup_row_needs_password')
       } else if (!receives) {
         // Not a fault. An engine can hold history without being written to any more,
         // and saying "no backups" about it would read as data loss.
@@ -604,6 +667,8 @@
     // and it is the one thing on this page that outranks everything else.
     if ((status.engines ?? []).some((e) => e.needs_recovery))
       return { level: 'bad', text: $t('backup_state_needs_key') }
+    if ((status.engines ?? []).some((e) => e.needs_secret))
+      return { level: 'warn', text: $t('backup_state_needs_password') }
     if (loading && !engines.length) return { level: 'checking', text: $t('backup_state_checking') }
     if (!rows.some((r) => r.receives)) return { level: 'bad', text: $t('backup_state_no_destination') }
     if (rows.some((r) => r.level === 'bad')) return { level: 'bad', text: $t('backup_state_destination_failing') }
@@ -1071,6 +1136,60 @@
           </p>
         {/if}
       </div>
+    {:else if activeInfo?.needs_secret}
+      <!-- In place of the key block too: there is no repository yet, so no key to show,
+           mail or change — only one to choose. -->
+      <div class="recovery">
+        <h4>{$t('backup_init_title')}</h4>
+        <p class="hint">{$t('backup_init_explain', { name: secretName })}</p>
+        {#if activeInfo.can_init}
+          <form
+            class="recover-form change-form"
+            onsubmit={(e) => {
+              e.preventDefault()
+              initEngine(activeInfo.id)
+            }}
+          >
+            <div class="key">
+              <input
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder={$t('backup_secret_new_placeholder')}
+                aria-label={$t('backup_secret_new_placeholder')}
+                bind:value={initSecretValue}
+                oninput={() => (initCopied = false)}
+                disabled={initing}
+              />
+              <button type="button" onclick={generateInit} disabled={initing}>{$t('backup_secret_generate')}</button>
+              <button type="button" onclick={copyInitSecret} disabled={initing || !initSecretValue}>
+                {initCopied ? $t('copied') : $t('copy')}
+              </button>
+            </div>
+            {#if initTooShort}<p class="err at-form">{$t('backup_secret_too_short')}</p>{/if}
+            <input
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder={$t('backup_secret_repeat_placeholder')}
+              aria-label={$t('backup_secret_repeat_placeholder')}
+              bind:value={initRepeat}
+              disabled={initing}
+            />
+            {#if initMismatch}<p class="err at-form">{$t('backup_secret_mismatch')}</p>{/if}
+            <label class="check">
+              <input type="checkbox" bind:checked={initSaved} disabled={initing} />
+              {$t('backup_init_saved', { name: secretName })}
+            </label>
+            <button class="go" type="submit" disabled={!canInit}>
+              {initing ? $t('backup_init_working') : $t('backup_init_submit')}
+            </button>
+          </form>
+          {#if initError}<p class="err at-form">{initError}</p>{/if}
+        {:else}
+          <p class="hint quiet">{$t('backup_init_unsupported')}</p>
+        {/if}
+      </div>
     {:else if activeInfo?.encrypted}
       <h4>{secretName}</h4>
       <p class="hint">{$t('backup_key_hint')}</p>
@@ -1238,8 +1357,8 @@
      Modal on purpose — it is the one moment the answer matters, and a choice the user
      can click past is a choice the schedule makes for them at 03:30. -->
 {#if recovered}
-  <div class="backdrop" role="presentation">
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="recovered-title">
+  <div class="backdrop sheet-backdrop" role="presentation">
+    <div class="dialog sheet" role="dialog" aria-modal="true" aria-labelledby="recovered-title">
       <h2 id="recovered-title">{$t('backup_recovered_title')}</h2>
       {#if conf?.enabled}
         <p class="body">{$t('backup_recovered_explain')}</p>
@@ -1766,7 +1885,7 @@
     width: min(92vw, 28rem);
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: var(--r-xl);
     padding: 1.25rem 1.4rem;
     color: var(--text);
   }

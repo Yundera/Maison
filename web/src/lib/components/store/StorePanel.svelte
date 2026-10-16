@@ -160,8 +160,8 @@
   }
 </script>
 
-<div class="backdrop" onclick={closeStore} role="presentation">
-  <div class="panel" onclick={(e) => e.stopPropagation()} role="presentation">
+<div class="backdrop sheet-backdrop" onclick={closeStore} role="presentation">
+  <div class="panel sheet" onclick={(e) => e.stopPropagation()} role="presentation">
     <header class="head">
       <h3 class="title">{$t('app_store')}</h3>
       <button class="close" aria-label="Close" onclick={closeStore}>✕</button>
@@ -283,7 +283,7 @@
     width: min(95vw, 81rem);
     height: min(94vh, 900px);
     background: #fff;
-    border-radius: 10px;
+    border-radius: var(--r-xl);
     color: var(--grey-800);
     display: flex;
     flex-direction: column;
@@ -307,7 +307,7 @@
     width: 1.6rem;
     height: 1.6rem;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--r-pill);
     background: transparent;
     color: #4a5560;
     font-size: 0.9rem;
@@ -358,7 +358,7 @@
   .search {
     height: 2rem;
     border: 1px solid #cfcfcf;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
     background: #fff;
     color: var(--grey-800);
     font-size: 0.875rem;
@@ -389,7 +389,7 @@
     height: 64px;
     flex: none;
     object-fit: cover;
-    border-radius: 18.75%;
+    border-radius: var(--radius-icon);
     background: linear-gradient(180deg, #f7fafc 0%, #f0f2f5 100%);
     box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.2);
   }
@@ -410,7 +410,7 @@
   }
   .thumb {
     aspect-ratio: 16 / 9;
-    border-radius: 8px;
+    border-radius: var(--r-md);
     background-size: cover;
     background-position: center;
     background-color: #e9edf1;
@@ -457,7 +457,7 @@
     }
   }
   .app-item {
-    border-radius: 8px;
+    border-radius: var(--r-md);
     padding: 0.6rem;
     cursor: pointer;
     transition: background 0.2s;

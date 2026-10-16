@@ -14,8 +14,8 @@
   }
 </script>
 
-<div class="backdrop" onclick={onclose} role="presentation">
-  <form class="dialog" onclick={(e) => e.stopPropagation()} onsubmit={submit}>
+<div class="backdrop sheet-backdrop" onclick={onclose} role="presentation">
+  <form class="dialog sheet" onclick={(e) => e.stopPropagation()} onsubmit={submit}>
     <h2>Add external link</h2>
     <label>Name<input bind:value={name} placeholder="My service" /></label>
     <label>URL<input bind:value={url} placeholder="https://example.com" /></label>
@@ -39,7 +39,7 @@
   .dialog {
     width: min(92vw, 26rem);
     background: #fff;
-    border-radius: 14px;
+    border-radius: var(--r-xl);
     padding: 1.25rem;
     display: flex;
     flex-direction: column;

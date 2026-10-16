@@ -37,8 +37,8 @@
   }
 </script>
 
-<div class="backdrop" onclick={close} role="presentation">
-  <form class="dialog" onclick={(e) => e.stopPropagation()} onsubmit={submit}>
+<div class="backdrop sheet-backdrop" onclick={close} role="presentation">
+  <form class="dialog sheet" onclick={(e) => e.stopPropagation()} onsubmit={submit}>
     <h2>{$t('feedback_title')}</h2>
 
     {#if sent}
@@ -95,7 +95,7 @@
   .dialog {
     width: min(92vw, 28rem);
     background: #fff;
-    border-radius: 14px;
+    border-radius: var(--r-xl);
     padding: 1.25rem 1.4rem;
     display: flex;
     flex-direction: column;

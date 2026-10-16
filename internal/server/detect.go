@@ -301,6 +301,12 @@ func (s *Server) checkBackup(ctx context.Context) {
 				s.incidents.Resolve(incidentID)
 				continue
 			}
+			if s.checkBackupSecretMissing(id, st) {
+				// Same reasoning: an engine with no repository yet is not connected, and
+				// "set a password" is the repair, not a network fault.
+				s.incidents.Resolve(incidentID)
+				continue
+			}
 		}
 
 		if !enabled || !known || !receives {
@@ -334,7 +340,8 @@ func (s *Server) checkBackup(ctx context.Context) {
 	// gone — has nothing left above to resolve it, so it is closed from the open set,
 	// the same way backup.missing is.
 	for _, inc := range s.incidents.Snapshot().Open {
-		if inc.Kind != incident.KindBackupRecovery && inc.Kind != incident.KindBackupApproval {
+		if inc.Kind != incident.KindBackupRecovery && inc.Kind != incident.KindBackupApproval &&
+			inc.Kind != incident.KindBackupSecretMissing {
 			continue
 		}
 		if _, ok := engineByID(s.engines, strings.TrimPrefix(inc.ID, inc.Kind+":")); !ok {
@@ -371,6 +378,30 @@ func (s *Server) checkBackupRecovery(id string, st apps.EngineStatus) bool {
 		Title:  "Backups need your key",
 		Detail: detail,
 		Args:   map[string]string{"engine": id},
+	})
+	return true
+}
+
+// checkBackupSecretMissing raises or resolves the "set a password" incident for one
+// engine, and reports whether the engine is in that state.
+//
+// A warning rather than critical: nothing is lost and nothing is failing — the storage
+// is empty. But no offsite backup will run until the owner picks the password, and a
+// box that skipped that step during setup must keep saying so in the bell, not only on
+// the settings page nobody opens.
+func (s *Server) checkBackupSecretMissing(id string, st apps.EngineStatus) bool {
+	incidentID := incident.KindBackupSecretMissing + ":" + id
+	if !st.NeedsSecret {
+		s.incidents.Resolve(incidentID)
+		return false
+	}
+	s.incidents.Report(incident.Report{
+		ID: incidentID, Kind: incident.KindBackupSecretMissing, Severity: incident.Warning,
+		Title: "Set a password to start backups",
+		Detail: "The backup storage of this server is ready, but no password has been chosen for it yet, " +
+			"so nothing is being backed up there.\n\nOpen Settings → Backups and set a password. " +
+			"Keep a copy somewhere safe: it is the only thing that can open your backups.",
+		Args: map[string]string{"engine": id},
 	})
 	return true
 }

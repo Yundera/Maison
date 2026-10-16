@@ -75,6 +75,12 @@ func (s *Server) adminRouter() http.Handler {
 	r.Delete("/secrets/{name}", s.handleAdminDeleteSecret)
 	r.Post("/stores/ensure", s.handleAdminEnsureStore)
 	r.Post("/backup/engines/{id}/approve", s.handleAdminApproveEngine)
+	// The same handlers as the HTTP API, unchanged: the deployment's tools reach them
+	// here so that a password typed during its onboarding goes straight from its
+	// process to the engine, never through the network. `maison backup …` in the CLI.
+	r.Get("/backup/status", s.handleBackupStatus)
+	r.Post("/backup/engines/{id}/init", s.handleInitEngine)
+	r.Post("/backup/engines/{id}/recover", s.handleRecoverEngine)
 	return r
 }
 

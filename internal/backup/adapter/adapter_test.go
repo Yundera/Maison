@@ -393,3 +393,64 @@ func TestChangeSecretRefusesAnEmptyKeyWithoutWritingIt(t *testing.T) {
 		t.Error("a blank key left a .next file behind")
 	}
 }
+
+// Empty, provisioned storage waiting for the owner's password arrives as a status
+// like needsRecovery does — and an adapter that predates the field must read as "no".
+func TestStatusCarriesNeedsSecret(t *testing.T) {
+	raw, err := decode([]byte(`{"type":"result","result":{"configured":false,"connected":false,"needsSecret":true}}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st wireStatus
+	if err := unmarshalResult(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	if !st.NeedsSecret || st.NeedsRecovery || st.Configured {
+		t.Errorf("status = %+v, want an unconfigured engine waiting for a password", st)
+	}
+	st = wireStatus{}
+	raw, _ = decode([]byte(`{"type":"result","result":{"configured":true,"connected":true}}`), nil)
+	if err := unmarshalResult(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.NeedsSecret {
+		t.Error("an old adapter's status read as waiting for a password")
+	}
+}
+
+// Caps.Init decides whether the page offers the "set a password" form at all.
+func TestCapsCarryInitAndProbe(t *testing.T) {
+	if c := (wireCaps{Init: true, Probe: true}).caps(); !c.Init || !c.Probe {
+		t.Errorf("caps = %+v, want init and probe carried through", c)
+	}
+	if c := (wireCaps{Recover: true}).caps(); c.Init || c.Probe {
+		t.Error("an adapter that never said init/probe was taken to support them")
+	}
+}
+
+// Exit 13 from init is a space that filled up behind the status: a sentinel the route
+// turns into a conflict pointing at recovery, not a broken engine.
+func TestExit13IsRepositoryExists(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 13").Run()
+	if err == nil {
+		t.Skip("no shell to produce an exit code with")
+	}
+	if got := classify(err); !errors.Is(got, ErrRepositoryExists) || !errors.Is(got, apps.ErrRepositoryExists) {
+		t.Errorf("classify(exit 13) = %v, want the repository-exists sentinel", got)
+	}
+}
+
+// A blank password never reaches the engine directory.
+func TestInitSecretRefusesAnEmptyKeyWithoutWritingIt(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	p := New(cfg, Descriptor{EngineID: "kopia", Image: "img:1"})
+	if err := os.MkdirAll(p.dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.InitSecret(context.Background(), " \n"); err == nil {
+		t.Error("InitSecret(blank) succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(p.dir(), initialFile)); !os.IsNotExist(err) {
+		t.Error("a blank password left a .initial file behind")
+	}
+}

@@ -356,6 +356,13 @@ type engineInfo struct {
 	// deployment offers such a place. Absent, the page offers no link.
 	RecoveryHelpURL string `json:"recovery_help_url,omitempty"`
 
+	// NeedsSecret is provisioned, empty storage waiting for the owner to choose the
+	// password its repository will be created with. See apps.EngineStatus.NeedsSecret.
+	NeedsSecret bool `json:"needs_secret"`
+	// CanInit is whether this engine can take that password from the page — false for an
+	// adapter that predates the verb, which hides the form.
+	CanInit bool `json:"can_init"`
+
 	// NeedsApproval is an engine an installed app brought and the owner has not enabled;
 	// Image is what enabling it would approve. Approved is the image repository it is
 	// enabled with, empty for the local engine and for one that is not. See
@@ -392,6 +399,7 @@ func (s *Server) handleBackupStatus(w http.ResponseWriter, r *http.Request) {
 		info.Connected, info.Detail, info.Name = st.Connected, st.Detail, st.Label
 		info.NeedsRecovery, info.RecoveryHelpURL = st.NeedsRecovery, st.RecoveryHelpURL
 		info.CanRecover = canRecover(p)
+		info.NeedsSecret, info.CanInit = st.NeedsSecret, canInit(p)
 		// Resolved for this engine alone. Provisioned{} is empty because nothing
 		// renders that layer onto a box yet; when the host-side script does, this is
 		// the one call site that has to learn about it.
@@ -521,6 +529,12 @@ func canChangeSecret(p apps.Provider) bool {
 	return ok && p.Caps().ChangeSecret
 }
 
+// canInit is canRecover's twin for the "set a password" form.
+func canInit(p apps.Provider) bool {
+	_, ok := p.(apps.SecretIniter)
+	return ok && p.Caps().Init
+}
+
 // canRecover is whether an engine both declares the recover capability and implements
 // the method. Both, because either alone is a button that fails: a declared capability
 // with no method is a build that lost it, and a method with no capability is an adapter
@@ -552,12 +566,12 @@ func (s *Server) handleRecoverEngine(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	p, ok := engineByID(s.engines, id)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown backup engine: " + id})
+		writeCoded(w, http.StatusNotFound, codeUnknownEngine, "unknown backup engine: "+id)
 		return
 	}
 	rec, implements := p.(apps.Recoverer)
 	if !implements || !p.Caps().Recover {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "this backup engine cannot take a recovery key"})
+		writeCoded(w, http.StatusNotImplemented, codeNotSupported, "this backup engine cannot take a recovery key")
 		return
 	}
 
@@ -567,12 +581,12 @@ func (s *Server) handleRecoverEngine(w http.ResponseWriter, r *http.Request) {
 	// A key is tens of bytes. The cap is only so a pasted novel is a 400 rather than an
 	// allocation.
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		writeCoded(w, http.StatusBadRequest, codeInvalidBody, "invalid body")
 		return
 	}
 	key := strings.TrimSpace(in.Key)
 	if key == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enter your backup key"})
+		writeCoded(w, http.StatusBadRequest, codeWrongKey, "enter your backup key")
 		return
 	}
 
@@ -581,23 +595,23 @@ func (s *Server) handleRecoverEngine(w http.ResponseWriter, r *http.Request) {
 		inv.Invalidate()
 	}
 	if !p.Status(ctx).NeedsRecovery {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "this backup storage is not waiting for a key"})
+		writeCoded(w, http.StatusConflict, codeNotAwaitingSecret, "this backup storage is not waiting for a key")
 		return
 	}
 
 	res, err := rec.Recover(ctx, key)
 	switch {
 	case errors.Is(err, apps.ErrWrongKey):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "that key does not open these backups"})
+		writeCoded(w, http.StatusBadRequest, codeWrongKey, "that key does not open these backups")
 		return
 	case errors.Is(err, apps.ErrNotConfigured):
 		// The engine found nothing to recover after all — the host side moved on between
 		// the status above and the verb.
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "this backup storage is not waiting for a key"})
+		writeCoded(w, http.StatusConflict, codeNotAwaitingSecret, "this backup storage is not waiting for a key")
 		return
 	case err != nil:
 		log.Printf("backup: %s: recovery failed: %v", id, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		writeCoded(w, http.StatusBadGateway, codeEngineFailed, err.Error())
 		return
 	}
 	log.Printf("backup: %s: reconnected to the existing repository (%d snapshots, %d pinned)", id, res.Snapshots, res.Pinned)
@@ -617,6 +631,110 @@ func (s *Server) handleRecoverEngine(w http.ResponseWriter, r *http.Request) {
 		s.incidents.Resolve(incident.KindBackupRecovery + ":" + id)
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// Machine-readable error codes for the secret routes, beside the human sentence. The
+// page shows the sentence; a script — the admin socket's CLI, and the deployment's
+// tools behind it — branches on the code, so these strings are wire format.
+const (
+	codeUnknownEngine     = "unknown_engine"
+	codeNotSupported      = "not_supported"
+	codeInvalidBody       = "invalid_body"
+	codeWrongKey          = "wrong_key"
+	codeTooShort          = "too_short"
+	codeNotConfirmed      = "not_confirmed"
+	codeNotAwaitingSecret = "not_awaiting_secret"
+	codeRepositoryExists  = "repository_exists"
+	codeEngineFailed      = "engine_failed"
+)
+
+// writeCoded answers {"error": msg, "code": code}.
+func writeCoded(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg, "code": code})
+}
+
+// handleInitEngine creates an engine's repository with the password the owner chose,
+// on provisioned storage that is still empty — the box whose status says NeedsSecret.
+//
+//	200 {status}            created; backups can start
+//	400 {error, code}       no body, a short password (too_short), or no confirmation
+//	404                     no such engine
+//	409 {error, code}       the engine is not waiting for a password (not_awaiting_secret),
+//	                        or the storage turned out to hold a repository already
+//	                        (repository_exists) — that one is recovered, not created
+//	501                     the engine cannot create one (Caps.Init)
+//
+// Modelled on handleRecoverEngine, and the same rules hold: the password never reaches
+// a log, the state is checked fresh with the status cache dropped first, and the work
+// runs detached from the request.
+//
+// **The password is not mailed**, for the reason handleChangeSecret gives: the owner
+// chose it and confirmed they saved it, and the receipt records it as held by them.
+func (s *Server) handleInitEngine(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	p, ok := engineByID(s.engines, id)
+	if !ok {
+		writeCoded(w, http.StatusNotFound, codeUnknownEngine, "unknown backup engine: "+id)
+		return
+	}
+	ini, implements := p.(apps.SecretIniter)
+	if !implements || !p.Caps().Init {
+		writeCoded(w, http.StatusNotImplemented, codeNotSupported, "this backup engine cannot create its repository from here")
+		return
+	}
+
+	var in struct {
+		Key       string `json:"key"`
+		Confirmed bool   `json:"confirmed"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&in); err != nil {
+		writeCoded(w, http.StatusBadRequest, codeInvalidBody, "invalid body")
+		return
+	}
+	key := strings.TrimSpace(in.Key)
+	if len(key) < minSecretLength {
+		writeCoded(w, http.StatusBadRequest, codeTooShort, "the password must be at least 16 characters")
+		return
+	}
+	if !in.Confirmed {
+		writeCoded(w, http.StatusBadRequest, codeNotConfirmed, "confirm that you have saved the password first")
+		return
+	}
+
+	ctx := context.WithoutCancel(r.Context())
+	if inv, ok := p.(statusInvalidator); ok {
+		inv.Invalidate()
+	}
+	if !p.Status(ctx).NeedsSecret {
+		writeCoded(w, http.StatusConflict, codeNotAwaitingSecret, "this backup storage is not waiting for a password")
+		return
+	}
+
+	err := ini.InitSecret(ctx, key)
+	switch {
+	case errors.Is(err, apps.ErrRepositoryExists):
+		writeCoded(w, http.StatusConflict, codeRepositoryExists, "this backup storage already holds backups — enter their key to recover them instead")
+		return
+	case errors.Is(err, apps.ErrNotConfigured):
+		writeCoded(w, http.StatusConflict, codeNotAwaitingSecret, "this backup storage is not waiting for a password")
+		return
+	case err != nil:
+		log.Printf("backup: %s: creating the repository failed: %v", id, err)
+		writeCoded(w, http.StatusBadGateway, codeEngineFailed, err.Error())
+		return
+	}
+	log.Printf("backup: %s: repository created with the owner's password", id)
+
+	s.recordKeyHeldByUser(id)
+	s.resolveSecretIncident(id)
+	if s.backupConf != nil {
+		applyEngineSettings(s.engines, s.backupConf)
+	}
+	s.rescanEngines()
+	if s.incidents != nil {
+		s.incidents.Resolve(incident.KindBackupSecretMissing + ":" + id)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "initialized"})
 }
 
 // resolvedView renders one engine's resolved retention for the settings page.

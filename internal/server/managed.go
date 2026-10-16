@@ -79,16 +79,26 @@ func (s *Server) feedbackClient() *feedback.Client {
 	return s.feedbackC
 }
 
-// onboardingURL reports whether the deployment's first-run setup is still owed,
-// and where to send the browser for it.
+// onboardingCheck is the deployment's onboarding check as configured right now, with
+// its token resolved from the secret store. The zero Check — no setting, or a value
+// from before the check existed ({"url": …}, which decodes to an empty CheckURL) — is
+// the feature switched off.
 //
-// TRANSITION: a deployment that has not moved to the admin socket still writes
-// onboarding.json; while the setting is absent that file is read exactly as before.
-func (s *Server) onboardingURL() (string, bool) {
-	if ob := s.settings.Get().Onboarding; ob != nil {
-		return onboarding.Valid(ob.URL)
+// Built per navigation rather than cached: the setting and its secret can change
+// while Maison runs, and the check itself holds no state worth keeping (its HTTP
+// client is shared). A token that does not resolve switches the gate off — fail open,
+// like every other failure of the check.
+func (s *Server) onboardingCheck() onboarding.Check {
+	ob := s.settings.Get().Onboarding
+	if ob == nil || ob.CheckURL == "" {
+		return onboarding.Check{}
 	}
-	return onboarding.Pending(s.cfg)
+	token, err := s.secrets.Resolve(ob.Token)
+	if err != nil {
+		log.Printf("onboarding: %v", err)
+		return onboarding.Check{}
+	}
+	return onboarding.Check{URL: ob.CheckURL, Token: token}
 }
 
 // publicSettings is the settings document as the API returns it: no secret value,
@@ -104,6 +114,11 @@ func publicSettings(st usersettings.Settings) usersettings.Settings {
 		c := *st.Feedback
 		c.Token = maskSecret(c.Token)
 		st.Feedback = &c
+	}
+	if st.Onboarding != nil {
+		c := *st.Onboarding
+		c.Token = maskSecret(c.Token)
+		st.Onboarding = &c
 	}
 	return st
 }

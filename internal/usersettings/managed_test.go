@@ -139,7 +139,10 @@ func TestManageRefusesBadInput(t *testing.T) {
 		{"smtp", "mesh", `{"host":"smtp","colour":"blue"}`, hasAll},            // unknown field
 		{"smtp", "mesh", `{"host":"smtp","pass":"${secret:smtp_pass}"}`, none}, // secret missing
 		{"feedback", "yundera", `{"url":"javascript:alert(1)","token":"t"}`, hasAll},
-		{"onboarding", "yundera", `{"url":"/relative"}`, hasAll},
+		{"onboarding", "yundera", `{"check_url":"/relative"}`, hasAll},
+		// The pre-check shape is refused on the way in; on disk it still reads, as off.
+		{"onboarding", "yundera", `{"url":"https://admin-box.example/"}`, hasAll},
+		{"onboarding", "yundera", `{"check_url":"http://admin-app/api/onboarding/check","token":"${secret:onboarding_token}"}`, none},
 		{"domains", "yundera", `[{"name":"a","domain":"x"},{"name":"b","domain":"x"}]`, hasAll},
 	}
 	for _, c := range cases {
@@ -213,5 +216,35 @@ func TestWrappedUnmanagedFrom1150IsReadAndWrittenPlain(t *testing.T) {
 	}
 	if !strings.Contains(string(doc["smtp"]), `"managed":true`) && !strings.Contains(string(doc["smtp"]), `"managed": true`) {
 		t.Fatalf("managed smtp lost its wrapper: %s", doc["smtp"])
+	}
+}
+
+// A settings.json written by a Maison before the check carries {"url": …}. It must
+// still parse — a box rolled forward must not lose its whole settings file — and it
+// must read as the feature switched off, not as a check against nothing.
+func TestTheOldOnboardingShapeReadsAsOff(t *testing.T) {
+	st, err := decodeFile([]byte(`{"onboarding":{"managed":true,"owner":"yundera","value":{"url":"https://admin-box.example/"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Onboarding == nil || st.Onboarding.CheckURL != "" {
+		t.Fatalf("onboarding = %+v, want a value with no check_url", st.Onboarding)
+	}
+}
+
+// The onboarding token is a secret reference like the feedback token, so releasing the
+// setting hands it back for deletion.
+func TestOnboardingTokenIsASecretRef(t *testing.T) {
+	s := newStore(t)
+	raw := json.RawMessage(`{"check_url":"http://admin-app/api/onboarding/check","token":"${secret:onboarding_token}"}`)
+	if err := s.Manage("onboarding", "yundera", raw, hasAll); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := s.Release("onboarding")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0] != "onboarding_token" {
+		t.Fatalf("release returned %v, want [onboarding_token]", refs)
 	}
 }

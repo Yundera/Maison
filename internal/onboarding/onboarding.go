@@ -1,84 +1,120 @@
-// Package onboarding gates the dashboard behind the deployment's first-run
-// setup — on a PCS, claiming the box's own local account.
+// Package onboarding asks the deployment, live, whether the owner still has a
+// first-run step to complete — on a PCS, claiming the box's local account and
+// choosing a backup password — and where the browser should go for it.
 //
-// The entire feature is one file on disk: ${StateDir}/onboarding.json. Its
-// PRESENCE is the state. While it is there, the dashboard is replaced by an
-// interstitial pointing at the URL it names; when the deployment's setup is
-// done, the deployment deletes the file and the dashboard returns. Maison never
-// writes it and never decides for itself when setup is finished. That is the
-// same division of labour .env.app already has — the deployment's file, read
-// live — and the same one that makes template-root's onboarding.sh replaceable:
-// what "onboarded" means is the deployment's business, not the dashboard's.
+// The deployment names a CHECK: a URL and an optional bearer token, set through the
+// managed `onboarding` setting (docs/config.md). On each browser navigation the
+// dashboard asks that URL and gets back {"show": bool, "url": "..."}. Maison never
+// decides for itself what "onboarded" means and never remembers the answer: what
+// setup consists of is the deployment's business, and a boolean cached here would go
+// stale exactly where it hurts — a restored or migrated box can carry a "done" it
+// no longer deserves. Asking each time keeps Maison out of the business of
+// remembering.
 //
-// There is deliberately no status endpoint to poll and no completion callback to
-// trust. A callback would be a client-controlled state transition: anything that
-// can reach Maison — every container on a flat app network, or a curious owner
-// with the address bar — could mark the box set up. And a boolean cached here
-// would go stale exactly where it hurts, because "setup is done" is not a fact
-// about Maison: a restored backup or a migrated box can carry the marker without
-// the credential it is supposed to stand for, and the owner would face a
-// dashboard that never asks and a login that never works. Reading the file each
-// time keeps Maison out of the business of remembering; the deployment's
-// self-check reconciles the file against the real answer on every tick.
+// There is deliberately no completion callback. A callback would be a
+// client-controlled state transition: anything that can reach Maison — every
+// container on a flat app network, or a curious owner with the address bar — could
+// mark the box set up. The answer comes from the deployment, on a request Maison
+// makes.
 //
-// No file = feature off, which is what a standalone Maison always sees.
+// EVERY failure answers "nothing to show". The check is an outbound call on the path
+// of every page load, and the two ways of being wrong are not symmetrical: guessing
+// "nothing to show" costs a redundant trip the owner can still make by the
+// deployment's own URL, while guessing "show" locks them out of their own dashboard
+// behind a redirect to somewhere that is down. Fail open.
+//
+// No check configured = feature off, which is what a standalone Maison always sees.
 package onboarding
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/brand"
 )
 
-// Config is the deployment's onboarding file.
-type Config struct {
-	// URL is where the browser goes to complete setup. Absolute, because it is
-	// normally a different host from the dashboard's.
-	URL string `json:"url"`
+// Timeout bounds one check. It sits on the path of a page load, so it is short: a
+// deployment that cannot answer in that time gets the dashboard served, not a hung
+// browser.
+const Timeout = 1500 * time.Millisecond
+
+// maxAnswer caps what is read of the check's response. The answer is a boolean and a
+// URL.
+const maxAnswer = 8 << 10
+
+// client follows no redirects: the check is a question with a JSON answer, and a 3xx
+// — a login page in front of a misconfigured endpoint — is not one. The timeout comes
+// from the request context, bounded by Timeout.
+var client = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
-// Path is where that file lives: beside Maison's settings and .env.app, in the
-// state directory. A deployment writes it there; Maison only ever reads it.
-func Path(cfg config.Config) string {
-	return filepath.Join(cfg.StateDir(), "onboarding.json")
+// Check is the deployment's onboarding check, as configured right now.
+type Check struct {
+	// URL is asked with a GET on each navigation. Empty is the feature switched off.
+	URL string
+	// Token, when set, is sent as `Authorization: Bearer <token>`.
+	Token string
 }
 
-// Pending reports whether setup is still owed, and where to send the browser
-// for it.
-//
-// EVERY failure answers "not pending". A missing file is the normal off state.
-// A malformed, unreadable or nonsensical one is an operator mistake, and the two
-// ways of being wrong about it are not symmetrical: guessing "not pending" costs
-// a redundant trip through a wizard the owner can still reach by its own URL,
-// while guessing "pending" locks them out of their own dashboard behind a page
-// whose only button goes nowhere. Fail open.
-func Pending(cfg config.Config) (string, bool) {
-	b, err := os.ReadFile(Path(cfg))
+// Configured reports whether there is a check to ask.
+func (c Check) Configured() bool { return strings.TrimSpace(c.URL) != "" }
+
+// answer is the check's response body.
+type answer struct {
+	Show bool   `json:"show"`
+	URL  string `json:"url"`
+}
+
+// Ask asks the check and reports where to send the browser, if anywhere. It is never
+// cached: a "show" that outlived the step it stood for would bounce the owner back
+// into a wizard they had just finished.
+func (c Check) Ask(ctx context.Context) (string, bool) {
+	if !c.Configured() {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSpace(c.URL), nil)
 	if err != nil {
 		return "", false
 	}
-	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", brand.Name+"-Onboarding")
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
 		return "", false
 	}
-	return Valid(c.URL)
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxAnswer))
+		return "", false
+	}
+	var a answer
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAnswer)).Decode(&a); err != nil || !a.Show {
+		return "", false
+	}
+	return Valid(a.URL)
 }
 
-// Valid applies Pending's rules to a setup URL from any source — the file above,
-// or the managed `onboarding` setting that replaces it. Fail open, as there.
+// Valid applies the fail-open rule to a setup URL: it must be absolute http(s), or
+// there is nowhere to send the browser.
 func Valid(raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", false
 	}
-	// The file is written by root on the host, so this is a footgun guard rather
-	// than a defence: the URL is rendered into an anchor, and a scheme like
-	// `javascript:` there would turn a typo in a config file into script on the
-	// dashboard's own origin.
+	// The URL becomes a Location header on the dashboard's own origin. A scheme like
+	// `javascript:` or `data:` there, or a relative path that loops back into the
+	// gate, would turn a mistake in the deployment's answer into a broken dashboard.
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", false

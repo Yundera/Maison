@@ -61,6 +61,13 @@ export interface EngineInfo {
   /** Where a user who no longer has the key can start over, when the deployment offers
    *  such a place. Absent, no link is shown. */
   recovery_help_url?: string
+  /** Provisioned, empty storage waiting for the owner to choose the password its
+   *  repository will be created with. Nothing is lost and nothing is backed up there
+   *  until they do. */
+  needs_secret: boolean
+  /** Whether this engine can take that password from the page — false for an engine
+   *  that predates the feature, which hides the form. */
+  can_init: boolean
   /** An engine an installed app brought that the owner has not enabled. Nothing runs
    *  in it — not even a status probe — until they do, because enabling it approves the
    *  image Maison runs as root with every app's data in scope. */
@@ -335,6 +342,13 @@ export interface RecoverResult {
  *  shows, not as a fault. */
 export function recoverBackupEngine(id: string, key: string): Promise<RecoverResult> {
   return api.post<RecoverResult>(`/api/backup/engines/${encodeURIComponent(id)}/recover`, { key })
+}
+
+/** Creates an engine's repository with the password the owner chose, on storage that
+ *  is still empty. `confirmed` is the owner's statement that they saved it: like a
+ *  changed key, it is not mailed. A POST with the password in the body and nowhere else. */
+export function initBackupEngine(id: string, key: string): Promise<unknown> {
+  return api.post(`/api/backup/engines/${encodeURIComponent(id)}/init`, { key, confirmed: true })
 }
 
 const enginePath = (id: string) => `/api/backup/engines/${encodeURIComponent(id)}`

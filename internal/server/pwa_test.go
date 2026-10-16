@@ -79,25 +79,30 @@ func TestPWARoutesAnswerHEAD(t *testing.T) {
 //
 // The worker fetches /offline.html at install time and stores it, and the Cache API
 // ignores Cache-Control: no-store. If that one fetch could ever come back as the
-// setup interstitial, every browser that installed the worker would show a stale
-// setup page — from cache, pointing at a setup URL that may no longer exist — on
+// setup redirect, every browser that installed the worker would hold a stale bounce
+// to a setup page — from cache, pointing at a setup URL that may no longer exist — on
 // every network hiccup, with no way to clear it.
 //
 // The gate passes these today because it only intercepts requests carrying
 // text/html in Accept, and none of them normally does. This test asks with the
 // browser's own navigation Accept header anyway, so that the property survives any
-// future widening of isNavigation.
+// future widening of isNavigation — and checks the deployment was not even asked.
 func TestThePWASurfaceIsNotBehindTheOnboardingGate(t *testing.T) {
-	h := newGatedServer(t, "https://admin.box.example/setup")
+	fc := newFakeCheck(t)
+	fc.answer(true, "https://admin.box.example/setup")
+	h := newGatedServer(t, fc.URL)
 	for _, path := range []string{"/sw.js", "/manifest.webmanifest", "/offline.html", "/assets/app.js"} {
 		rec := get(t, h, path, navigation)
-		if strings.Contains(rec.Body.String(), "admin.box.example") {
-			t.Errorf("%s: got the onboarding interstitial", path)
+		if rec.Code == http.StatusSeeOther || strings.Contains(rec.Header().Get("Location"), "admin.box.example") {
+			t.Errorf("%s: got the onboarding redirect", path)
 		}
 	}
+	if n := fc.hits.Load(); n != 0 {
+		t.Errorf("the PWA surface asked the onboarding check %d times", n)
+	}
 	// And the gate is still doing its job for an actual navigation.
-	if rec := get(t, h, "/", navigation); !strings.Contains(rec.Body.String(), "admin.box.example") {
-		t.Error("/: expected the interstitial, got the dashboard")
+	if rec := get(t, h, "/", navigation); rec.Code != http.StatusSeeOther {
+		t.Errorf("/: expected the redirect, got %d", rec.Code)
 	}
 }
 
@@ -175,7 +180,7 @@ func TestServiceWorkerDoesNotPrecacheTheAppShell(t *testing.T) {
 		t.Error("the precache list is no longer exactly the offline page")
 	}
 	if strings.Contains(serviceWorkerJS, "navigationPreload.enable") {
-		t.Error("navigation preload enabled: preload requests carry Accept: text/html, so the response is the interstitial")
+		t.Error("navigation preload enabled: preload requests carry Accept: text/html, so the response is the setup redirect")
 	}
 }
 

@@ -103,7 +103,7 @@ ${DATA_ROOT}/
     <app>/                     an app — the backup source for the app set
     <engine>/engine/           the engine's own state (Config.EngineDir)
       repository.config        endpoint, region, bucket, prefix
-      repository.password      0600, generated on this PCS
+      repository.password      0600, chosen by the owner (or generated on this PCS)
       cache/                   engine cache — never backed up
       logs/                    never backed up
     maison/                    Maison's own state (Config.StateDir)
@@ -843,14 +843,19 @@ assuming the flags.
 
 ## Encryption and the master password
 
-> **The master password is generated on the PCS and never reaches Yundera.**
+> **The master password is chosen by the owner on the PCS and never reaches Yundera.**
 
 It lives in the engine directory — `repository.password` for kopia — mode 0600. It has to
 stay on the box — an unattended nightly backup cannot prompt for it.
 
-The user takes their own copy: the dashboard shows the key on demand, and Maison
-mails it once on the first boot where it can (see below). Stated plainly, because it
-must be stated plainly to users too:
+On a box provisioned since the new onboarding, the host side no longer generates it: it
+provisions the storage, leaves the repository uncreated, and the owner chooses the password
+— in the deployment's onboarding, or on Settings › Backups — before the first backup (see
+[Choosing the password](#choosing-the-password)). A box set up before that keeps the one
+the host generated, which Maison mails once on the first boot where it can (see below).
+
+Either way the user takes their own copy: the dashboard shows the key on demand. Stated
+plainly, because it must be stated plainly to users too:
 
 **the PCS holds it, the user holds a copy, Yundera holds nothing and cannot recover
 it.**
@@ -859,6 +864,38 @@ The consequence is accepted rather than mitigated: a user who keeps no copy lose
 the backups, and no support path exists. Any future softening has to preserve the
 first line — client-side wrapping under a user credential with only ciphertext stored
 server-side is the shape that does; server-side derivation is the shape that does not.
+
+### Choosing the password
+
+Storage that is provisioned and **empty** waits for the owner. The host side writes a
+`needs-secret` marker into the engine directory instead of a password, and from then on the
+engine's `status` answers `needsSecret: true` (with `configured: false`). It is the fourth
+state beside configured, connected and `needsRecovery`, and like that one it is reported by
+the engine, never inferred by Maison.
+
+- **The page asks for a password.** The engine's row turns amber ("needs a password"), a
+  banner says why nothing is backed up there, and the engine's tab shows a "Set a password to
+  start backups" form in place of the key block: a field with *Generate* and *Copy*, a second
+  entry, and a tick that the owner has saved it. Offered only when the adapter declares
+  `Caps.Init`. A warning incident `backup.secret-missing:<engine>` keeps it in the bell,
+  whatever the schedule says, until a password is set.
+- **`POST /api/backup/engines/{id}/init`** with `{key, confirmed: true}` — or
+  `maison backup init <engine>` over the admin socket, which is how the deployment's
+  onboarding hands over the password the owner typed there. Maison writes it to
+  `repository.password.initial` (0600) and runs the adapter's `init` verb, which creates the
+  repository with it, promotes the file to `repository.password` and removes the marker.
+  `.initial` is removed on every path, by Maison as well as the adapter.
+- **Answers.** 400 `too_short` under 16 characters, 400 `not_confirmed` without the tick,
+  409 `not_awaiting_secret` when the engine is not waiting for one, 409 `repository_exists`
+  when the storage turned out to hold a repository after all (adapter exit 13 — the repair is
+  recovery, with that repository's key), 501 for an engine without `Caps.Init`.
+- **Not mailed.** The owner chose it and said they saved it: the receipt records it as held
+  by them, like a [changed](#changing-the-repository-password) one. The mail button works for
+  anyone who wants a copy in their inbox anyway.
+
+The adapter also declares `Caps.Probe`: its `probe` verb tells empty storage from storage
+that already holds a repository, with no password and no side effect. The host side uses it
+to decide between `needs-secret` and `needs-recovery`.
 
 ### Changing the repository password
 
@@ -1186,12 +1223,13 @@ a `needs-recovery` marker; from then on the engine's `status` answers `needsReco
   leads with it, and the engine's tab shows a key field in place of the key block. The field is
   offered only when the adapter declares `Caps.Recover`; an older adapter hides it. A link to
   start fresh appears when the host wrote a `recoveryHelpUrl` into `state.json`.
-- **`POST /api/backup/engines/{id}/recover`** with `{key}`. Maison writes the key to
-  `repository.password.candidate` (0600) in the engine directory — the only file it ever writes
-  there — and runs the adapter's `recover` verb, which connects (never creates), promotes the
+- **`POST /api/backup/engines/{id}/recover`** with `{key}`, or `maison backup recover <engine>`
+  with the key on stdin over the admin socket. Maison writes the key to
+  `repository.password.candidate` (0600) in the engine directory — beside `.next` and `.initial`,
+  the only files it ever writes there — and runs the adapter's `recover` verb, which connects (never creates), promotes the
   candidate to `repository.password` and pins every existing snapshot. The candidate is removed on
-  every path. 400 is a wrong key (exit 14), 409 an engine not waiting for one, 501 an engine that
-  cannot take one. The key never reaches a log, and the receipt records it as held by the user.
+  every path. 400 is a wrong key (exit 14, code `wrong_key`), 409 an engine not waiting for one
+  (`not_awaiting_secret`), 501 an engine that cannot take one. The key never reaches a log, and the receipt records it as held by the user.
 - **The existing snapshots are pinned**, so retention cannot expire them, whatever happens next.
 - **Then the schedule question**, as a dialog: the box was just reinstalled, its apps may be empty,
   and nightly runs would save that emptiness and push the real history out of retention. The

@@ -495,6 +495,9 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		// reattaches to the repository already in its space. The body is that key, so
 		// it is a POST for the same reason as the one above. See handleRecoverEngine.
 		r.Post("/backup/engines/{id}/recover", s.handleRecoverEngine)
+		// Provisioned, empty storage: the owner chooses the password its repository is
+		// created with. A POST for the same reason. See handleInitEngine.
+		r.Post("/backup/engines/{id}/init", s.handleInitEngine)
 		// Engines that arrive with an app: the owner's Enable / Disable, and a re-read
 		// of the descriptors for when the container watcher missed one. See
 		// backupapprove.go.
@@ -563,8 +566,9 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	//     it was", indefinitely.
 	//   - None of these is a navigation, so the onboarding gate passes them today —
 	//     but /offline.html is fetched and cached by the worker at install time, and
-	//     the Cache API ignores Cache-Control: no-store. Sitting outside the gate
-	//     needs to be a property of this table, not of isNavigation's definition.
+	//     the Cache API ignores Cache-Control: no-store, so a setup redirect cached
+	//     there would outlive the setup. Sitting outside the gate needs to be a
+	//     property of this table, not of isNavigation's definition.
 	//
 	// HEAD as well as GET, which the routes above this line do not bother with. It
 	// matters here for the same no-404 reason: chi matches a method exactly, so a
@@ -587,10 +591,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// a miss is a real 404 rather than a confusing HTML 200.
 	r.Handle("/assets/*", immutableAssets(uiFS))
 
-	// The SPA, behind the first-run setup gate: while the deployment still owes an
-	// onboarding step, a browser navigation gets the interstitial instead of the
-	// dashboard (see onboarding.go). With no onboarding file — every standalone
-	// Maison — the wrapper is inert and this is just the SPA.
+	// The SPA, behind the first-run setup gate: while the deployment's check says an
+	// onboarding step is owed, a browser navigation is redirected to its setup page
+	// instead of the dashboard (see onboarding.go). With no check configured — every
+	// standalone Maison — the wrapper is inert and this is just the SPA.
 	r.Handle("/*", s.onboardingGate(spaHandler(uiFS)))
 
 	return s.rootHandler(r)

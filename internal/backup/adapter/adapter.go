@@ -29,6 +29,10 @@ const (
 	// because a user is watching a spinner; generous, because a space with years of
 	// nightly history is thousands of pins.
 	recoverTimeout = 15 * time.Minute
+	// initTimeout covers creating an empty repository: a handful of blob writes.
+	initTimeout = 3 * time.Minute
+	// probeTimeout covers one throwaway connect attempt.
+	probeTimeout = 1 * time.Minute
 	// changeSecretTimeout covers one rewrite of the repository's key blob — seconds —
 	// and, after an ambiguous failure, the two probes that settle which key it took.
 	changeSecretTimeout = 3 * time.Minute
@@ -62,9 +66,9 @@ type Provider struct {
 	statusAt time.Time
 	caps     *apps.Caps
 
-	// secretMu serialises Recover and ChangeSecret. There is one candidate and one .next
-	// file per engine directory, and two attempts racing would have one install or test
-	// the other's key.
+	// secretMu serialises Recover, InitSecret and ChangeSecret. There is one candidate,
+	// one .initial and one .next file per engine directory, and two attempts racing
+	// would have one install or test the other's key.
 	secretMu sync.Mutex
 
 	// approved says whether the owner has enabled this engine. Nil is always enabled,
@@ -238,9 +242,11 @@ func (p *Provider) probe(ctx context.Context) apps.EngineStatus {
 		// adapter answer needsRecovery with exit 0, but an adapter that also exits 10
 		// for it is saying something true, and collapsing it to plain "not configured"
 		// would hide every backup the user owns behind the words for a fresh box.
+		// needsSecret is read the same way, for the same reason.
 		if errors.Is(err, apps.ErrNotConfigured) && len(raw) > 0 &&
-			json.Unmarshal(raw, &ws) == nil && ws.NeedsRecovery {
-			st.NeedsRecovery = true
+			json.Unmarshal(raw, &ws) == nil && (ws.NeedsRecovery || ws.NeedsSecret) {
+			st.NeedsRecovery = ws.NeedsRecovery
+			st.NeedsSecret = ws.NeedsSecret && !ws.NeedsRecovery
 			if ws.Detail != "" {
 				st.Detail = ws.Detail
 			}
@@ -250,6 +256,9 @@ func (p *Provider) probe(ctx context.Context) apps.EngineStatus {
 	if err := unmarshalResult(raw, &ws); err != nil {
 		return apps.EngineStatus{Label: state.Label, RecoveryHelpURL: state.RecoveryHelpURL, Detail: err.Error()}
 	}
+	// A repository that already holds backups is never one to create: recovery wins if
+	// an engine ever says both, and a configured engine has nothing left to create.
+	needsSecret := ws.NeedsSecret && !ws.NeedsRecovery && !ws.Configured
 	return apps.EngineStatus{
 		Configured:      ws.Configured,
 		Connected:       ws.Connected,
@@ -257,6 +266,7 @@ func (p *Provider) probe(ctx context.Context) apps.EngineStatus {
 		Identity:        ws.Identity,
 		Detail:          ws.Detail,
 		NeedsRecovery:   ws.NeedsRecovery,
+		NeedsSecret:     needsSecret,
 		RecoveryHelpURL: state.RecoveryHelpURL,
 	}
 }

@@ -55,12 +55,18 @@ type Feedback struct {
 	Token string `json:"token,omitempty"`
 }
 
-// Onboarding is the deployment's first-run setup (internal/onboarding): while set,
-// the dashboard is replaced by an interstitial pointing at URL. Never user-editable,
-// for the reason the onboarding package gives — a client-controlled state transition
-// would let anything on the network mark the box set up.
+// Onboarding is the deployment's first-run check (internal/onboarding): while set,
+// every browser navigation asks CheckURL whether setup is owed, and a "show" answer
+// redirects the browser to the deployment's setup page. Token, when set, is sent as a
+// bearer token and may be a secret reference. Never user-editable, for the reason the
+// onboarding package gives — a client-controlled state transition would let anything
+// on the network mark the box set up.
+//
+// A value from before the check ({"url": …}) still decodes from disk, as an empty
+// CheckURL, and that means off.
 type Onboarding struct {
-	URL string `json:"url"`
+	CheckURL string `json:"check_url"`
+	Token    string `json:"token,omitempty"`
 }
 
 // IsManaged reports whether setting name is owned by the deployment, and by whom.
@@ -183,8 +189,8 @@ func decodeManaged(name string, raw json.RawMessage) (func(*Settings), error) {
 		if err := strictDecode(raw, &v); err != nil {
 			return nil, err
 		}
-		if err := httpURL(v.URL); err != nil {
-			return nil, fmt.Errorf("onboarding: url %w", err)
+		if err := httpURL(v.CheckURL); err != nil {
+			return nil, fmt.Errorf("onboarding: check_url %w", err)
 		}
 		return func(st *Settings) { st.Onboarding = &v }, nil
 	}
@@ -203,6 +209,10 @@ func (s Settings) secretRefs(name string) []string {
 	case "feedback":
 		if s.Feedback != nil {
 			vals = append(vals, s.Feedback.Token)
+		}
+	case "onboarding":
+		if s.Onboarding != nil {
+			vals = append(vals, s.Onboarding.Token)
 		}
 	}
 	var refs []string

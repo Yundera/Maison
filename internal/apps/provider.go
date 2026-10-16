@@ -226,6 +226,16 @@ type EngineStatus struct {
 	// tells the engine, not Maison.
 	NeedsRecovery bool
 
+	// NeedsSecret is true when the storage is provisioned and EMPTY, and the engine is
+	// waiting for the owner to choose the password the repository will be created with
+	// (see SecretIniter). The fourth answer, and as distinct from the others as
+	// NeedsRecovery is: nothing is wrong and nothing is lost, but no backup will run
+	// until somebody picks a password — and "not configured" would hide that a single
+	// form stands between the owner and offsite backups.
+	//
+	// Reported by the engine from the host side's marker, never inferred by Maison.
+	NeedsSecret bool
+
 	// RecoveryHelpURL is where a user who no longer has the key can go to start over —
 	// on a PCS, the deployment's dashboard, which can empty the space. Host-written,
 	// like Label and for the same reason: it describes who provisioned the SPACE, and a
@@ -260,6 +270,22 @@ type RecoverResult struct {
 type Recoverer interface {
 	Recover(ctx context.Context, key string) (RecoverResult, error)
 }
+
+// SecretIniter is implemented by an engine that can create its repository with a
+// password the owner chooses (Caps.Init), on storage that is provisioned and empty —
+// the box whose status says NeedsSecret. Nothing is reattached and nothing is lost:
+// the repository does not exist until this call creates it.
+//
+// The key is the user's own secret. An implementation must never log it, and must not
+// leave it anywhere on disk if the attempt fails.
+type SecretIniter interface {
+	InitSecret(ctx context.Context, key string) error
+}
+
+// ErrRepositoryExists is an init the engine refused because the storage already holds
+// a repository — someone filled the space between the status that said it was empty
+// and the init. The repair is recovery, with that repository's key, not a new one.
+var ErrRepositoryExists = errors.New("the backup storage already holds a repository — recover it with its key instead")
 
 // SecretSpec is an engine's own account of the secret that opens its backups: what the
 // engine calls it, which file in its directory holds it, and whether that file is the
@@ -367,6 +393,15 @@ type Caps struct {
 	// repository, on a box that holds the current one (see SecretChanger). False for an
 	// engine built before the verb, which hides the change form.
 	ChangeSecret bool
+
+	// Init is true when this engine can create its repository with a password the
+	// owner chooses (see SecretIniter). False for an engine built before the verb,
+	// which hides the "set a password" form.
+	Init bool
+
+	// Probe is true when this engine can tell empty storage from storage that already
+	// holds a repository, without a password and without changing anything.
+	Probe bool
 }
 
 // SnapshotOpts carries the per-call knobs the registry passes down.

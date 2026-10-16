@@ -363,6 +363,53 @@ func (p *Provider) Recover(ctx context.Context, key string) (apps.RecoverResult,
 	return apps.RecoverResult{Snapshots: rr.Snapshots, Pinned: rr.Pinned}, nil
 }
 
+// initialFile is where the password the owner chose waits for the adapter to create
+// the repository with it. Named by the protocol: the adapter promotes it to
+// repository.password once the repository exists, and deletes it on every path.
+const initialFile = "repository.password.initial"
+
+// InitSecret creates the repository on empty, provisioned storage with the password the
+// owner chose — the box whose status says NeedsSecret.
+//
+// The same shape as Recover and for the same reasons: Maison writes only the .initial
+// file, the adapter decides whether it becomes repository.password, and the file is
+// removed here on every path too, because a password in a file is not something to
+// leave to the other side's cleanup. The key never reaches an argv or a log.
+//
+// Storage that turns out to hold a repository already answers ErrRepositoryExists:
+// the space filled between the status and this call, and the repair is Recover with
+// that repository's key.
+func (p *Provider) InitSecret(ctx context.Context, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("no password was given")
+	}
+	p.secretMu.Lock()
+	defer p.secretMu.Unlock()
+	defer p.Invalidate()
+
+	path := filepath.Join(p.dir(), initialFile)
+	defer func() { _ = os.Remove(path) }()
+	if err := writeSecret(path, key); err != nil {
+		return fmt.Errorf("%s: could not hand the password to the engine: %w", p.ID(), err)
+	}
+	return p.call(ctx, initTimeout, nil, nil, "init")
+}
+
+// Probe asks the engine whether its storage is empty ("empty") or already holds a
+// repository ("existing"). It needs no password and changes nothing.
+func (p *Provider) Probe(ctx context.Context) (string, error) {
+	var pr probeResult
+	if err := p.call(ctx, probeTimeout, nil, &pr, "probe"); err != nil {
+		return "", err
+	}
+	switch pr.Storage {
+	case "empty", "existing":
+		return pr.Storage, nil
+	}
+	return "", fmt.Errorf("%s: probe answered %q", p.ID(), pr.Storage)
+}
+
 // nextFile is where a replacement key waits while the adapter installs it. Named by the
 // protocol, and — unlike the candidate — the adapter's alone to remove: between the
 // repository accepting the new key and the file being swapped, it is the only copy of a

@@ -17,10 +17,11 @@ package server
 // navigation, so the gate would pass them today on its own — but /offline.html is
 // fetched and CACHED by the worker at install time, and the Cache API ignores
 // Cache-Control: no-store. If that one fetch could ever come back as the setup
-// interstitial, every browser that installed the worker would show a stale setup
-// page, from cache, on every network hiccup, with no way to clear it. Being
+// redirect, every browser that installed the worker would hold a stale bounce to a
+// setup page, from cache, on every network hiccup, with no way to clear it. Being
 // outside the gate is a property of the route table rather than of isNavigation's
-// current definition.
+// current definition — and it keeps those fetches from costing a call to the
+// deployment's check.
 //
 // ── IF THIS FEATURE IS EVER REMOVED, READ THIS FIRST ────────────────────────────
 // Do not simply delete the /sw.js route. Because the catch-all has no 404, the
@@ -234,23 +235,24 @@ self.addEventListener('activate', function (e) {
 // fingerprint of the embedded UI.
 //
 // Written without backticks so it can live in a Go raw string, following the same
-// pattern as launchHTML and onboardingHTML.
+// pattern as launchHTML.
 const serviceWorkerJS = `/* ` + brand.Name + `'s service worker.
  *
  * ── THE ONE RULE ───────────────────────────────────────────────────────────────
  * It NEVER serves a cached document for a navigation, and NEVER stores one.
  *
- * internal/server/onboarding.go puts a gate in front of the dashboard: until the
- * deployment's first-run step is done, every navigation gets an interstitial
- * instead of the app, and that file's doc comment is explicit that there is no
- * path around it. A worker answering navigations from cache would BE that path.
- * Two ways it goes wrong, and this file is shaped so neither is possible:
+ * internal/server/onboarding.go puts a gate in front of the dashboard: while the
+ * deployment says a first-run step is owed, every navigation is redirected to its
+ * setup page instead of the app, and that file's doc comment is explicit that there
+ * is no path around it. A worker answering navigations from cache would BE that
+ * path. Two ways it goes wrong, and this file is shaped so neither is possible:
  *
  *   - The Cache API ignores Cache-Control: no-store, so a worker that cached
- *     navigation responses would pin the interstitial and keep serving it long
- *     after setup finished, pointing at a stale setup URL, with no way out.
+ *     navigation responses would pin the setup redirect and keep replaying it long
+ *     after setup finished, pointing at a stale setup URL, with no way out — or
+ *     pin the dashboard and skip the step the deployment is still asking for.
  *   - Navigation preload requests carry the browser's own Accept: text/html, so a
- *     preload response is the interstitial too. Preload is therefore deliberately
+ *     preload response is the redirect too. Preload is therefore deliberately
  *     never enabled; see the activate handler.
  *
  * The same argument covers the auth gate in front of this box: only the server
@@ -372,12 +374,12 @@ function cacheable(res) {
 `
 
 // offlineHTML is what the worker shows when the box cannot be reached. Like the
-// launch page and the onboarding interstitial it is self-contained — it has to
-// render with the server that serves every other asset unreachable, so it cannot
-// so much as link an icon. The mark is inlined as SVG.
+// launch page it is self-contained — it has to render with the server that serves
+// every other asset unreachable, so it cannot so much as link an icon. The mark is
+// inlined as SVG.
 //
-// English only, matching its two siblings: it is served by Go and cannot reach
-// the Svelte i18n bundle.
+// English only, matching its sibling: it is served by Go and cannot reach the
+// Svelte i18n bundle.
 const offlineHTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -439,3 +441,14 @@ const offlineHTML = `<!doctype html>
 </body>
 </html>
 `
+
+// escapeAttr escapes a value for a double-quoted HTML attribute.
+func escapeAttr(s string) string {
+	return strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&#39;",
+	).Replace(s)
+}

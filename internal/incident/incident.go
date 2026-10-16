@@ -88,6 +88,11 @@ const (
 	// installed engine app waiting for its Enable click. A warning: nothing is failing,
 	// and nothing is written there yet either.
 	KindBackupApproval = "backup.approval"
+	// KindBackupSecretMissing is provisioned, empty storage waiting for the owner to
+	// choose the password its repository will be created with. A warning: nothing is
+	// lost, but nothing is backed up there until a password is set. One per engine,
+	// "backup.secret-missing:<engine>".
+	KindBackupSecretMissing = "backup.secret-missing"
 
 	KindDiskFull     = "disk.full"
 	KindDiskUnseen   = "disk.unseen"

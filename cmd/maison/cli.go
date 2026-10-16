@@ -36,14 +36,29 @@ const cliUsage = `usage: maison <command>
   secret rm <name>                     delete a secret
   stores ensure <url>                  add a store source unless already listed
   backup approve <engine>              enable a backup engine the deployment provisioned
+  backup status                        print the backup status (as GET /api/backup/status)
+  backup init <engine>                 create the engine's repository; the password on stdin
+  backup recover <engine>              reattach to the existing repository; its key on stdin
 
 Manageable settings: domains, feedback, onboarding, smtp.
 A setting refers to a secret as the whole string "${secret:<name>}".
+A password on stdin is one line; the trailing newline is dropped.
+On failure the server's reason goes to stderr, with its code in brackets when it
+gave one, e.g. "maison: that key does not open these backups [wrong_key]".
 `
 
 // dialRetry is how long a command waits for the socket to appear: a self-check runs
 // right after (re)deploying the container, before the server has finished booting.
 const dialRetry = 30 * time.Second
+
+// Request timeouts. Most commands answer in milliseconds; init and recover run an
+// engine verb to completion before answering, and a recovery pins every snapshot in
+// the space. Kept just above the server's own bounds for those verbs.
+const (
+	callTimeout    = 60 * time.Second
+	initTimeout    = 4 * time.Minute
+	recoverTimeout = 16 * time.Minute
+)
 
 func runCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
@@ -59,7 +74,7 @@ func runCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	out, err := adminCall(config.AdminSocketPath(), method, path, body)
+	out, err := adminCall(config.AdminSocketPath(), method, path, body, timeoutFor(path))
 	if err != nil {
 		fmt.Fprintln(stderr, "maison:", err)
 		return 1
@@ -85,6 +100,20 @@ func parseCLI(args []string, stdin io.Reader) (method, path string, body []byte,
 			return nil, fmt.Errorf("maison: %s expected on stdin (use docker exec -i)", what)
 		}
 		return b, nil
+	}
+	// readKey is one line from stdin: the password the deployment's tool was handed.
+	// Only the line ending is dropped — leading and trailing spaces are the server's
+	// to judge, as they are for the dashboard's own form.
+	readKey := func() (string, error) {
+		b, err := readStdin("the password")
+		if err != nil {
+			return "", err
+		}
+		key := strings.TrimRight(string(b), "\r\n")
+		if strings.ContainsAny(key, "\r\n") {
+			return "", errors.New("maison: the password on stdin must be a single line")
+		}
+		return key, nil
 	}
 	switch args[0] + " " + args[1] {
 	case "settings get":
@@ -134,15 +163,48 @@ func parseCLI(args []string, stdin io.Reader) (method, path string, body []byte,
 			return usage()
 		}
 		return http.MethodPost, "/backup/engines/" + url.PathEscape(args[2]) + "/approve", nil, nil
+	case "backup status":
+		if len(args) != 2 {
+			return usage()
+		}
+		return http.MethodGet, "/backup/status", nil, nil
+	case "backup init", "backup recover":
+		if len(args) != 3 {
+			return usage()
+		}
+		key, err := readKey()
+		if err != nil {
+			return "", "", nil, err
+		}
+		in := map[string]any{"key": key}
+		if args[1] == "init" {
+			// The deployment's tool only runs this once the owner confirmed they saved
+			// the password, on its own page; the server insists on hearing it.
+			in["confirmed"] = true
+		}
+		b, _ := json.Marshal(in)
+		return http.MethodPost, "/backup/engines/" + url.PathEscape(args[2]) + "/" + args[1], b, nil
 	}
 	return usage()
 }
 
+// timeoutFor is the request timeout for one admin-socket path.
+func timeoutFor(path string) time.Duration {
+	switch {
+	case strings.HasSuffix(path, "/recover"):
+		return recoverTimeout
+	case strings.HasSuffix(path, "/init"):
+		return initTimeout
+	}
+	return callTimeout
+}
+
 // adminCall sends one request to the admin socket, waiting up to dialRetry for the
-// server to come up. A non-2xx answer is an error carrying the server's reason.
-func adminCall(socket, method, path string, body []byte) ([]byte, error) {
+// server to come up. A non-2xx answer is an error carrying the server's reason, and its
+// code when it gave one.
+func adminCall(socket, method, path string, body []byte, timeout time.Duration) ([]byte, error) {
 	client := &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: timeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
@@ -173,8 +235,12 @@ func adminCall(socket, method, path string, body []byte) ([]byte, error) {
 	if resp.StatusCode/100 != 2 {
 		var e struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		if json.Unmarshal(out, &e) == nil && e.Error != "" {
+			if e.Code != "" {
+				return nil, fmt.Errorf("%s [%s]", e.Error, e.Code)
+			}
 			return nil, errors.New(e.Error)
 		}
 		return nil, fmt.Errorf("%s %s: %s", method, path, resp.Status)

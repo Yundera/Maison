@@ -133,7 +133,7 @@ func TestTheHTTPAPICannotTouchDeploymentSettings(t *testing.T) {
 	}
 	st.SMTP = &notify.SMTP{Host: "attacker", Port: 25, Pass: "x"}
 	st.Feedback = &usersettings.Feedback{URL: "https://attacker.example", Token: "t"}
-	st.Onboarding = &usersettings.Onboarding{URL: "https://attacker.example"}
+	st.Onboarding = &usersettings.Onboarding{CheckURL: "https://attacker.example"}
 	st.Managed = nil
 	putSettings(t, s, st)
 
@@ -193,23 +193,47 @@ func TestAdminManageReleaseAndSecrets(t *testing.T) {
 	}
 }
 
-func TestOnboardingFollowsTheSettingAndFallsBackToTheFile(t *testing.T) {
+// The check follows the managed setting, its token resolved from the secret store and
+// never returned by the API. The old onboarding.json is no longer read at all.
+func TestOnboardingCheckFollowsTheSetting(t *testing.T) {
 	s := newManagedServer(t)
-	if _, pending := s.onboardingURL(); pending {
-		t.Fatal("pending with neither setting nor file")
+	if s.onboardingCheck().Configured() {
+		t.Fatal("a check with no setting")
 	}
-	file := filepath.Join(s.cfg.StateDir(), "onboarding.json")
-	if err := os.WriteFile(file, []byte(`{"url":"https://admin-box.example/"}`), 0o644); err != nil {
+	// A file a deployment from before the setting wrote: ignored.
+	if err := os.MkdirAll(s.cfg.StateDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if u, pending := s.onboardingURL(); !pending || u != "https://admin-box.example/" {
-		t.Fatalf("file fallback: %q %v", u, pending)
+	if err := os.WriteFile(filepath.Join(s.cfg.StateDir(), "onboarding.json"), []byte(`{"url":"https://admin-box.example/"}`), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if rec := do(t, s.adminRouter(), "PUT", "/settings/onboarding?owner=yundera", `{"url":"https://claim.example/"}`); rec.Code != 200 {
+	if s.onboardingCheck().Configured() {
+		t.Fatal("onboarding.json armed the gate")
+	}
+
+	admin := s.adminRouter()
+	if rec := do(t, admin, "PUT", "/secrets/onboarding_token", "tok-ob\n"); rec.Code != 200 {
+		t.Fatalf("set secret: %d %s", rec.Code, rec.Body)
+	}
+	ob := `{"check_url":"http://admin-app/api/onboarding/check","token":"${secret:onboarding_token}"}`
+	if rec := do(t, admin, "PUT", "/settings/onboarding?owner=yundera", ob); rec.Code != 200 {
 		t.Fatalf("manage onboarding: %d %s", rec.Code, rec.Body)
 	}
-	if u, _ := s.onboardingURL(); u != "https://claim.example/" {
-		t.Fatalf("setting should win over the file: %q", u)
+	if c := s.onboardingCheck(); c.URL != "http://admin-app/api/onboarding/check" || c.Token != "tok-ob" {
+		t.Fatalf("check = %+v, want the setting with its token resolved", c)
+	}
+	if body, _ := getSettings(t, s); strings.Contains(body, "tok-ob") {
+		t.Fatalf("GET returned the token: %s", body)
+	}
+	if body := do(t, admin, "GET", "/settings", "").Body.String(); strings.Contains(body, "tok-ob") {
+		t.Fatalf("admin GET returned the token: %s", body)
+	}
+
+	if rec := do(t, admin, "DELETE", "/settings/onboarding", ""); rec.Code != 200 {
+		t.Fatalf("release: %d %s", rec.Code, rec.Body)
+	}
+	if s.onboardingCheck().Configured() || s.secrets.Has("onboarding_token") {
+		t.Fatal("release left the check or its token behind")
 	}
 }
 

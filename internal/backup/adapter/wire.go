@@ -31,10 +31,11 @@ const (
 	exitNotConfigured = 10
 	exitNotSupported  = 11
 	exitNotWritable   = 12
-	// 13 is "this storage holds a repository I have no password for". Only the host
-	// side's connect can return it; Maison learns the same fact from status's
-	// needsRecovery instead, so it has no case below.
-	exitWrongKey = 14
+	// 13 is "this storage holds a repository I have no password for". The host side's
+	// connect returns it, and so does init when the space filled up behind a status
+	// that said it was empty — the one verb Maison runs that can see it.
+	exitRepositoryExists = 13
+	exitWrongKey         = 14
 )
 
 // ErrNotWritable is a repository that is reachable but refuses writes — a storage space
@@ -45,6 +46,10 @@ var ErrNotWritable = errors.New("the backup repository is not accepting writes")
 // under the adapter's name, so a caller can test for it without knowing which package
 // declared it — and so a fake engine in a test can return the very same sentinel.
 var ErrWrongKey = apps.ErrWrongKey
+
+// ErrRepositoryExists is an init refused because the storage already holds a repository
+// (exit 13). apps.ErrRepositoryExists under the adapter's name, as above.
+var ErrRepositoryExists = apps.ErrRepositoryExists
 
 type line struct {
 	Type    string   `json:"type"`
@@ -74,6 +79,8 @@ type wireCaps struct {
 	Retention         bool `json:"retention"`
 	Recover           bool `json:"recover"`
 	ChangeSecret      bool `json:"changeSecret"`
+	Init              bool `json:"init"`
+	Probe             bool `json:"probe"`
 
 	RetentionModel string `json:"retentionModel"`
 }
@@ -90,6 +97,8 @@ func (c wireCaps) caps() apps.Caps {
 		KeyEscrow:       c.KeyEscrow,
 		Recover:         c.Recover,
 		ChangeSecret:    c.ChangeSecret,
+		Init:            c.Init,
+		Probe:           c.Probe,
 	}
 }
 
@@ -101,6 +110,14 @@ type wireStatus struct {
 	// NeedsRecovery arrives with configured=false and exit 0: the engine is answering a
 	// question, not failing one. See apps.EngineStatus.NeedsRecovery.
 	NeedsRecovery bool `json:"needsRecovery,omitempty"`
+	// NeedsSecret arrives the same way: provisioned, empty storage waiting for the
+	// owner's password. See apps.EngineStatus.NeedsSecret.
+	NeedsSecret bool `json:"needsSecret,omitempty"`
+}
+
+// probeResult is the probe verb's answer: "empty" or "existing".
+type probeResult struct {
+	Storage string `json:"storage"`
 }
 
 // recoverResult is the recover verb's answer.
@@ -159,6 +176,8 @@ func classify(err error) error {
 		return apps.ErrNotSupported
 	case exitNotWritable:
 		return ErrNotWritable
+	case exitRepositoryExists:
+		return ErrRepositoryExists
 	case exitWrongKey:
 		return ErrWrongKey
 	default:

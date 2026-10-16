@@ -9,6 +9,7 @@ package backuptest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,10 @@ type Fake struct {
 	// fails every change with it.
 	SecretPath string
 	ChangeErr  error
+	// InitErr, when set, fails every InitSecret with it — apps.ErrRepositoryExists for a
+	// space that filled up behind the status. A successful InitSecret writes the key to
+	// SecretPath like a change does, and clears Stat's NeedsSecret.
+	InitErr error
 
 	mu    sync.Mutex
 	store map[string][]apps.Backup // app -> committed backups
@@ -163,6 +168,38 @@ func (f *Fake) ChangeSecret(ctx context.Context, key string) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// NewAwaitingSecret builds an offsite engine on provisioned, empty storage, waiting for
+// the owner to choose the password its repository is created with (Caps.Init). A
+// successful InitSecret writes the key to path, as the adapter's promotion does.
+func NewAwaitingSecret(id, path string) *Fake {
+	f := NewFake(id, apps.Caps{Offsite: true, InPlaceRestore: true, Retention: true,
+		Encrypted: true, KeyEscrow: true, Recover: true, ChangeSecret: true, Init: true, Probe: true})
+	f.Stat = &apps.EngineStatus{NeedsSecret: true}
+	f.SecretPath = path
+	return f
+}
+
+// InitSecret creates the repository with key. Recorded as "init" alone, for the reason
+// Recover does not record its key.
+func (f *Fake) InitSecret(ctx context.Context, key string) error {
+	f.record("init")
+	if f.InitErr != nil {
+		return f.InitErr
+	}
+	if key == "" {
+		return errors.New("no password was given")
+	}
+	if f.SecretPath != "" {
+		if err := os.WriteFile(f.SecretPath, []byte(key), 0o600); err != nil {
+			return err
+		}
+	}
+	f.mu.Lock()
+	f.Stat = &apps.EngineStatus{Configured: true, Connected: true}
+	f.mu.Unlock()
 	return nil
 }
 

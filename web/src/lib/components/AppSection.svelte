@@ -8,6 +8,7 @@
   import { clickOutside } from '../actions'
   import { tileDragging } from '../stores/ui'
   import { t } from '../i18n'
+  import { openStore } from '../route'
 
   // Which grid is on screen. The platform's own pieces declare `view: system` in
   // their compose and get their own; apps with no web UI (the server sorts them,
@@ -137,6 +138,28 @@
     if (!views.includes(view)) view = 'apps'
   })
 
+  // The switch's light thumb slides under the active view. It is measured rather
+  // than laid out on equal tracks because the labels differ in width — and differ
+  // again per language — so the thumb is re-measured whenever the control resizes
+  // (a language switch, a late web font), not only when the view changes.
+  let seg = $state<HTMLElement>()
+  let thumb = $state({ x: 0, w: 0 })
+  function measure() {
+    const on = seg?.querySelector<HTMLElement>('button[aria-selected="true"]')
+    if (on) thumb = { x: on.offsetLeft, w: on.offsetWidth }
+  }
+  $effect(() => {
+    view
+    views
+    measure()
+  })
+  $effect(() => {
+    if (!seg) return
+    const ro = new ResizeObserver(measure)
+    ro.observe(seg)
+    return () => ro.disconnect()
+  })
+
   function onConsider(e: CustomEvent<{ items: TileData[] }>) {
     dragging = true
     tileDragging.set(true)
@@ -161,29 +184,51 @@
 <section class="app-section">
   <header class="section-header">
     {#if views.length > 1}
-      <h1 class="views">
+      <!-- Dark glass like the tiles beside it, with the active view on a light thumb:
+           dark-on-light stays readable on any wallpaper, where the old dimmed title
+           words washed out on a light one. -->
+      <div class="views" role="tablist" bind:this={seg}>
+        <span class="thumb" style:width="{thumb.w}px" style:transform="translateX({thumb.x}px)"></span>
         {#each views as v (v)}
-          <button class:active={view === v} aria-pressed={view === v} onclick={() => (view = v)}
-            >{$t(LABELS[v])}</button
-          >
+          <button role="tab" aria-selected={view === v} onclick={() => (view = v)}>{$t(LABELS[v])}</button>
         {/each}
-      </h1>
+      </div>
     {:else}
       <h1>{$t('app')}</h1>
     {/if}
     <!-- An external link is a shortcut the operator adds to their own grid;
          there is nothing to add to the platform's. -->
     {#if view === 'apps'}
-      <div class="add-wrap">
-        <button class="add" title="Add" aria-label="Add" onclick={() => (addMenu = !addMenu)}>+</button>
+      <div class="add-wrap" use:clickOutside={() => (addMenu = false)}>
+        <button class="add" title="Add" aria-label="Add" aria-expanded={addMenu} onclick={() => (addMenu = !addMenu)}>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
         {#if addMenu}
-          <div class="add-menu popover" use:clickOutside={() => (addMenu = false)}>
+          <div class="add-menu popover">
+            <button
+              onclick={() => {
+                addMenu = false
+                openStore()
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 8h14l-1 12H6z" /><path d="M9 8V6a3 3 0 0 1 6 0v2" />
+              </svg>
+              {$t('app_store')}
+            </button>
             <button
               onclick={() => {
                 addMenu = false
                 showLinkModal = true
-              }}>{$t('add_external_link')}</button
+              }}
             >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" /><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+              </svg>
+              {$t('add_external_link')}
+            </button>
           </div>
         {/if}
       </div>
@@ -213,6 +258,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    min-height: 2.25rem;
     color: var(--grey-100);
     margin: 0.25rem 0.25rem 0.75rem;
   }
@@ -223,34 +269,68 @@
     /* The heading sits on bare wallpaper, not glass: a light wallpaper erases it. */
     text-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
   }
-  /* The heading becomes the switch: same type, the inactive view dimmed rather
-     than boxed, so the row still reads as a title and not as a toolbar. */
+  /* Desktop glass, not the global light .segmented (that one is for panels). */
   .views {
-    display: flex;
-    gap: 1rem;
+    position: relative;
+    display: inline-flex;
+    padding: 3px;
+    border-radius: var(--r-pill);
+    background: var(--glass-color);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow: var(--glass-shadow);
+  }
+  .thumb {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 0;
+    border-radius: var(--r-pill);
+    background: rgb(255 255 255 / 0.9);
+    box-shadow:
+      0 1px 2px rgb(0 0 0 / 0.15),
+      0 3px 10px rgb(0 0 0 / 0.12);
+    transition:
+      transform var(--dur) var(--ease-ios),
+      width var(--dur) var(--ease-ios);
   }
   .views button {
-    padding: 0;
+    position: relative;
+    height: 2.25rem;
+    padding: 0 1rem;
     border: none;
+    border-radius: var(--r-pill);
     background: none;
-    font: inherit;
-    color: inherit;
-    opacity: 0.45;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: rgb(255 255 255 / 0.82);
     cursor: pointer;
-    transition: opacity 0.15s;
+    transition: color var(--dur-fast) var(--ease-ios);
   }
-  .views button:hover {
-    opacity: 0.75;
+  .views button:hover:not([aria-selected='true']) {
+    color: #fff;
   }
-  .views button.active {
-    opacity: 1;
+  .views button[aria-selected='true'] {
+    color: var(--grey-800);
+  }
+  .views button:focus-visible,
+  .add:focus-visible {
+    outline: 2px solid rgb(255 255 255 / 0.85);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .thumb {
+      transition: none;
+    }
   }
   .add-wrap {
     position: relative;
   }
   .add {
-    width: 1.75rem;
-    height: 1.75rem;
+    display: grid;
+    place-items: center;
+    width: 2.25rem;
+    height: 2.25rem;
     border-radius: var(--r-pill);
     border: none;
     background: var(--glass-color);
@@ -258,14 +338,14 @@
     -webkit-backdrop-filter: var(--glass-blur);
     box-shadow: var(--glass-shadow);
     color: var(--grey-100);
-    font-size: 1.1rem;
-    line-height: 1;
+    cursor: pointer;
     transition:
       background var(--dur-fast) var(--ease-ios),
       transform var(--dur-fast) var(--ease-ios);
   }
-  .add:hover {
-    background: rgb(60 62 70 / 0.5);
+  .add:hover,
+  .add[aria-expanded='true'] {
+    background: rgb(60 62 70 / 0.55);
   }
   .add:active {
     transform: scale(0.9);
@@ -273,23 +353,29 @@
   .add-menu {
     position: absolute;
     right: 0;
-    top: 2.1rem;
+    top: calc(100% + 6px);
     z-index: 10;
     padding: 5px;
     transform-origin: top right;
   }
   .add-menu button {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
     width: 100%;
     text-align: left;
     white-space: nowrap;
-    height: 2rem;
-    padding: 0 0.6rem;
+    height: 2.25rem;
+    padding: 0 0.7rem 0 0.6rem;
     border: none;
     background: none;
     border-radius: calc(var(--r-md) - 5px);
     font-size: 0.875rem;
     color: var(--grey-800);
+    cursor: pointer;
+  }
+  .add-menu button svg {
+    color: var(--grey-600);
   }
   .add-menu button:hover {
     background: rgb(118 118 128 / 0.14);

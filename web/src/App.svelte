@@ -139,11 +139,13 @@
      viewport-fit=cover (see index.html) lets the page draw under the status bar
      and the home indicator. env() resolves to 0px anywhere there is no inset, so
      these are inert in a browser and on a desktop. The top term must stay in step
-     with .topbar's height in TopBar.svelte, which grows by the same amount. */
+     with TopBar.svelte's floating .island: 2.5rem here plus the 1.5rem padding
+     below puts the first row just under the capsule (0.75rem + 2.6rem tall), so at
+     rest nothing sits beneath it; scrolled content passes under the glass. */
   .contents {
     position: absolute;
     inset: 0;
-    top: calc(3.25rem + env(safe-area-inset-top, 0px));
+    top: calc(2.5rem + env(safe-area-inset-top, 0px));
     overflow-y: auto;
     padding: 1.5rem 0 calc(4rem + env(safe-area-inset-bottom, 0px));
   }

@@ -23,6 +23,7 @@
     sendTestNotification,
     KNOWN_KINDS,
     ACTIVITY_KINDS,
+    incidentLabel,
     type Incident,
   } from '../../stores/incidents'
 
@@ -74,11 +75,7 @@
    *  A kind reported by another PCS component through the inbound API has no
    *  translation here and never will, so the fallback is the normal path for those
    *  rather than an error case. */
-  function label(inc: Incident): string {
-    const key = `incident_${inc.kind}`
-    const out = $t(key, inc.args ?? {})
-    return out === key ? inc.title : out
-  }
+  const label = (inc: Incident) => incidentLabel($t, inc)
 
   function when(iso: string): string {
     const d = new Date(iso)

@@ -78,6 +78,16 @@ export function subscribeIncidents(): () => void {
   return live.subscribe('incidents', (d) => incidents.set(d as IncidentSnapshot))
 }
 
+/** The localised one-line label for an incident: `incident_<kind>` with its args,
+ *  or the server's English title when this build has no translation for the kind.
+ *  Shared by the settings list and the top bar's drawer so the two never word the
+ *  same incident differently. */
+export function incidentLabel(t: (key: string, params?: Record<string, string>) => string, inc: Incident): string {
+  const key = `incident_${inc.kind}`
+  const out = t(key, inc.args ?? {})
+  return out === key ? inc.title : out
+}
+
 async function apply(p: Promise<unknown>): Promise<void> {
   await p
   await loadIncidents()

@@ -3,13 +3,22 @@
   import { settings } from '../stores/settings'
   import { t, languages } from '../i18n'
   import { openSettings } from '../route'
-  import { incidents, loadIncidents, subscribeIncidents } from '../stores/incidents'
+  import {
+    incidents,
+    loadIncidents,
+    subscribeIncidents,
+    ackIncident,
+    resolveIncident,
+    incidentLabel,
+  } from '../stores/incidents'
   import { canInstall, installed, installHelp, isIOSSafari, promptInstall } from '../stores/pwa'
   import { feedback, feedbackOpen, loadFeedback } from '../stores/feedback'
 
   let open = $state(false)
+  let drawer = $state(false)
+  let busy = $state(false)
 
-  // The bell is the register's primary surface, and deliberately so: mail leaves the
+  // The health pill is the register's primary surface, and deliberately so: mail leaves the
   // box through a relay nobody here can see the far end of, and a PCS alert filed as
   // spam fails silently. This does not.
   //
@@ -23,14 +32,32 @@
   const alerts = $derived($incidents.open.filter((i) => !i.acked))
   const worst = $derived(alerts.some((i) => i.severity === 'critical') ? 'critical' : 'warning')
 
-  // Where the bell leads. When everything it is ringing about is a backup problem, the
-  // place to fix it is the Backups page — the key form, the Resume button — and a stop
-  // at the notification list on the way would be one more click between the user and
-  // the only control that helps. Anything else in the mix and it opens the list, which
-  // is the one place that shows all of them.
-  const bellTarget = $derived(
-    alerts.length > 0 && alerts.every((i) => i.kind.startsWith('backup.')) ? 'backups' : 'notifications',
-  )
+  // Unacked first: those are what the pill is counting. Seen ones stay listed, dimmed,
+  // because acknowledging hides the badge, not the problem.
+  const listed = $derived([...$incidents.open].sort((x, y) => Number(!!x.acked) - Number(!!y.acked)))
+
+  async function act(fn: () => Promise<void>) {
+    busy = true
+    try {
+      await fn()
+    } finally {
+      busy = false
+    }
+  }
+
+  // The drawer is a shortcut, not a second notifications page: anything beyond
+  // Seen / Dismiss goes to the place that can fix it. A backup problem is fixed on
+  // the Backups page (the key form, the Resume button), so its row links straight
+  // there; everything else is one click away through "All notifications".
+  function go(section: 'backups' | 'notifications') {
+    drawer = false
+    openSettings(section)
+  }
+
+  function when(iso: string): string {
+    const d = new Date(iso)
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleString()
+  }
 
   // Language, wallpaper and widgets stay here rather than moving to the settings
   // page: they are instant and previewed against the dashboard behind them, and
@@ -38,6 +65,7 @@
   // see would be worse. Anything that configures the box itself lives on the page.
   function more() {
     open = false
+    drawer = false
     openSettings()
   }
 
@@ -84,19 +112,96 @@
   }
 </script>
 
-<header class="topbar">
-  <div class="left">
-    <div class="menu-wrap">
-      <button class="picon" title={$t('settings')} aria-label={$t('settings')} onclick={() => (open = !open)}>
-        <!-- control / sliders (CasaOS control-outline) -->
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-          <line x1="4" y1="7" x2="20" y2="7" /><circle cx="9" cy="7" r="2.2" fill="#fff" />
-          <line x1="4" y1="17" x2="20" y2="17" /><circle cx="15" cy="17" r="2.2" fill="#fff" />
-        </svg>
-      </button>
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === 'Escape') {
+      open = false
+      drawer = false
+    }
+  }}
+/>
+
+<!-- No full-width bar: the desktop is wallpaper and dark glass, and a light strip
+     across the top was the one surface that did not belong to it. What the bar held
+     floats in one glass capsule at the top right, aligned with the app grid. -->
+<div class="island">
+  <div class="wrap" use:clickOutside={() => (drawer = false)}>
+    <button
+      class="health"
+      class:warning={alerts.length > 0 && worst === 'warning'}
+      class:critical={alerts.length > 0 && worst === 'critical'}
+      title={$t('notifications')}
+      aria-label={alerts.length > 0 ? $t('status_attention', { count: String(alerts.length) }) : $t('status_all_good')}
+      aria-expanded={drawer}
+      onclick={() => {
+        drawer = !drawer
+        open = false
+      }}
+    >
+      <span class="dot"></span>
+      <span class="label">
+        {alerts.length > 0 ? $t('status_attention', { count: String(alerts.length) }) : $t('status_all_good')}
+      </span>
+      {#if alerts.length > 0}<span class="count">{alerts.length}</span>{/if}
+    </button>
+
+    {#if drawer}
+      <div class="drawer popover">
+        <h3>{$t('notifications')}</h3>
+        {#if listed.length === 0}
+          <p class="empty">{$t('notifications_all_clear')}</p>
+        {:else}
+          <ul>
+            {#each listed as inc (inc.id)}
+              <li class:acked={inc.acked}>
+                <span class="sev" class:critical={inc.severity === 'critical'}></span>
+                <div class="body">
+                  <p class="title">{incidentLabel($t, inc)}</p>
+                  {#if inc.detail}<p class="detail">{inc.detail}</p>{/if}
+                  <p class="meta">{$t('notifications_since', { when: when(inc.since) })}</p>
+                  <div class="row-actions">
+                    {#if inc.kind.startsWith('backup.')}
+                      <button class="primary" onclick={() => go('backups')}>{$t('notifications_open_backups')}</button>
+                    {/if}
+                    {#if !inc.acked}
+                      <button disabled={busy} onclick={() => act(() => ackIncident(inc.id))}>{$t('notifications_ack')}</button>
+                    {/if}
+                    <button disabled={busy} onclick={() => act(() => resolveIncident(inc.id))}>{$t('notifications_dismiss')}</button>
+                  </div>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <button class="more" onclick={() => go('notifications')}>
+          <span>{$t('notifications_see_all')}</span>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+      </div>
+    {/if}
+  </div>
+
+  <div class="wrap" use:clickOutside={() => (open = false)}>
+    <button
+      class="picon"
+      title={$t('settings')}
+      aria-label={$t('settings')}
+      aria-expanded={open}
+      onclick={() => {
+        open = !open
+        drawer = false
+      }}
+    >
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+      </svg>
+    </button>
 
       {#if open}
-        <div class="dropdown popover" use:clickOutside={() => (open = false)}>
+        <div class="dropdown popover">
           <h3>{$t('settings')}</h3>
 
           <label class="field">
@@ -156,131 +261,245 @@
           {/if}
 
           <button class="more" onclick={more}>
-            <span>{$t('more')}</span>
+            <span>{$t('all_settings')}</span>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M9 6l6 6-6 6" />
             </svg>
           </button>
         </div>
       {/if}
-    </div>
   </div>
-
-  <div class="spacer"></div>
-
-  {#if alerts.length > 0}
-    <button
-      class="picon bell"
-      title={$t('notifications')}
-      aria-label={$t('notifications')}
-      onclick={() => openSettings(bellTarget)}
-    >
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-        <path d="M9 17a3 3 0 0 0 6 0M12 6v1M8 17V12a4 4 0 0 1 8 0v5" />
-      </svg>
-      <span class="count" class:critical={worst === 'critical'}>{alerts.length}</span>
-    </button>
-  {/if}
-</header>
+</div>
 
 <style>
-  /* White CasaOS-style navbar with left icon cluster. */
-  .topbar {
+  /* Fixed to the top right, its right edge on the app grid's: the same stepped
+     max-widths as App.svelte's .container (plus its 0.75rem padding and the
+     section header's 0.25rem margin), so the gear sits above the "+" at every
+     width. The safe-area terms keep it clear of a notch when installed as a PWA;
+     App.svelte's .contents offset has to stay in step with this height. */
+  .island {
+    --grid-max: 100vw;
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    /* Grows by the status-bar inset when installed on a notched phone, where
-       viewport-fit=cover (index.html) puts the page under it. Without the padding
-       the clock sits on top of these buttons. env() is 0px everywhere else, so a
-       browser and a desktop are unaffected — but App.svelte's .contents offset has
-       to move with this. */
-    height: calc(3.25rem + env(safe-area-inset-top, 0px));
-    padding-top: env(safe-area-inset-top, 0px);
+    top: calc(0.75rem + env(safe-area-inset-top, 0px));
+    right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100vw - var(--grid-max)) / 2 + 1rem));
     z-index: 20;
     display: flex;
     align-items: center;
-    padding-left: 1rem;
-    padding-right: 1rem;
-    border-bottom: 1px solid rgb(0 0 0 / 0.06);
+    gap: 2px;
+    padding: 3px;
+    border-radius: var(--r-pill);
   }
-  /* The bar's blur lives on a pseudo-element: a backdrop-filter on .topbar itself
-     would become the backdrop root of the dropdown inside it, and the dropdown
-     could then blur nothing but the bar. */
-  .topbar::before {
+  @media (min-width: 1024px) {
+    .island {
+      --grid-max: 960px;
+    }
+  }
+  @media (min-width: 1216px) {
+    .island {
+      --grid-max: 1152px;
+    }
+  }
+  @media (min-width: 1368px) {
+    .island {
+      --grid-max: 1304px;
+    }
+  }
+  /* The glass lives on a pseudo-element: a backdrop-filter on .island itself would
+     become the backdrop root of the menus inside it, and they could then blur
+     nothing but the capsule. */
+  .island::before {
     content: '';
     position: absolute;
     inset: 0;
     z-index: -1;
-    background: rgb(255 255 255 / 0.62);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border-radius: inherit;
+    background: var(--glass-color);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow: var(--glass-shadow);
   }
-  .left {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
+  .wrap {
+    position: relative;
   }
-  .spacer {
-    flex: 1;
-  }
-  .picon {
-    display: grid;
-    place-items: center;
-    width: 2.25rem;
+  .picon,
+  .health {
     height: 2.25rem;
-    border-radius: var(--r-sm);
-    background: transparent;
     border: none;
-    color: #363636;
+    border-radius: var(--r-pill);
+    background: transparent;
+    color: #fff;
     cursor: pointer;
     transition:
       background var(--dur-fast) var(--ease-ios),
       transform var(--dur-fast) var(--ease-ios);
   }
-  .picon:hover {
-    background: rgb(0 0 0 / 0.06);
+  .picon {
+    display: grid;
+    place-items: center;
+    width: 2.25rem;
   }
-  .picon:active {
-    transform: scale(0.92);
+  .picon:hover,
+  .health:hover,
+  .picon[aria-expanded='true'],
+  .health[aria-expanded='true'] {
+    background: rgb(255 255 255 / 0.14);
   }
-  /* Only rendered when there is something to say, so it needs no resting state: an
-     always-present bell that is usually empty trains people not to look at it. */
-  .bell {
-    position: relative;
-    margin-right: 0.35rem;
+  .picon:active,
+  .health:active {
+    transform: scale(0.94);
   }
+  .picon:focus-visible,
+  .health:focus-visible {
+    outline: 2px solid rgb(255 255 255 / 0.85);
+    outline-offset: 1px;
+  }
+  /* Always there, unlike the bell it replaces. An always-present bell that is
+     usually empty trains people not to look at it; a pill that says "All good"
+     tells them something every time they do, so the day it turns amber is noticed. */
+  .health {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0 0.9rem 0 0.8rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--dot-ok);
+    box-shadow: 0 0 0 3px rgb(52 199 89 / 0.25);
+  }
+  .warning .dot {
+    background: var(--dot-warn);
+    box-shadow: 0 0 0 3px rgb(255 204 0 / 0.28);
+  }
+  .critical .dot {
+    background: var(--dot-error);
+    box-shadow: 0 0 0 3px rgb(255 59 48 / 0.3);
+  }
+  /* The count stands in for the sentence on a phone, where the capsule has to stay small. */
   .count {
-    position: absolute;
-    top: 0.15rem;
-    right: 0.1rem;
-    min-width: 1rem;
-    padding: 0 0.2rem;
-    border-radius: 999px;
-    background: var(--warning, #d29922);
-    color: #fff;
-    font-size: 0.65rem;
-    font-weight: 700;
-    line-height: 1rem;
+    display: none;
   }
-  .count.critical {
-    background: var(--red, #d1242f);
+  @media (max-width: 768px) {
+    .health .label {
+      display: none;
+    }
+    .health {
+      padding: 0 0.8rem;
+    }
+    .count {
+      display: inline;
+    }
   }
-  .menu-wrap {
-    position: relative;
-  }
+  .drawer,
   .dropdown {
     position: absolute;
-    left: 0;
-    top: 2.75rem;
-    width: 17rem;
+    right: 0;
+    top: calc(100% + 9px);
     border-radius: var(--r-lg);
-    padding: 1rem;
     color: var(--grey-800);
+    transform-origin: top right;
+  }
+  .drawer {
+    width: min(22rem, calc(100vw - 2rem));
+    max-height: min(32rem, calc(100vh - 6rem));
+    overflow-y: auto;
+    padding: 0.85rem 0.6rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .drawer h3 {
+    margin: 0 0.4rem 0.1rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+  .drawer .empty {
+    margin: 0 0.4rem 0.4rem;
+    font-size: 0.85rem;
+    color: var(--grey-600);
+  }
+  .drawer ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .drawer li {
+    display: flex;
+    gap: 0.6rem;
+    padding: 0.6rem 0.4rem;
+  }
+  .drawer li + li {
+    border-top: 1px solid rgb(0 0 0 / 0.06);
+  }
+  .drawer li.acked {
+    opacity: 0.6;
+  }
+  .sev {
+    flex: none;
+    width: 0.5rem;
+    height: 0.5rem;
+    margin-top: 0.4rem;
+    border-radius: 50%;
+    background: var(--warning, #d29922);
+  }
+  .sev.critical {
+    background: var(--red);
+  }
+  .body {
+    min-width: 0;
+  }
+  .body p {
+    margin: 0;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .title {
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .detail,
+  .meta {
+    font-size: 0.75rem;
+    color: var(--grey-600);
+  }
+  .row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+  }
+  .row-actions button {
+    border: none;
+    border-radius: var(--r-pill);
+    padding: 0.2rem 0.7rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgb(118 118 128 / 0.14);
+    color: var(--grey-800);
+    cursor: pointer;
+  }
+  .row-actions button:hover:not(:disabled) {
+    background: rgb(118 118 128 / 0.22);
+  }
+  .row-actions button.primary {
+    background: var(--primary);
+    color: var(--text-on-accent);
+  }
+  .row-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .dropdown {
+    width: 17rem;
+    padding: 1rem;
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    transform-origin: top left;
   }
   .dropdown h3 {
     margin: 0;

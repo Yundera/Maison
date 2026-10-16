@@ -44,9 +44,13 @@
       transform var(--dur) var(--ease-ios),
       box-shadow var(--dur) var(--ease-ios);
   }
-  /* A wide card lifts less than a tile does, or the scale reads as a zoom. */
+  /* A wide card lifts less than a tile does, or the scale reads as a zoom.
+     Scaled from its bottom edge, not translated up: the lifted card must still
+     cover its resting outline, or a cursor on the bottom edge / corners falls
+     out of the lifted card, drops the hover, lands back in it — and it flickers. */
   .widget:hover {
-    transform: translateY(-2px) scale(1.01);
+    transform-origin: 50% 100%;
+    transform: scale(1.01);
     box-shadow: var(--shadow-lift);
   }
   .widget-content {

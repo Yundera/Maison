@@ -280,8 +280,8 @@ func imageRepo(image string) string {
 	return s
 }
 
-// mainRepo is the image repository of the app's main service — the one x-casaos
-// `main` names, else the only service there is. Matching on every service instead
+// mainRepo is the image repository of the app's main service — the one its
+// metadata's `main` names, else the only service there is. Matching on every service instead
 // would pair unrelated apps through a shared sidecar (a proxy, a database), which is
 // exactly the image most store apps have in common.
 func mainRepo(raw []byte) string {
@@ -289,7 +289,10 @@ func mainRepo(raw []byte) string {
 	if err != nil {
 		return ""
 	}
-	name, _ := f.XCasaOS["main"].(string)
+	name := ""
+	if ca, err := f.App(); err == nil {
+		name = ca.Main
+	}
 	svc, ok := f.Services[name]
 	if !ok {
 		if len(f.Services) != 1 {

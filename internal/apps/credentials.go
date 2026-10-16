@@ -90,7 +90,7 @@ func (r *Registry) mergedApp(id string) (dir string, ca *xcomposeapp.App, err er
 	}
 	override, _ := os.ReadFile(filepath.Join(dir, "docker-compose.override.yml"))
 	overF, _ := composefile.Parse(override)
-	_, ca = mergedMeta(baseF, overF)
+	ca = mergedMeta(baseF, overF)
 	return dir, ca, nil
 }
 

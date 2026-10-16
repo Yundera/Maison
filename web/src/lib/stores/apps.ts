@@ -11,7 +11,6 @@ export interface App {
   managed: boolean
   store?: string
   scheme?: string
-  hostname?: string
   port?: string
   index?: string
   category?: string
@@ -658,11 +657,11 @@ export function getServices(id: string): Promise<AppService[]> {
 
 /** Compute an app's web URL, if it has a reachable one. */
 export function appUrl(a: App): string {
-  // x-compose-app (webui-*) resolves the full URL server-side; use it verbatim.
+  // A webui-host resolves the full URL server-side; use it verbatim. Otherwise a
+  // port names a port on the box's own host.
   if (a.url) return a.url
   const scheme = a.scheme || 'http'
   const index = a.index && a.index !== '/' ? a.index : ''
-  if (a.hostname) return `${scheme}://${a.hostname}${index}`
   if (a.port) return `${scheme}://${location.hostname}:${a.port}${index}`
   return ''
 }

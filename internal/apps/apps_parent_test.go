@@ -9,11 +9,11 @@ import (
 // buildApp only records what the compose declared: whether it resolves depends on
 // what else is installed, which one app's metadata cannot say.
 func TestBuildAppKeepsTheDeclaredParent(t *testing.T) {
-	app := buildApp("bazarr", nil, &xcomposeapp.App{Parent: "  sonarr  "}, "", true, StatusRunning, nil)
+	app := buildApp("bazarr", &xcomposeapp.App{Parent: "  sonarr  "}, "", true, StatusRunning, nil)
 	if app.Parent != "sonarr" {
 		t.Errorf("parent = %q, want %q", app.Parent, "sonarr")
 	}
-	if app := buildApp("sonarr", nil, &xcomposeapp.App{}, "", true, StatusRunning, nil); app.Parent != "" {
+	if app := buildApp("sonarr", &xcomposeapp.App{}, "", true, StatusRunning, nil); app.Parent != "" {
 		t.Errorf("parent = %q, want empty", app.Parent)
 	}
 }

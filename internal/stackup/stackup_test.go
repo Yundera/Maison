@@ -122,8 +122,8 @@ func TestLoadMergesSpec(t *testing.T) {
 	base := filepath.Join(dir, "docker-compose.yml")
 	override := filepath.Join(dir, "docker-compose.override.yml")
 
-	// The base carries the store's x-casaos install commands plus an x-compose-app
-	// block; the override re-pins one hook and the folder list.
+	// The base carries x-casaos install commands beside its x-compose-app block,
+	// which makes them dead: the override re-pins one hook and the folder list.
 	if err := os.WriteFile(base, []byte(`
 services:
   app:
@@ -153,14 +153,13 @@ x-compose-app:
 
 	spec := Load([]string{base, override})
 
-	// x-compose-app hooks win over the x-casaos commands they generalise...
 	if spec.Hooks.PreInstall != "mine-pre-install" {
 		t.Fatalf("pre_install = %q, want the x-compose-app hook", spec.Hooks.PreInstall)
 	}
-	// ...but an x-casaos command with no x-compose-app counterpart still runs, so
-	// unmodified store apps keep working.
-	if spec.Hooks.PostInstall != "casaos-post" {
-		t.Fatalf("post_install = %q, want the x-casaos fallback", spec.Hooks.PostInstall)
+	// One block or the other: an x-casaos command beside an x-compose-app block
+	// never runs, even where x-compose-app declares no counterpart.
+	if spec.Hooks.PostInstall != "" {
+		t.Fatalf("post_install = %q, want none", spec.Hooks.PostInstall)
 	}
 	if spec.Hooks.PreUp != "override-pre-up" {
 		t.Fatalf("pre_up = %q, want the override's", spec.Hooks.PreUp)
@@ -186,7 +185,13 @@ x-casaos:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	spec := Load([]string{base})
+	// What Maison itself writes into the override's x-compose-app does not turn
+	// the app into a native one that has lost its hooks.
+	override := filepath.Join(dir, "docker-compose.override.yml")
+	if err := os.WriteFile(override, []byte("x-compose-app:\n  store-ref: https://store.example/-/Apps/app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := Load([]string{base, override})
 	if spec.Hooks.PreInstall != "casaos-pre" {
 		t.Fatalf("pre_install = %q, want casaos-pre", spec.Hooks.PreInstall)
 	}

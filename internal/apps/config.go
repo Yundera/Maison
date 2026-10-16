@@ -11,8 +11,6 @@ import (
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/stackup"
-	"github.com/yundera/maison/internal/xcasaos"
-	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // Config carries a managed app's base compose, its user override, and the
@@ -21,8 +19,8 @@ type Config struct {
 	Base     string `json:"base"`
 	Override string `json:"override"`
 	WebUI    WebUI  `json:"webui"`
-	// Tips is the app's guidance, seeded from the store (x-compose-app tips, else
-	// x-casaos tips: before_install + custom) but editable: edits are persisted
+	// Tips is the app's guidance, seeded from the store (x-compose-app tips; on an
+	// x-casaos app, its before_install + custom) but editable: edits are persisted
 	// into the override's x-compose-app.tips key (see SetTips). It doubles as the
 	// operator's per-app note.
 	Tips string `json:"tips"`
@@ -51,7 +49,7 @@ func (r *Registry) GetConfig(id string) (*Config, error) {
 
 	if baseF, err := composefile.Parse(base); err == nil {
 		overF, _ := composefile.Parse(override)
-		si, ca := mergedMeta(baseF, overF)
+		ca := mergedMeta(baseF, overF)
 		if ca != nil {
 			cfg.WebUI = WebUI{
 				Scheme: ca.WebUIScheme,
@@ -60,37 +58,10 @@ func (r *Registry) GetConfig(id string) (*Config, error) {
 				Path:   ca.WebUIPath,
 				URL:    ca.WebURL(r.cfg.AppDomain()),
 			}
+			cfg.Tips = strings.TrimSpace(ca.Tips.Value())
 		}
-		cfg.Tips = mergedTips(si, ca)
 	}
 	return cfg, nil
-}
-
-// mergedTips picks the app's guidance: x-compose-app's tips when it declares
-// them (that is where operator edits land), else the store's x-casaos tips.
-func mergedTips(si *xcasaos.StoreInfo, ca *xcomposeapp.App) string {
-	if ca != nil {
-		if t := strings.TrimSpace(ca.Tips.Value()); t != "" {
-			return t
-		}
-	}
-	if si != nil {
-		return storeTips(si)
-	}
-	return ""
-}
-
-// storeTips flattens the x-casaos tips (localized before_install guidance plus
-// the free-form custom note) into a single block for display.
-func storeTips(si *xcasaos.StoreInfo) string {
-	var parts []string
-	if b := strings.TrimSpace(xcasaos.Localized(si.Tips.BeforeInstall)); b != "" {
-		parts = append(parts, b)
-	}
-	if c := strings.TrimSpace(si.Tips.Custom); c != "" {
-		parts = append(parts, c)
-	}
-	return strings.Join(parts, "\n\n")
 }
 
 // RenderedTips returns the app's tips with ${VAR} references resolved from its

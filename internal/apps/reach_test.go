@@ -54,27 +54,6 @@ func TestClassifyErr(t *testing.T) {
 	}
 }
 
-func TestGatewayURL(t *testing.T) {
-	cases := []struct {
-		name string
-		app  App
-		want string
-	}{
-		{"resolved url wins", App{URL: "https://plex-x.example/web", Hostname: "ignored", Scheme: "http"}, "https://plex-x.example/web"},
-		{"hostname builds url", App{Hostname: "gitea.example", Scheme: "https"}, "https://gitea.example"},
-		{"hostname default scheme", App{Hostname: "gitea.example"}, "http://gitea.example"},
-		{"hostname with index", App{Hostname: "app.example", Scheme: "https", Index: "/dashboard"}, "https://app.example/dashboard"},
-		{"index slash is ignored", App{Hostname: "app.example", Scheme: "https", Index: "/"}, "https://app.example"},
-		{"port only has no gateway url", App{Port: "8096", Scheme: "http"}, ""},
-		{"nothing", App{}, ""},
-	}
-	for _, c := range cases {
-		if got := gatewayURL(c.app); got != c.want {
-			t.Errorf("%s: gatewayURL = %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
 func TestMarkerName(t *testing.T) {
 	cases := map[string]string{
 		"nextcloud":     "nextcloud",

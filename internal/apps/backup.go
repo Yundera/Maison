@@ -173,7 +173,7 @@ func (r *Registry) exclusionsFor(id string) (*exclude.Set, []error) {
 		patterns = append(patterns, backups)
 	}
 
-	_, ca := r.metaFor(id, "")
+	ca := r.metaFor(id, "")
 	if ca != nil {
 		for _, p := range ca.Backup.Exclude {
 			// Rendered the way a folder path is, then mapped back into this container's
@@ -202,7 +202,7 @@ func (r *Registry) exclusionsFor(id string) (*exclude.Set, []error) {
 // through the working directory Docker reports; a skipped app is by definition one
 // with a folder under AppsDir, which metaFor reads directly.
 func (r *Registry) BackupSkipped(id string) bool {
-	_, ca := r.metaFor(id, "")
+	ca := r.metaFor(id, "")
 	return ca != nil && ca.Backup.Skip
 }
 

@@ -31,7 +31,7 @@ import (
 
 	"github.com/yundera/maison/internal/asset"
 	"github.com/yundera/maison/internal/composefile"
-	"github.com/yundera/maison/internal/xcasaos"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // CatalogApp is one installable app from a store.
@@ -51,7 +51,6 @@ type CatalogApp struct {
 	// treats the same way the dashboard does — as an ordinary app.
 	Parent    string `json:"parent,omitempty"`
 	Developer string `json:"developer"`
-	Author    string `json:"author"`
 	MinMemory int    `json:"min_memory,omitempty"`
 	StoreURL  string `json:"store"`
 	// AppsPath is the folder inside the archive this app was found in. It rides
@@ -942,17 +941,13 @@ func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, reco
 		if err != nil {
 			continue
 		}
-		si, err := f.StoreInfo()
+		// x-compose-app, or a translated x-casaos block when the compose has none
+		// (composefile.Resolve). A compose that says nothing is not a store app.
+		ca, err := f.App()
 		if err != nil {
 			continue
 		}
-		// Read for `parent` alone, and never fatally: an app with no x-compose-app
-		// block (or an unparseable one) is still a catalog app, exactly as before.
-		parent := ""
-		if ca, err := f.ComposeApp(); err == nil && ca != nil {
-			parent = strings.TrimSpace(ca.Parent)
-		}
-		apps = append(apps, catalogApp(e.Name(), si, parent, composePath, storeURL, appsPath, storeName))
+		apps = append(apps, catalogApp(e.Name(), ca, composePath, storeURL, appsPath, storeName))
 	}
 
 	cats = readCategories(root)
@@ -960,24 +955,23 @@ func parseStore(root, storeURL, appsPath string) (apps []*CatalogApp, cats, reco
 	return apps, cats, recommend
 }
 
-func catalogApp(id string, si *xcasaos.StoreInfo, parent, composePath, storeURL, appsPath, storeName string) *CatalogApp {
-	name := xcasaos.Localized(si.Title)
+func catalogApp(id string, ca *xcomposeapp.App, composePath, storeURL, appsPath, storeName string) *CatalogApp {
+	name := ca.Title.Value()
 	if name == "" {
 		name = id
 	}
 	app := &CatalogApp{
 		ID:          id,
 		Name:        name,
-		Tagline:     xcasaos.Localized(si.Tagline),
-		Description: xcasaos.Localized(si.Description),
-		Icon:        si.Icon,
-		Thumbnail:   si.Thumbnail,
-		Screenshots: si.ScreenshotLink,
-		Category:    si.Category,
-		Parent:      parent,
-		Developer:   si.Developer,
-		Author:      si.Author,
-		MinMemory:   si.MinMemory,
+		Tagline:     ca.Tagline.Value(),
+		Description: ca.Description.Value(),
+		Icon:        ca.Icon,
+		Thumbnail:   ca.Thumbnail,
+		Screenshots: ca.Screenshots,
+		Category:    ca.Category,
+		Parent:      strings.TrimSpace(ca.Parent),
+		Developer:   ca.Developer,
+		MinMemory:   ca.MinMemory,
 		StoreURL:    storeURL,
 		AppsPath:    appsPath,
 		StoreName:   storeName,

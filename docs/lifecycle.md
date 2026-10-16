@@ -54,7 +54,7 @@ recreates a removed one, and re-applies a changed compose, all with the same cal
 
 | Step | What happens | On failure |
 |---|---|---|
-| **1. Resolve the spec** | Read `x-compose-app` (`folders`, `secrets`, `variables`, `files`, `init`, `hooks`) from base + override, with `x-casaos` `pre-install-cmd` / `post-install-cmd` as the fallback for the install hooks. Later files win, key by key. | — |
+| **1. Resolve the spec** | Read `x-compose-app` (`folders`, `secrets`, `variables`, `files`, `init`, `hooks`) from base + override. Later files win, key by key. A base with no `x-compose-app` is a CasaOS app, whose `pre-install-cmd` / `post-install-cmd` become its install hooks; beside an `x-compose-app` block they never run. | — |
 | **2. Ensure folders** | Create every folder declared under `folders`; apply user/group/mode; walk the tree when `recursive`. Declared folders are the *only* directories Maison creates — it never infers them from `volumes:`. | **Fatal** — a declared folder is the author's contract. |
 | **3. Secrets** | Generate each `secrets` value the app's `.env` does not already carry, and write it there. A key already holding a value is **reused, never regenerated**. | **Fatal.** |
 | **4. Variables** | Render each `variables` template and refresh it in `.env`, so a derived value follows the deployment instead of freezing. | **Fatal.** |

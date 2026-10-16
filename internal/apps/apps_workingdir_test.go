@@ -27,7 +27,7 @@ func TestMetaForRemapsHostWorkingDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, ca := r.metaFor("mesh", "/srv/host-data/stacks/mesh")
+	ca := r.metaFor("mesh", "/srv/host-data/stacks/mesh")
 	if ca == nil {
 		t.Fatal("metaFor found no x-compose-app at the host working dir; it was opened without remapping to DATA_ROOT")
 	}

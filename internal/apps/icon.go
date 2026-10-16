@@ -98,16 +98,10 @@ func hasConventionIcon(dir string) bool {
 }
 
 // iconURL is the icon a managed app's compose declares — a URL or a path beside
-// the compose, as written — with x-compose-app winning over x-casaos, the same
-// precedence buildApp applies to the tile.
+// the compose, as written — from the same metadata buildApp renders the tile from.
 func (r *Registry) iconURL(project string) string {
-	si, ca := r.metaFor(project, "")
-	icon := ""
-	if si != nil {
-		icon = si.Icon
+	if ca := r.metaFor(project, ""); ca != nil {
+		return ca.Icon
 	}
-	if ca != nil && ca.Icon != "" {
-		icon = ca.Icon
-	}
-	return icon
+	return ""
 }

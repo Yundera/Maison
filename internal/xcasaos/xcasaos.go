@@ -1,6 +1,10 @@
 // Package xcasaos models the CasaOS `x-casaos` compose extension and parses it
 // from the raw extension map. Field set ported from casa-img's
 // CasaOS-AppManagement OpenAPI structs (ComposeAppStoreInfo / AppStoreInfo).
+//
+// Maison's own definition is x-compose-app. x-casaos is read only for a compose
+// that carries no x-compose-app at all, and then only through ComposeApp, which
+// translates it into the native block — nothing else in Maison reads it.
 package xcasaos
 
 import (
@@ -107,4 +111,86 @@ func Localized(m map[string]string) string {
 		return v
 	}
 	return ""
+}
+
+// ComposeApp translates the block into an x-compose-app extension map, so a
+// pure CasaOS app goes through exactly the code a native one does. The one
+// x-casaos field with no native key, `webui_port`, is not in the map: the
+// caller carries it beside the parsed App (composefile.Resolve).
+//
+// CasaOS builds the click URL as scheme://hostname:port_map/index, with the
+// browser's own host when hostname is empty; webui-host/-port/-scheme/-path say
+// the same thing. A port_map that is the scheme's default port is dropped so the
+// URL does not spell it out.
+func (s *StoreInfo) ComposeApp() map[string]any {
+	m := map[string]any{}
+	set := func(k, v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			m[k] = v
+		}
+	}
+	setL := func(k string, v map[string]string) {
+		if len(v) > 0 {
+			m[k] = v
+		}
+	}
+	set("id", s.StoreAppID)
+	setL("title", s.Title)
+	setL("tagline", s.Tagline)
+	setL("description", s.Description)
+	set("icon", s.Icon)
+	set("thumbnail", s.Thumbnail)
+	if len(s.ScreenshotLink) > 0 {
+		m["screenshots"] = s.ScreenshotLink
+	}
+	set("category", s.Category)
+	if d := strings.TrimSpace(s.Developer); d != "" {
+		m["developer"] = d
+	} else {
+		set("developer", s.Author)
+	}
+	if len(s.Architectures) > 0 {
+		m["architectures"] = s.Architectures
+	}
+	if s.MinMemory > 0 {
+		m["min_memory"] = s.MinMemory
+	}
+	set("main", s.Main)
+	set("tips", s.tips())
+
+	scheme := strings.TrimSpace(s.Scheme)
+	if scheme == "" {
+		scheme = "http"
+	}
+	m["webui-scheme"] = scheme
+	set("webui-host", s.Hostname)
+	if p := strings.TrimSpace(s.PortMap); p != "" && !(scheme == "http" && p == "80") && !(scheme == "https" && p == "443") {
+		m["webui-port"] = p
+	}
+	set("webui-path", s.Index)
+
+	hooks := map[string]any{}
+	if c := strings.TrimSpace(s.PreInstallCmd); c != "" {
+		hooks["pre_install"] = s.PreInstallCmd
+	}
+	if c := strings.TrimSpace(s.PostInstallCmd); c != "" {
+		hooks["post_install"] = s.PostInstallCmd
+	}
+	if len(hooks) > 0 {
+		m["hooks"] = hooks
+	}
+	return m
+}
+
+// tips flattens the localized before_install guidance and the free-form custom
+// note into the single Markdown note x-compose-app `tips` is.
+func (s *StoreInfo) tips() string {
+	var parts []string
+	if b := strings.TrimSpace(Localized(s.Tips.BeforeInstall)); b != "" {
+		parts = append(parts, b)
+	}
+	if c := strings.TrimSpace(s.Tips.Custom); c != "" {
+		parts = append(parts, c)
+	}
+	return strings.Join(parts, "\n\n")
 }

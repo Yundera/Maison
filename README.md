@@ -51,8 +51,8 @@ MIT licensed
   unmodified and never edits it. Port, env and volume changes go into a
   `docker-compose.override.yml` next to it, so an update replaces the base file and keeps
   your changes.
-- **Finds apps it didn't install.** Any Compose stack on the host that carries `x-casaos`
-  metadata appears as a tile, marked *unmanaged*.
+- **Finds apps it didn't install.** Any Compose stack on the host that carries
+  `x-compose-app` (or CasaOS `x-casaos`) metadata appears as a tile, marked *unmanaged*.
 - **Updates.** One page lists every app with an update and can update them all. Each app is
   backed up first and rolled back if its update fails.
 - **Backups.** Per-app archives on the same disk (`local`), or nightly off-box backups of
@@ -181,7 +181,7 @@ A tile opens whichever address the app declares:
 
 | The app declares… | It opens at… | What you need |
 |---|---|---|
-| a published port (`port_map` in `x-casaos`) | `http://<the host you opened Maison on>:<port>` | nothing |
+| a port and no host (`webui-port`, or `port_map` in `x-casaos`), or a published host port | `http://<the host you opened Maison on>:<port>` | nothing |
 | a domain route (`webui-host: myapp-${domain}`) | `https://myapp-<APP_DOMAIN>` | `APP_DOMAIN` set in `.env.app`, **and** a reverse proxy that routes it |
 
 Apps in the default [Yundera store](https://github.com/Yundera/AppStore) use the second
@@ -338,15 +338,18 @@ full settings page (`/settings/<section>`) has these sections:
 
 A store is a **zip of Compose apps served over HTTP**, in the
 [CasaOS App Store](https://github.com/IceWhaleTech/CasaOS-AppStore) layout. Every app is a
-`docker-compose.yml` with an `x-casaos` block (title, icon, category, screenshots, web-UI
-port). Any host that serves a zip works. Nothing in Maison is tied to one forge.
+`docker-compose.yml` with an `x-compose-app` block — Maison's definition of an app: title,
+icon, category, screenshots, web-UI address, data folders, secrets, lifecycle hooks, views,
+backup exclusions. Any host that serves a zip works. Nothing in Maison is tied to one forge.
 
 - **Several stores:** set `APPSTORE_URL` to a comma-separated list, or add stores in
   *Settings → App stores*. Catalogs are cached under `${STATE_DIR}/appstore` and refreshed
   at boot, every night, and when you press ⟳.
-- **`x-compose-app`:** Maison also reads its own, richer extension next to `x-casaos`. It
-  adds a web-UI address, data folders, lifecycle hooks, views, and backup exclusions. Store
-  authors: [`docs/x-compose-app.md`](./docs/x-compose-app.md).
+- **`x-compose-app`:** the spec, for store authors:
+  [`docs/x-compose-app.md`](./docs/x-compose-app.md).
+- **CasaOS stores:** an app with no `x-compose-app` is read from its CasaOS `x-casaos`
+  block, translated whole. The two are never mixed: beside an `x-compose-app` block,
+  `x-casaos` is ignored.
 - **`store.json`** (optional, at the store root) gives the store a display name:
   `{ "name": "Yundera App Store" }`. A store without one is listed by its URL.
 
@@ -408,7 +411,7 @@ update on their own. Each channel is only sampled while someone is subscribed to
 | Package | Role |
 |---|---|
 | `internal/server` | chi router: REST `/api`, WebSocket `/ws`, the SPA. Also routes by `Host:`: a request for a stopped app's domain gets the **launch page** instead of the dashboard. |
-| `internal/apps` | The tile list. Matches app folders on disk against live Docker state and finds unmanaged `x-casaos` stacks. |
+| `internal/apps` | The tile list. Matches app folders on disk against live Docker state and finds unmanaged stacks carrying app metadata. |
 | `internal/appstore` | Fetches, caches and merges store zips. Store references. |
 | `internal/installer` | Install and update, with two-track progress. |
 | `internal/stackup` · `composecmd` | The single path to `docker compose up` · the compose CLI wrapper. |

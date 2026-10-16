@@ -24,7 +24,6 @@ import (
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/incident"
-	"github.com/yundera/maison/internal/xcasaos"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
@@ -40,57 +39,23 @@ type Spec struct {
 
 // Load resolves the lifecycle spec from an app's compose files, in the order
 // they are passed to `docker compose` (base, then override — later files win,
-// key by key, matching Compose's own extension merge).
-//
-// x-compose-app `hooks` win over the x-casaos `pre-install-cmd` /
-// `post-install-cmd` they generalise, so a store app carrying only x-casaos keeps
-// working untouched.
+// key by key, matching Compose's own extension merge). The metadata is
+// composefile.Resolve's: a store app carrying only x-casaos gets its
+// `pre-install-cmd` / `post-install-cmd` as the install hooks, and one carrying
+// x-compose-app gets x-compose-app's alone.
 func Load(files []string) Spec {
-	var xa, xc map[string]any
+	var fs []*composefile.File
 	for _, path := range files {
-		f, err := composefile.Load(path)
-		if err != nil {
-			continue
+		if f, err := composefile.Load(path); err == nil {
+			fs = append(fs, f)
 		}
-		xa = merge(xa, f.XComposeApp)
-		xc = merge(xc, f.XCasaOS)
 	}
-
 	var spec Spec
-	if si, err := xcasaos.Parse(xc); err == nil && si != nil {
-		spec.Hooks.PreInstall = si.PreInstallCmd
-		spec.Hooks.PostInstall = si.PostInstallCmd
-	}
-	if ca, err := xcomposeapp.Parse(xa); err == nil && ca != nil {
-		spec.Folders = ca.Folders
-		if h := ca.Hooks.PreInstall; h != "" {
-			spec.Hooks.PreInstall = h
-		}
-		if h := ca.Hooks.PostInstall; h != "" {
-			spec.Hooks.PostInstall = h
-		}
-		spec.Hooks.PreUp, spec.Hooks.PostUp = ca.Hooks.PreUp, ca.Hooks.PostUp
+	if ca, err := composefile.Resolve(fs...); err == nil && ca != nil {
+		spec.Folders, spec.Hooks = ca.Folders, ca.Hooks
 		spec.Secrets, spec.Variables, spec.Files, spec.Init = ca.Secrets, ca.Variables, ca.Files, ca.Init
 	}
 	return spec
-}
-
-// merge layers over's keys on top of base (over wins). Either map may be nil.
-func merge(base, over map[string]any) map[string]any {
-	if over == nil {
-		return base
-	}
-	if base == nil {
-		return over
-	}
-	out := make(map[string]any, len(base)+len(over))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range over {
-		out[k] = v
-	}
-	return out
 }
 
 // Up brings a managed app's stack up: it ensures the app's folders exist, runs

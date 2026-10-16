@@ -1,16 +1,24 @@
 # `x-compose-app` — Maison's compose extension
 
-`x-compose-app` is a Compose top-level extension that Maison reads to render an
-app tile, open its web UI, and populate the store. It exists **alongside**
-`x-casaos`, not instead of it:
+`x-compose-app` is a Compose top-level extension and **Maison's definition of an
+app**: everything Maison renders, installs, runs and updates comes from it — the
+store card, the tile, the web-UI address, folders, secrets, hooks, lifecycle,
+backups. An app needs nothing else.
 
-- Maison still consumes the **unmodified CasaOS App Store** (`x-casaos`). Nothing
-  here requires changing existing store apps.
-- When an app *also* carries `x-compose-app`, Maison **prefers** it for every
-  field it defines, and falls back to `x-casaos` (then to derivation) for anything
-  it omits.
-- An app may ship `x-compose-app` **alone** — Maison renders it fully without an
-  `x-casaos` block.
+`x-casaos` is supported for compatibility only, and **never mixed** with it:
+
+- A compose that carries `x-compose-app` is read from `x-compose-app` alone. An
+  `x-casaos` block beside it is **ignored**, field for field — a store may keep one
+  for CasaOS itself, but Maison never reads it.
+- A compose with **no** `x-compose-app` is a CasaOS app: its `x-casaos` block is
+  translated whole into the equivalent `x-compose-app` (the right-hand column of the
+  [field table](#fields)) and from there on goes through exactly the same code. Pure
+  CasaOS apps are supported as well as that translation allows, and no further.
+- The base `docker-compose.yml` decides which of the two an app speaks. What Maison
+  and the operator write into the override's `x-compose-app` (`store-ref`, edited
+  `tips`, a pinned `webui-host`) layers on top in either case, so installing a CasaOS
+  app does not turn it into an empty native one. An override's `x-casaos` is never
+  read.
 
 The design goal is a **click URL that mirrors the reverse-proxy route**. Instead of
 CasaOS's approach — asking for a container port and *deriving* a hostname at
@@ -65,9 +73,9 @@ x-compose-app:
 
 ### Fields
 
-| Field | Type | Required | Meaning / Maison use | `x-casaos` fallback |
+| Field | Type | Required | Meaning / Maison use | Translated from `x-casaos` |
 |---|---|---|---|---|
-| `schema_version` | int | no (default `1`) | Spec version (currently **2**). `secrets`, `variables`, `files`, `init` and the seed tree are **additive** and do not raise it — an older build ignores what it does not know instead of dropping the whole block (which would cost the app its folders and routes too). A build that predates the declared version falls back to `x-casaos` for the whole block — note that it **does not refuse to install the app**, so raising the version degrades an app rather than gating it. v1 files keep working. | — |
+| `schema_version` | int | no (default `1`) | Spec version (currently **2**). `secrets`, `variables`, `files`, `init` and the seed tree are **additive** and do not raise it — an older build ignores what it does not know instead of dropping the whole block (which would cost the app its folders and routes too). A build that predates the declared version treats the whole block as absent and reads the app as a CasaOS app (its `x-casaos`, if any) — note that it **does not refuse to install the app**, so raising the version degrades an app rather than gating it. v1 files keep working. A block that is merely malformed is *not* absent: it is an error, never a silent fallback. | — |
 | `id` | string | no | Stable app identifier (should equal the Compose project `name`). Defaults to the project name. | `store_app_id` |
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
@@ -76,29 +84,38 @@ x-compose-app:
 | **`parent`** | string | no | Compose project name of the app this one **extends**. Its tile nests under that app's instead of standing alone. Unresolvable — absent, misspelled, itself an extension — falls back to an ordinary tile. See [`parent` makes the app an extension of another](#parent-makes-the-app-an-extension-of-another). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
 | `description` | string \| localized | no | Store long description (Markdown). | `description` |
-| `developer` | string | no | Store attribution. | `developer` / `author` |
+| `developer` | string | no | Store attribution. | `developer`, else `author` |
 | `screenshots` | path[] \| url[] | no | Store gallery. See [Assets](#assets). | `screenshot_link` |
 | `thumbnail` | path \| url | no | Store card image. See [Assets](#assets). | `thumbnail` |
 | `architectures` | string[] | no | e.g. `[amd64, arm64]`. Advisory. | `architectures` |
-| **`webui-host`** | string | **yes\*** | The web UI's **host** — the final URL host, templated exactly like the app's Caddy route (e.g. `jellyfin-${domain}`). Omit for headless apps. | derived from `hostname` |
-| `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). | derived from `port_map` |
-| `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` |
+| `min_memory` | int (MB) | no | Memory the app needs. Advisory, shown in the store. | `min_memory` |
+| `main` | string | no (default: the only service) | The compose service that **is** the app: its image identifies the app when Maison matches an installed stack to a store app, and its published port is the one opened when nothing else names an address. | `main` |
+| **`webui-host`** | string | **yes\*** | The web UI's **host** — the final URL host, templated exactly like the app's Caddy route (e.g. `jellyfin-${domain}`). Omit for headless apps. | `hostname` |
+| `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). Without a `webui-host` it names a port on the box's own address (the host the dashboard was opened on), which is how a CasaOS app with no `hostname` opens. | `port_map` (dropped when it is the scheme's default port) |
+| `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` (CasaOS default `http`) |
 | `webui-path` | string | no (default `/`) | Path appended to the host. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
 | `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url`. Never the tile's default action. | — |
-| `tips` | string \| localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. When set, it replaces the `x-casaos` tips; clearing it falls back to them. | `tips.before_install` + `tips.custom` |
+| `tips` | string \| localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. Clearing an edit falls back to the store's tips. | `tips.before_install` + `tips.custom`, joined |
 | **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). |
 | **`secrets`** | map | no | Values **generated once** and ensured in the app's `.env`. See [Secrets and variables](#secrets-and-variables). |
 | **`variables`** | map | no | Templates ensured in the app's `.env` on **every** up. See [Secrets and variables](#secrets-and-variables). |
 | **`credentials`** | object[] | no | The app's **initial logins**, shown to the operator the first time the app is opened. See [Credentials](#credentials). | `tips` naming `${APP_DEFAULT_PASSWORD}` |
 | **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
 | **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
-| **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` / `post-install-cmd` |
+| **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` → `pre_install`, `post-install-cmd` → `post_install` |
 | **`lifecycle`** | object | no | `{ stoppable, uninstallable, updatable }`, all default `true` — whether Maison may stop, uninstall or update the app. See [Lifecycle](#lifecycle-what-the-operator-may-do-to-the-app). | — |
 | **`backup`** | object | no | `{ exclude, skip }` — directories of **derived** data to leave out of backups, or the whole app. See [Backup exclusions](#backup-exclusions) and [Skipping an app entirely](#skipping-an-app-entirely). | — |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
-`webui-host` (and no `x-casaos` fallback) is headless — its tile has no "open"
-action.
+`webui-host` is headless — its tile has no "open" action — unless it publishes a
+host port (see [`main`](#fields)).
+
+The one `x-casaos` field with no `x-compose-app` key, `webui_port` (the web UI's
+port *inside* the container), survives the translation only to pick which
+published host port opens a CasaOS app; a native app says the same with the
+`upstream-port` of a [`routes`](./domains.md) entry on its `main` service. Everything else in
+`x-casaos` — the per-service `apps` descriptions (`envs`, `ports`, `volumes`,
+`devices`) and the localized `image` map — is not read.
 
 **Localized** means either a plain string (`title: Jellyfin`) or a locale map
 (`title: { en_us: Jellyfin, fr_fr: Jellyfin }`). Maison prefers `en_us`.
@@ -662,10 +679,11 @@ a web UI:
 | Block | Counts as a web UI |
 |---|---|
 | `x-compose-app` | `webui-host`, or any `routes` entry |
-| `x-casaos` | `hostname`, `webui_port` or `port_map` |
+| `x-casaos` (no `x-compose-app`) | `hostname`, `webui_port` or `port_map` |
 
 A `webui-path`, `webui-port`, `index` or `scheme` on its own is not an address and
-does not count. The answer comes from what the compose **declares**, never from
+does not count — except that a CasaOS app names its address by port, so there
+`port_map` and `webui_port` do. The answer comes from what the compose **declares**, never from
 whether a URL resolved: a `webui-host` builds no URL until a domain is configured,
 and that app is still an app.
 
@@ -1093,8 +1111,9 @@ x-compose-app:
 A credential's [`change.hook`](#changing-a-credential) runs the same way, on demand.
 
 `pre_install` / `post_install` generalise the CasaOS `pre-install-cmd` /
-`post-install-cmd`, and **win over them** when both are present. A store app that
-carries only `x-casaos` keeps working with no change.
+`post-install-cmd`. A store app that carries only `x-casaos` gets those commands as
+its install hooks; one that carries `x-compose-app` gets its `hooks` alone, and an
+`x-casaos` command beside it never runs.
 
 ### Failure semantics
 
@@ -1205,15 +1224,18 @@ Hooks are for **Docker-level** work (pulling a sidecar image, priming a volume w
 
 ## Precedence
 
-For any concern, Maison reads in this order and stops at the first hit:
+There is no field-by-field precedence between the two blocks: Maison reads one or
+the other, decided by the base compose.
 
 ```
-x-compose-app  →  x-casaos  →  runtime derivation (published host port)
+base has x-compose-app  →  x-compose-app            (+ override x-compose-app)
+otherwise               →  x-casaos, translated     (+ override x-compose-app)
+neither, no override    →  no metadata: published host port, or a service
 ```
 
-So `webui-host` wins over the `x-casaos` `hostname`/`port_map` derivation, which in
-turn wins over "guess a published host port". An author adds `webui-host` to pin
-the click URL and keeps `x-casaos` for CasaOS-store compatibility.
+Within the chosen block, the click URL is the `webui-host` URL when it resolves;
+without a `webui-host`, the box's own address on `webui-port` — overridden by the
+container's actual published host port when it has one.
 
 ## Minimum viable block
 
@@ -1224,4 +1246,6 @@ x-compose-app:
   webui-host: myapp-${domain}
 ```
 
-Everything else falls back to `x-casaos` or Compose metadata.
+Everything else has a default or is absent. A store app should also carry `title`
+and `icon` — without them the store card and the tile show the folder name and no
+icon, whatever its `x-casaos` block says.

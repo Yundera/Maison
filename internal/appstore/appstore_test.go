@@ -14,9 +14,9 @@ import (
 // folder (as a forge's archives have) containing an Apps/ directory, which is
 // what findStoreRoot looks for.
 //
-// The compose file carries an x-casaos block because parseStore drops any app
-// without one — a fixture of bare `services: {}` extracts fine but yields an
-// empty catalog, which silently passes any test that only counts HTTP transfers.
+// The compose file carries an x-compose-app block because parseStore drops any
+// app with no metadata — a fixture of bare `services: {}` extracts fine but yields
+// an empty catalog, which silently passes any test that only counts HTTP transfers.
 func storeZip(t *testing.T, appName string) []byte {
 	t.Helper()
 	return storeZipAt(t, DefaultAppsPath, appName)
@@ -37,10 +37,9 @@ func storeZipNamed(t *testing.T, appsPath, appName, storeName string) []byte {
 		"services:\n" +
 		"  app:\n" +
 		"    image: example/" + appName + ":1\n" +
-		"x-casaos:\n" +
+		"x-compose-app:\n" +
 		"  main: app\n" +
-		"  title:\n" +
-		"    en_us: " + appName + "\n"
+		"  title: " + appName + "\n"
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)

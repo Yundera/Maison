@@ -23,7 +23,6 @@ import (
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/stackup"
-	"github.com/yundera/maison/internal/xcasaos"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
@@ -43,13 +42,12 @@ type App struct {
 	Managed  bool   `json:"managed"` // installed by Maison
 	Store    string `json:"store,omitempty"`
 	Scheme   string `json:"scheme,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
 	Port     string `json:"port,omitempty"`
 	Index    string `json:"index,omitempty"`
 	Category string `json:"category,omitempty"`
-	// URL is a fully-resolved click URL, set when x-compose-app declares one
-	// (webui-*). When empty, the frontend derives the URL from the legacy
-	// scheme/hostname/port/index fields.
+	// URL is the fully-resolved click URL, set when the app's webui-host resolves.
+	// When empty, the frontend opens the box's own host on Port (with Scheme and
+	// Index) — a webui-port with no host, or the published host port.
 	URL string `json:"url,omitempty"`
 	// Health is the aggregated Docker health-check verdict: "healthy",
 	// "unhealthy", "starting", or "" when no container declares a health check.
@@ -365,13 +363,13 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 		ps := projects[name]
 		var app App
 		if ps != nil {
-			si, ca := r.metaFor(name, ps.workingDir)
-			app = buildApp(name, si, ca, r.cfg.AppDomain(), true, statusOf(ps.running, ps.total), ps.svcPorts)
+			ca := r.metaFor(name, ps.workingDir)
+			app = buildApp(name, ca, r.cfg.AppDomain(), true, statusOf(ps.running, ps.total), ps.svcPorts)
 			app.Health = ps.health()
 		} else {
 			// Installed but down (or Docker didn't answer): greyed, stopped tile.
-			si, ca := r.metaFor(name, "")
-			app = buildApp(name, si, ca, r.cfg.AppDomain(), true, StatusStopped, nil)
+			ca := r.metaFor(name, "")
+			app = buildApp(name, ca, r.cfg.AppDomain(), true, StatusStopped, nil)
 		}
 		// An installed app is rendered from the icon in its own folder, so the grid
 		// does not depend on the store's CDN (see internal/appicon). The compose's
@@ -385,17 +383,17 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 		seen[name] = true
 	}
 
-	// Unmanaged stacks discovered via Docker (externally-created x-casaos apps):
+	// Unmanaged stacks discovered via Docker (externally-created apps):
 	// only knowable when Docker answered, and only if they carry recognised metadata.
 	for name, ps := range projects {
 		if seen[name] {
 			continue
 		}
-		si, ca := r.metaFor(name, ps.workingDir)
-		if si == nil && ca == nil {
+		ca := r.metaFor(name, ps.workingDir)
+		if ca == nil {
 			continue // a non-Maison stack without any recognised metadata: not ours.
 		}
-		app := buildApp(name, si, ca, r.cfg.AppDomain(), false, statusOf(ps.running, ps.total), ps.svcPorts)
+		app := buildApp(name, ca, r.cfg.AppDomain(), false, statusOf(ps.running, ps.total), ps.svcPorts)
 		app.Health = ps.health()
 		app.Busy = r.isBusy(name)
 		out = append(out, app)
@@ -511,17 +509,17 @@ func (r *Registry) managedDirs() []string {
 	return names
 }
 
-// metaFor loads an app's metadata (x-casaos and/or x-compose-app), preferring the
+// metaFor loads an app's metadata (composefile.Resolve: x-compose-app, or a
+// translated x-casaos block when the compose has none), preferring the
 // Maison-managed copy, then the working dir Docker reports. For a managed app the
-// user override is merged on top of the strict base, so override-only metadata (a
-// webui-host pinned via the Web UI editor, say) wins. Both may be nil when neither
-// file carries a recognised block.
-func (r *Registry) metaFor(project, workingDir string) (*xcasaos.StoreInfo, *xcomposeapp.App) {
+// user override is layered on top of the strict base, so override-only metadata (a
+// webui-host pinned via the Web UI editor, say) wins. Nil when no file carries a
+// recognised block.
+func (r *Registry) metaFor(project, workingDir string) *xcomposeapp.App {
 	dir := filepath.Join(r.cfg.AppsDir(), project)
 	if base, err := composefile.Load(filepath.Join(dir, "docker-compose.yml")); err == nil {
-		si, ca := mergedMeta(base, loadOptional(filepath.Join(dir, "docker-compose.override.yml")))
-		if si != nil || ca != nil {
-			return si, ca
+		if ca := mergedMeta(base, loadOptional(filepath.Join(dir, "docker-compose.override.yml"))); ca != nil {
+			return ca
 		}
 	}
 	if workingDir != "" {
@@ -537,14 +535,12 @@ func (r *Registry) metaFor(project, workingDir string) (*xcasaos.StoreInfo, *xco
 			if err != nil {
 				continue
 			}
-			si, _ := f.StoreInfo()
-			ca, _ := f.ComposeApp()
-			if si != nil || ca != nil {
-				return si, ca
+			if ca, _ := f.App(); ca != nil {
+				return ca
 			}
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // loadOptional loads a compose file, returning nil if it is absent/unreadable.
@@ -556,36 +552,12 @@ func loadOptional(path string) *composefile.File {
 	return f
 }
 
-// mergedMeta parses x-casaos / x-compose-app from base with over's blocks
-// shallow-merged on top (override keys win). over may be nil.
-func mergedMeta(base, over *composefile.File) (*xcasaos.StoreInfo, *xcomposeapp.App) {
-	xc, xa := base.XCasaOS, base.XComposeApp
-	if over != nil {
-		xc = shallowMerge(xc, over.XCasaOS)
-		xa = shallowMerge(xa, over.XComposeApp)
-	}
-	si, _ := xcasaos.Parse(xc)
-	ca, _ := xcomposeapp.Parse(xa)
-	return si, ca
-}
-
-// shallowMerge returns base with over's keys layered on top (over wins). Either
-// map may be nil.
-func shallowMerge(base, over map[string]any) map[string]any {
-	if over == nil {
-		return base
-	}
-	if base == nil {
-		return over
-	}
-	out := make(map[string]any, len(base)+len(over))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range over {
-		out[k] = v
-	}
-	return out
+// mergedMeta resolves the app's metadata from base with over's x-compose-app
+// keys layered on top (override keys win). over may be nil; so is the result
+// when neither file says anything usable.
+func mergedMeta(base, over *composefile.File) *xcomposeapp.App {
+	ca, _ := composefile.Resolve(base, over)
+	return ca
 }
 
 func statusOf(running, total int) string {
@@ -599,61 +571,45 @@ func statusOf(running, total int) string {
 	}
 }
 
-func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain string, managed bool, status string, svcPorts map[string][]dockerx.Port) App {
+func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, status string, svcPorts map[string][]dockerx.Port) App {
 	app := App{ID: name, Name: name, Managed: managed, Status: status, View: xcomposeapp.ViewApps}
-	if si != nil {
-		if t := xcasaos.Localized(si.Title); t != "" {
-			app.Name = t
-		}
-		app.Icon = si.Icon
-		app.Scheme = si.Scheme
-		app.Hostname = si.Hostname
-		app.Port = si.PortMap
-		app.Index = si.Index
-		app.Category = si.Category
-		app.Store = si.StoreAppID
-	}
-	// x-compose-app wins over x-casaos, field by field. Its webui-* fields yield a
-	// fully-resolved click URL, so the frontend opens app.URL directly and skips
-	// the legacy scheme/hostname/port derivation below.
 	if ca != nil {
 		if t := ca.Title.Value(); t != "" {
 			app.Name = t
 		}
-		if ca.Icon != "" {
-			app.Icon = ca.Icon
-		}
-		if ca.Category != "" {
-			app.Category = ca.Category
-		}
-		if ca.ID != "" {
-			app.Store = ca.ID
-		}
+		app.Icon = ca.Icon
+		app.Category = ca.Category
+		app.Store = ca.ID
+		// A webui-host yields a fully-resolved click URL, which the frontend opens
+		// verbatim. Without one, a webui-port names a port on the box's own host —
+		// how a CasaOS app with no hostname is opened — and the frontend builds that
+		// URL from the browser's host.
 		app.URL = ca.WebURL(domain)
+		if app.URL == "" && strings.TrimSpace(ca.WebUIHost) == "" {
+			app.Scheme = ca.WebUIScheme
+			app.Port = strings.TrimSpace(ca.WebUIPort)
+			app.Index = ca.WebUIPath
+		}
 		// Declared only: whether it resolves depends on what else is installed,
 		// which this function cannot see. List() settles it (resolveParents).
 		app.Parent = strings.TrimSpace(ca.Parent)
 		// Managed only: the credentials endpoint renders from the app's own folder.
 		app.HasCredentials = managed && declaresCredentials(ca)
 	}
-	app.View = deriveView(si, ca, svcPorts)
+	app.View = deriveView(ca, svcPorts)
 	lc := lifecycleOf(ca)
 	app.Stoppable, app.Uninstallable, app.Updatable = lc.stoppable, lc.uninstallable, lc.updatable
 	// Prefer the container's ACTUAL published host port so "Open" works without a
-	// gateway. Only when x-compose-app gave no URL and no hostname (gateway route)
-	// is configured — and never for a service: the port it publishes is the
-	// non-HTTP listener it exists for (Samba's 445), and a tile opening
+	// gateway. Only when no URL resolved and no host is declared (a gateway route
+	// waiting for its domain) — and never for a service: the port it publishes is
+	// the non-HTTP listener it exists for (Samba's 445), and a tile opening
 	// http://box:445 is worse than no click URL at all.
-	if app.URL == "" && app.Hostname == "" && svcPorts != nil && app.View != xcomposeapp.ViewService {
+	if app.URL == "" && (ca == nil || strings.TrimSpace(ca.WebUIHost) == "") && svcPorts != nil && app.View != xcomposeapp.ViewService {
 		main := ""
-		if si != nil {
-			main = si.Main
+		if ca != nil {
+			main = ca.Main
 		}
-		webui := 0
-		if si != nil {
-			webui, _ = strconv.Atoi(si.WebUIPort)
-		}
-		if hp := reachableHostPort(svcPorts, main, webui); hp > 0 {
+		if hp := reachableHostPort(svcPorts, main, ca.WebUIContainerPort()); hp > 0 {
 			app.Port = strconv.Itoa(hp)
 		}
 	}
@@ -681,19 +637,17 @@ func buildApp(name string, si *xcasaos.StoreInfo, ca *xcomposeapp.App, domain st
 // nothing either way, so there the published ports are the only evidence: one
 // published port keeps it an app, clickable through that port as before; none
 // makes it a service.
-func deriveView(si *xcasaos.StoreInfo, ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) string {
-	if ca != nil {
-		if v, ok := xcomposeapp.DeclaredView(ca.View); ok {
-			return v
-		}
-	}
-	if si == nil && ca == nil {
+func deriveView(ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) string {
+	if ca == nil {
 		if reachableHostPort(svcPorts, "", 0) > 0 {
 			return xcomposeapp.ViewApps
 		}
 		return xcomposeapp.ViewService
 	}
-	if si.DeclaresWebUI() || ca.DeclaresWebUI() {
+	if v, ok := xcomposeapp.DeclaredView(ca.View); ok {
+		return v
+	}
+	if ca.DeclaresWebUI() {
 		return xcomposeapp.ViewApps
 	}
 	return xcomposeapp.ViewService
@@ -732,8 +686,8 @@ func reachableHostPort(svcPorts map[string][]dockerx.Port, main string, webui in
 
 // FindByHost resolves the app whose click URL is served at host (an app gateway
 // host such as `<app>-<domain>`), so the launch gate can identify which app it is
-// standing in for. It matches the app's resolved web URL host, its x-casaos
-// hostname, or the `<id>-<refDomain>` convention. Returns false when no app maps
+// standing in for. It matches the app's resolved web URL host or the
+// `<id>-<refDomain>` convention. Returns false when no app maps
 // to host.
 func (r *Registry) FindByHost(ctx context.Context, host, refDomain string) (App, bool) {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
@@ -746,9 +700,6 @@ func (r *Registry) FindByHost(ctx context.Context, host, refDomain string) (App,
 	}
 	for _, a := range list {
 		if h := urlHost(a.URL); h != "" && strings.EqualFold(h, host) {
-			return a, true
-		}
-		if a.Hostname != "" && strings.EqualFold(a.Hostname, host) {
 			return a, true
 		}
 		if refDomain != "" && strings.EqualFold(a.ID+"-"+refDomain, host) {
@@ -886,7 +837,7 @@ func (r *Registry) lifecycleOf(id string) lifecycle {
 	if !r.isManaged(id) {
 		workingDir = r.workingDirOf(id)
 	}
-	_, ca := r.metaFor(id, workingDir)
+	ca := r.metaFor(id, workingDir)
 	return lifecycleOf(ca)
 }
 

@@ -136,7 +136,7 @@ func (r *Registry) Reach(ctx context.Context, app App) Reach {
 	}
 	res := Reach{
 		App:       AppRef{ID: app.ID, Name: app.Name, Icon: app.Icon},
-		URL:       gatewayURL(app),
+		URL:       app.URL, // empty for a port-only app, which the client handles
 		Scheme:    scheme,
 		Port:      app.Port,
 		Index:     app.Index,
@@ -205,30 +205,6 @@ func (r *Registry) settleUnreachable(id string, res *Reach, health string) strin
 		return PhaseInitializing
 	}
 	return PhaseWaiting
-}
-
-// gatewayURL is the public URL the backend can probe and the browser can open:
-// the resolved x-compose-app web URL, else one built from an x-casaos hostname.
-// Empty for a port-only app (no gateway host), which the client handles instead.
-func gatewayURL(app App) string {
-	if app.URL != "" {
-		return app.URL
-	}
-	if app.Hostname != "" {
-		scheme := app.Scheme
-		if scheme == "" {
-			scheme = "http"
-		}
-		u := scheme + "://" + app.Hostname
-		if app.Index != "" && app.Index != "/" {
-			if !strings.HasPrefix(app.Index, "/") {
-				u += "/"
-			}
-			u += app.Index
-		}
-		return u
-	}
-	return ""
 }
 
 // probeClient is dedicated to reachability checks: a short timeout so a slow app

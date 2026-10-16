@@ -11,6 +11,7 @@ package xcomposeapp
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,8 +23,8 @@ const ExtensionKey = "x-compose-app"
 var (
 	// ErrNoExtension is returned when a compose file has no x-compose-app block.
 	ErrNoExtension = errors.New("x-compose-app extension not found")
-	// ErrUnsupportedVersion is returned for a schema_version this build predates,
-	// so the caller falls back to x-casaos.
+	// ErrUnsupportedVersion is returned for a schema_version this build predates.
+	// The caller treats the block as absent: see composefile.Resolve.
 	ErrUnsupportedVersion = errors.New("x-compose-app schema_version not supported")
 )
 
@@ -68,6 +69,18 @@ type App struct {
 	Screenshots   []string  `yaml:"screenshots,omitempty"`
 	Thumbnail     string    `yaml:"thumbnail,omitempty"`
 	Architectures []string  `yaml:"architectures,omitempty"`
+	// MinMemory is the memory the app needs, in MB. Advisory, shown in the store.
+	MinMemory int `yaml:"min_memory,omitempty"`
+
+	// Main is the compose service that *is* the app — the one whose image says
+	// which app this is, and whose published port opens it when nothing else
+	// does. Empty means the only service, when there is just one.
+	Main string `yaml:"main,omitempty"`
+
+	// Legacy is set when this App was translated from an x-casaos block (see
+	// composefile.Resolve) and carries the one thing that block says which the
+	// native schema has no key for. Never read from or written to YAML.
+	Legacy *Legacy `yaml:"-"`
 
 	// Tips is the app's guidance note (Markdown, may reference ${VAR}). It is also
 	// where Maison persists operator edits — into the override's x-compose-app
@@ -533,11 +546,49 @@ func DeclaredView(v string) (string, bool) {
 	}
 }
 
+// Legacy is what an x-casaos block says that x-compose-app has no key for.
+type Legacy struct {
+	// WebUIPort is x-casaos `webui_port`: the web UI's port *inside* the main
+	// container. Only used to pick which published host port opens the app.
+	WebUIPort string
+}
+
 // DeclaresWebUI reports whether the block names a web endpoint: a click-URL
 // host, or a route Maison publishes. A webui-path or webui-port alone is not an
-// address, so neither counts.
+// address, so neither counts — except on a translated x-casaos block, where the
+// port (`port_map`, or the container's `webui_port`) is how CasaOS names one.
 func (a *App) DeclaresWebUI() bool {
-	return a != nil && (strings.TrimSpace(a.WebUIHost) != "" || len(a.Routes) > 0)
+	if a == nil {
+		return false
+	}
+	if strings.TrimSpace(a.WebUIHost) != "" || len(a.Routes) > 0 {
+		return true
+	}
+	return a.Legacy != nil && (strings.TrimSpace(a.WebUIPort) != "" || strings.TrimSpace(a.Legacy.WebUIPort) != "")
+}
+
+// WebUIContainerPort is the port the web UI listens on inside the main
+// container, when the metadata says: x-casaos `webui_port` on a translated
+// block, else the upstream port of a route on the main service. 0 when unknown.
+func (a *App) WebUIContainerPort() int {
+	if a == nil {
+		return 0
+	}
+	if a.Legacy != nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(a.Legacy.WebUIPort)); err == nil {
+			return n
+		}
+		return 0
+	}
+	for _, r := range a.Routes {
+		if r.Service != "" && r.Service != a.Main {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(r.UpstreamPort)); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // BackupSpec is the app's say in how it is backed up.
@@ -740,7 +791,7 @@ type Link struct {
 type Route struct {
 	// Service is the compose service the labels are written onto — which must be
 	// the service that serves the port, since a generated upstream is resolved in
-	// that container's network context. Empty means x-casaos.main, or the app's
+	// that container's network context. Empty means the app's `main`, or its
 	// only service.
 	Service string `yaml:"service,omitempty"`
 
@@ -836,8 +887,8 @@ func (l Localized) Value() string {
 
 // Parse decodes an x-compose-app extension map into an App. It returns
 // ErrNoExtension when the block is absent and ErrUnsupportedVersion for a
-// schema_version newer than this build — both signal the caller to fall back to
-// x-casaos.
+// schema_version newer than this build. It reads x-compose-app only; the
+// x-casaos fallback for a compose with no x-compose-app is composefile.Resolve's.
 func Parse(ext map[string]any) (*App, error) {
 	if ext == nil {
 		return nil, ErrNoExtension

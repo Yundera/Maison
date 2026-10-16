@@ -15,7 +15,6 @@ export interface StoreApp {
    *  this app is browsed and installed like any other. */
   parent?: string
   developer: string
-  author: string
   min_memory?: number
   store: string
   apps_path?: string

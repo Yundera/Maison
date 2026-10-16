@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Wallpaper from './lib/components/Wallpaper.svelte'
-  import TopBar from './lib/components/TopBar.svelte'
   import SideBar from './lib/components/SideBar.svelte'
   import AppSection from './lib/components/AppSection.svelte'
   import StorePanel from './lib/components/store/StorePanel.svelte'
@@ -77,7 +76,6 @@
 </script>
 
 <Wallpaper />
-<TopBar />
 
 <div class="contents">
   <div class="container">
@@ -138,10 +136,9 @@
   /* The safe-area terms are for an installed PWA on a notched phone, where
      viewport-fit=cover (see index.html) lets the page draw under the status bar
      and the home indicator. env() resolves to 0px anywhere there is no inset, so
-     these are inert in a browser and on a desktop. The top term must stay in step
-     with TopBar.svelte's floating .island: 2.5rem here plus the 1.5rem padding
-     below puts the first row just under the capsule (0.75rem + 2.6rem tall), so at
-     rest nothing sits beneath it; scrolled content passes under the glass. */
+     these are inert in a browser and on a desktop. The 2.5rem top band is left
+     empty on purpose: it once held TopBar.svelte's floating capsule, which now
+     sits at the right of the app section's header. */
   .contents {
     position: absolute;
     inset: 0;

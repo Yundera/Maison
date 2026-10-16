@@ -123,7 +123,7 @@
 
 <!-- No full-width bar: the desktop is wallpaper and dark glass, and a light strip
      across the top was the one surface that did not belong to it. What the bar held
-     floats in one glass capsule at the top right, aligned with the app grid. -->
+     is one glass capsule, placed at the right of the app section's header. -->
 <div class="island">
   <div class="wrap" use:clickOutside={() => (drawer = false)}>
     <button
@@ -272,37 +272,17 @@
 </div>
 
 <style>
-  /* Fixed to the top right, its right edge on the app grid's: the same stepped
-     max-widths as App.svelte's .container (plus its 0.75rem padding and the
-     section header's 0.25rem margin), so the gear sits above the "+" at every
-     width. The safe-area terms keep it clear of a notch when installed as a PWA;
-     App.svelte's .contents offset has to stay in step with this height. */
+  /* Sits at the right end of the app section's header (AppSection.svelte), after
+     the "+". Its own stacking context keeps the menus above the tiles below and
+     the glass pseudo-element (z-index -1) behind the buttons. */
   .island {
-    --grid-max: 100vw;
-    position: fixed;
-    top: calc(0.75rem + env(safe-area-inset-top, 0px));
-    right: max(calc(1rem + env(safe-area-inset-right, 0px)), calc((100vw - var(--grid-max)) / 2 + 1rem));
+    position: relative;
     z-index: 20;
     display: flex;
     align-items: center;
     gap: 2px;
     padding: 3px;
     border-radius: var(--r-pill);
-  }
-  @media (min-width: 1024px) {
-    .island {
-      --grid-max: 960px;
-    }
-  }
-  @media (min-width: 1216px) {
-    .island {
-      --grid-max: 1152px;
-    }
-  }
-  @media (min-width: 1368px) {
-    .island {
-      --grid-max: 1304px;
-    }
   }
   /* The glass lives on a pseudo-element: a backdrop-filter on .island itself would
      become the backdrop root of the menus inside it, and they could then blur

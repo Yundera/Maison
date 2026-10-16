@@ -3,6 +3,7 @@
   import { dndzone } from 'svelte-dnd-action'
   import Tile, { type TileData } from './Tile.svelte'
   import AddLinkModal from './AddLinkModal.svelte'
+  import TopBar from './TopBar.svelte'
   import { apps, loadApps, subscribeApps, type App } from '../stores/apps'
   import { links, type Link } from '../stores/links'
   import { clickOutside } from '../actions'
@@ -198,6 +199,7 @@
     {/if}
     <!-- An external link is a shortcut the operator adds to their own grid;
          there is nothing to add to the platform's. -->
+    <div class="header-end">
     {#if view === 'apps'}
       <div class="add-wrap" use:clickOutside={() => (addMenu = false)}>
         <button class="add" title="Add" aria-label="Add" aria-expanded={addMenu} onclick={() => (addMenu = !addMenu)}>
@@ -233,6 +235,9 @@
         {/if}
       </div>
     {/if}
+    <!-- Notifications and settings ride on the header's right, after the "+". -->
+    <TopBar />
+    </div>
   </header>
 
   <div
@@ -322,6 +327,11 @@
     .thumb {
       transition: none;
     }
+  }
+  .header-end {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
   .add-wrap {
     position: relative;

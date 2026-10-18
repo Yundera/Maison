@@ -596,7 +596,7 @@
   "password": "Mot de passe",
   "show_password": "Afficher le mot de passe",
   "hide_password": "Masquer le mot de passe",
-  "dont_show_again": "Ne plus afficher à l'ouverture",
+  "show_when_opening": "Afficher à l'ouverture",
   "open_app": "Ouvrir l'application",
   "close": "Fermer",
   "credentials_none": "Cette application ne déclare aucun identifiant.",

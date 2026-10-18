@@ -496,7 +496,7 @@
   "password": "Passwort",
   "show_password": "Passwort anzeigen",
   "hide_password": "Passwort verbergen",
-  "dont_show_again": "Beim Öffnen nicht mehr anzeigen",
+  "show_when_opening": "Beim Öffnen anzeigen",
   "open_app": "App öffnen",
   "close": "Schließen",
   "credentials_none": "Diese App gibt keine Zugangsdaten an.",

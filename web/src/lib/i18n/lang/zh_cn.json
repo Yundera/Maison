@@ -494,7 +494,7 @@
   "password": "密码",
   "show_password": "显示密码",
   "hide_password": "隐藏密码",
-  "dont_show_again": "打开时不再显示",
+  "show_when_opening": "打开时显示",
   "open_app": "打开应用",
   "close": "关闭",
   "credentials_none": "此应用未声明任何凭据。",

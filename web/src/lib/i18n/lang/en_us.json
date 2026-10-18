@@ -596,7 +596,7 @@
   "password": "Password",
   "show_password": "Show password",
   "hide_password": "Hide password",
-  "dont_show_again": "Don't show again when opening",
+  "show_when_opening": "Show when opening",
   "open_app": "Open app",
   "close": "Close",
   "credentials_none": "This app declares no credentials.",

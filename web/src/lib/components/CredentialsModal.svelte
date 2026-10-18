@@ -147,8 +147,8 @@
       </div>
       {#if anyInitial}<p class="hint">{$t('credentials_initial_hint')}</p>{/if}
       <label class="dismiss">
-        <input type="checkbox" bind:checked={dismissed} />
-        {$t('dont_show_again')}
+        <input type="checkbox" checked={!dismissed} onchange={(e) => (dismissed = !e.currentTarget.checked)} />
+        {$t('show_when_opening')}
       </label>
     {/if}
     <div class="actions">

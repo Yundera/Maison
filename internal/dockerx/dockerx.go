@@ -52,6 +52,9 @@ func (c *Client) Ping(ctx context.Context) error {
 type Port struct {
 	Private uint16
 	Public  uint16
+	// IP is the host address the port is published on: "0.0.0.0" or "::" for every
+	// interface, or one address (a VPN's, a LAN's) when the compose names it.
+	IP string
 }
 
 // Container is a container, flattened for our needs. Project and the fields after
@@ -121,7 +124,7 @@ func (c *Client) ListAllContainers(ctx context.Context) ([]Container, error) {
 		var ports []Port
 		for _, p := range ct.Ports {
 			if p.PublicPort > 0 {
-				ports = append(ports, Port{Private: p.PrivatePort, Public: p.PublicPort})
+				ports = append(ports, Port{Private: p.PrivatePort, Public: p.PublicPort, IP: p.IP})
 			}
 		}
 		out = append(out, Container{

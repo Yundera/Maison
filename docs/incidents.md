@@ -143,6 +143,7 @@ immediately would find half of them unhealthy every time Maison restarted.
 | `app.unhealthy:<app>` | `app.unhealthy` | Docker's health check failing, two passes running |
 | `app.partial:<app>` | `app.partial` | Some containers up, some down, two passes running |
 | `app.crashloop:<app>` | `app.crashloop` | Docker's restart counter moved between two passes |
+| `app.address:<app>` | `app.address` | A running container publishes a port on a host address the box does not carry, three passes running. Needs `HOST_PROC`; not gated on `HasReached` |
 
 Four rules in there are load-bearing:
 
@@ -156,7 +157,8 @@ produces neither a report nor a resolve, so a disk sitting on the line does not 
 and close an incident all day — and each edge would be an email.
 
 **App conditions must hold for two consecutive passes.** An app is briefly unhealthy
-every time it restarts.
+every time it restarts. `app.address` waits three: a VPN interface can come up
+minutes after the app listening on it.
 
 **Polled app conditions are gated on `Registry.HasReached`** — the persisted marker
 that the app has been observed reachable at least once. Without it a half-configured

@@ -99,6 +99,10 @@ const (
 	KindAppUnhealthy = "app.unhealthy"
 	KindAppPartial   = "app.partial"
 	KindAppCrashLoop = "app.crashloop"
+	// KindAppAddress is a running app that publishes a port on a host address the box
+	// does not carry: a VPN that is down, or a typo in the override. One per app,
+	// "app.address:<app>".
+	KindAppAddress   = "app.address"
 	KindAppInstall   = "app.install"
 	KindAppUninstall = "app.uninstall"
 	KindAppUpdate    = "app.update"

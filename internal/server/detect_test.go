@@ -12,6 +12,7 @@ import (
 	"github.com/yundera/maison/internal/backup/backuptest"
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/system"
 )
@@ -202,7 +203,7 @@ func TestEveryKindTheServerRaisesIsKnown(t *testing.T) {
 		incident.KindBackupFailed, incident.KindBackupStale, incident.KindBackupEngine,
 		incident.KindBackupMissing, incident.KindBackupRecovery, incident.KindBackupPaused,
 		incident.KindDiskFull, incident.KindAppUnhealthy, incident.KindAppPartial,
-		incident.KindAppCrashLoop, incident.KindAppInstall, incident.KindAppUpdate,
+		incident.KindAppCrashLoop, incident.KindAppAddress, incident.KindAppInstall, incident.KindAppUpdate,
 		incident.KindAppStackup, incident.KindStoreSource, incident.KindTest,
 	}
 	open, _ := diskReports(system.Filesystems{Mounts: []system.FilesystemStat{mount("/dev/sda1", "/", 95)}})
@@ -347,5 +348,48 @@ func TestARepairedAppClearsItsBrokenUpdate(t *testing.T) {
 	}
 	if !s.incidents.IsOpen("app.update:jellyfin") {
 		t.Error("a refused update was cleared by the app running, but the update is still owed")
+	}
+}
+
+// A port on an address the host does not carry is reported per project, as
+// "address:port"; every-interface bindings, carried addresses and stopped containers
+// are not.
+func TestUnboundPorts(t *testing.T) {
+	local := map[string]bool{"10.9.0.1": true, "161.97.177.252": true}
+	cts := []dockerx.Container{
+		{Project: "samba", State: "running", Ports: []dockerx.Port{
+			{Public: 445, IP: "10.9.0.11"}, // typo
+			{Public: 445, IP: "10.9.0.11"}, // Docker lists a binding once per family; one line is enough
+		}},
+		{Project: "guacamole", State: "running", Ports: []dockerx.Port{{Public: 8080, IP: "10.9.0.1"}}},
+		{Project: "jellyfin", State: "running", Ports: []dockerx.Port{{Public: 8096, IP: "0.0.0.0"}, {Public: 8096, IP: "::"}}},
+		{Project: "tailnet", State: "exited", Ports: []dockerx.Port{{Public: 22, IP: "100.64.0.9"}}},
+		{Project: "v6", State: "running", Ports: []dockerx.Port{{Public: 80, IP: "fd7a::1"}}},
+	}
+	got := unboundPorts(cts, local)
+	if len(got) != 2 {
+		t.Fatalf("got %v, want samba and v6 only", got)
+	}
+	if !slices.Equal(got["samba"], []string{"10.9.0.11:445"}) {
+		t.Errorf("samba = %v", got["samba"])
+	}
+	if !slices.Equal(got["v6"], []string{"[fd7a::1]:80"}) {
+		t.Errorf("v6 = %v", got["v6"])
+	}
+}
+
+// The address condition waits three passes, not two: a VPN interface can come up
+// several minutes after the app listening on it.
+func TestAddressConditionSettlesAfterThreePasses(t *testing.T) {
+	d := &detector{streak: map[string]int{}, seen: map[string]bool{}}
+	id := incident.KindAppAddress + ":samba"
+	for pass := 1; pass <= addressSettleChecks; pass++ {
+		got := d.settledAfter(id, true, addressSettleChecks)
+		if want := pass == addressSettleChecks; got != want {
+			t.Errorf("pass %d: settled = %v, want %v", pass, got, want)
+		}
+	}
+	if d.settledAfter(id, false, addressSettleChecks) {
+		t.Error("a cleared condition must not report")
 	}
 }

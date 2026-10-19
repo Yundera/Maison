@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +48,13 @@ const (
 	// reported. An app is briefly unhealthy every time it restarts, and an alert that
 	// fires on that is an alert nobody reads.
 	settleChecks = 2
+
+	// addressSettleChecks is the same for a port published on an address the host does
+	// not carry. Longer, because the expected cause is a VPN app that has not brought its
+	// interface up yet, and at boot that can take a few minutes after Docker started the
+	// app that listens on it. Three passes is ten to fifteen minutes of the address
+	// being continuously absent.
+	addressSettleChecks = 3
 )
 
 // detector is the state one pass has to carry to the next: how long each condition has
@@ -101,13 +110,18 @@ func (s *Server) checkOnce(ctx context.Context, d *detector) {
 // announcing. A pass that does not observe an ID at all leaves its streak alone; see
 // prune.
 func (d *detector) settled(id string, cond bool) bool {
+	return d.settledAfter(id, cond, settleChecks)
+}
+
+// settledAfter is settled with its own number of passes.
+func (d *detector) settledAfter(id string, cond bool, passes int) bool {
 	d.seen[id] = true
 	if !cond {
 		delete(d.streak, id)
 		return false
 	}
 	d.streak[id]++
-	return d.streak[id] >= settleChecks
+	return d.streak[id] >= passes
 }
 
 // prune drops streaks for conditions this pass could not evaluate — an app that was
@@ -619,6 +633,8 @@ func (s *Server) checkApps(ctx context.Context, d *detector) {
 		}
 	}
 
+	s.checkAddresses(ctx, d, list)
+
 	// An app that has been uninstalled takes its incidents with it. Otherwise the badge
 	// outlives the app and nothing will ever clear it.
 	//
@@ -627,12 +643,105 @@ func (s *Server) checkApps(ctx context.Context, d *detector) {
 	// it has been dealt with.
 	for _, inc := range s.incidents.Snapshot().Open {
 		switch inc.Kind {
-		case incident.KindAppUnhealthy, incident.KindAppPartial, incident.KindAppStackup, incident.KindAppUpdate:
+		case incident.KindAppUnhealthy, incident.KindAppPartial, incident.KindAppStackup, incident.KindAppUpdate,
+			incident.KindAppAddress:
 			if _, app, ok := strings.Cut(inc.ID, ":"); ok && !live[app] {
 				s.incidents.Resolve(inc.ID)
 			}
 		}
 	}
+}
+
+// checkAddresses reports a running app that publishes a port on an address this host
+// does not have.
+//
+// It is the loud failure the host gave up so that boots work. The mesh self-check sets
+// net.ipv4.ip_nonlocal_bind=1 so an app published on a VPN address (Samba on
+// 10.9.0.1:445, a Tailscale 100.x address) starts at boot before the VPN brings its
+// interface up. Without it Docker refused to start the container, which was loud but
+// broke every reboot; with it Docker binds in advance, which also means a mistyped
+// address, or a VPN that was uninstalled or renumbered, now runs "up" and is reachable
+// by nobody. This puts the error back, as a sentence instead of an Exited container.
+//
+// NOT gated on HasReached, unlike the conditions in checkApps. That gate is about an app
+// that was working and broke; this is a configuration fact, and the apps it matters for
+// most — services like Samba, with no web address — may never be marked reached at all.
+//
+// Judged only with the host's /proc in view: from inside this container's network
+// namespace every host address looks absent, and the check would accuse every app with
+// an address in its ports.
+func (s *Server) checkAddresses(ctx context.Context, d *detector, list []apps.App) {
+	if s.dx == nil {
+		return
+	}
+	local, ok := system.HostAddresses()
+	if !ok {
+		return
+	}
+	cts, err := s.dx.ListProjectContainers(ctx)
+	if err != nil {
+		return
+	}
+	unbound := unboundPorts(cts, local)
+	for _, a := range list {
+		if a.Installing || a.Busy {
+			continue
+		}
+		missing := unbound[a.ID]
+		id := incident.KindAppAddress + ":" + a.ID
+		if !d.settledAfter(id, len(missing) > 0, addressSettleChecks) {
+			if len(missing) == 0 {
+				s.incidents.Resolve(id)
+			}
+			continue
+		}
+		s.incidents.Report(incident.Report{
+			ID: id, Kind: incident.KindAppAddress, Severity: incident.Warning,
+			Title: a.Name + " listens on an address this server does not have",
+			Detail: fmt.Sprintf("%s publishes %s, but this server has had no such address for over ten minutes, "+
+				"so nothing can reach it there.\n\nIf the address belongs to a VPN app (WireGuard, Tailscale), check "+
+				"that the VPN app is running. Otherwise correct the address in the app's settings → Override → Ports.",
+				a.Name, strings.Join(missing, ", ")),
+			Args: map[string]string{"app": a.Name, "addresses": strings.Join(missing, ", ")},
+		})
+	}
+}
+
+// unboundPorts maps each compose project to the "address:port" bindings of its running
+// containers whose address the host does not carry, sorted and without repeats. Pure,
+// so it is testable without a host.
+//
+// "0.0.0.0" and "::" are every interface, and an empty address is Docker saying the
+// same thing, so none of them can be absent. Only running containers count: a stopped
+// one publishes nothing, and an Exited container is what checkApps is for.
+func unboundPorts(cts []dockerx.Container, local map[string]bool) map[string][]string {
+	seen := map[string]map[string]bool{}
+	for _, c := range cts {
+		if c.State != "running" || c.Project == "" {
+			continue
+		}
+		for _, p := range c.Ports {
+			switch p.IP {
+			case "", "0.0.0.0", "::":
+				continue
+			}
+			if system.IsHostAddress(local, p.IP) {
+				continue
+			}
+			if seen[c.Project] == nil {
+				seen[c.Project] = map[string]bool{}
+			}
+			seen[c.Project][net.JoinHostPort(p.IP, strconv.Itoa(int(p.Public)))] = true
+		}
+	}
+	out := map[string][]string{}
+	for project, set := range seen {
+		for b := range set {
+			out[project] = append(out[project], b)
+		}
+		sort.Strings(out[project])
+	}
+	return out
 }
 
 // resolveRepairedUpdate clears a failed update's "needs repair" incident once the app

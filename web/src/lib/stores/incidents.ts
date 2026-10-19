@@ -134,6 +134,7 @@ export const KNOWN_KINDS = [
   'app.unhealthy',
   'app.partial',
   'app.crashloop',
+  'app.address',
   'app.install',
   'app.uninstall',
   'app.update',

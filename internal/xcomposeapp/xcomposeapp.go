@@ -72,11 +72,6 @@ type App struct {
 	// MinMemory is the memory the app needs, in MB. Advisory, shown in the store.
 	MinMemory int `yaml:"min_memory,omitempty"`
 
-	// Main is the compose service that *is* the app — the one whose image says
-	// which app this is, and whose published port opens it when nothing else
-	// does. Empty means the only service, when there is just one.
-	Main string `yaml:"main,omitempty"`
-
 	// Legacy is set when this App was translated from an x-casaos block (see
 	// composefile.Resolve) and carries the one thing that block says which the
 	// native schema has no key for. Never read from or written to YAML.
@@ -572,9 +567,9 @@ func (a *App) DeclaresWebUI() bool {
 	return a.Legacy != nil && (strings.TrimSpace(a.WebUIPort) != "" || strings.TrimSpace(a.Legacy.WebUIPort) != "")
 }
 
-// WebUIContainerPort is the port the web UI listens on inside the main
-// container, when the metadata says: x-casaos `webui_port` on a translated
-// block, else the upstream port of a route on the main service. 0 when unknown.
+// WebUIContainerPort is the port the web UI listens on inside its container,
+// when the metadata says: x-casaos `webui_port` on a translated block, else the
+// upstream port of the app's first route. 0 when unknown.
 func (a *App) WebUIContainerPort() int {
 	if a == nil {
 		return 0
@@ -586,9 +581,6 @@ func (a *App) WebUIContainerPort() int {
 		return 0
 	}
 	for _, r := range a.Routes {
-		if r.Service != "" && r.Service != a.Main {
-			continue
-		}
 		if n, err := strconv.Atoi(strings.TrimSpace(r.UpstreamPort)); err == nil {
 			return n
 		}
@@ -796,8 +788,8 @@ type Link struct {
 type Route struct {
 	// Service is the compose service the labels are written onto — which must be
 	// the service that serves the port, since a generated upstream is resolved in
-	// that container's network context. Empty means the app's `main`, or its
-	// only service.
+	// that container's network context. Empty means the app's only service, so
+	// an app with several must name it.
 	Service string `yaml:"service,omitempty"`
 
 	// Name is the host's leading label — `outline` in `outline-${APP_DOMAIN}`.

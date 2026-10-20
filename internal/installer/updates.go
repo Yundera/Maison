@@ -72,8 +72,8 @@ type Suggestion struct {
 	Ref       string `json:"ref"`
 	Name      string `json:"name"`
 	StoreName string `json:"store_name,omitempty"`
-	// ImagesMatch is true when the store app's main service runs the same image
-	// repository as the installed app's. A name match without it is a weaker guess,
+	// ImagesMatch is true when the store app's service runs the same image
+	// repository as the installed app's (single-service apps only, see appRepo). A name match without it is a weaker guess,
 	// and the UI says so.
 	ImagesMatch bool `json:"images_match"`
 }
@@ -287,27 +287,18 @@ func imageRepo(image string) string {
 	return s
 }
 
-// mainRepo is the image repository of the app's main service — the one its
-// metadata's `main` names, else the only service there is. Matching on every service instead
-// would pair unrelated apps through a shared sidecar (a proxy, a database), which is
-// exactly the image most store apps have in common.
-func mainRepo(raw []byte) string {
+// appRepo is the image repository of the app's only service. A stack of several
+// says nothing by image: matching on every service would pair unrelated apps
+// through a shared sidecar (a proxy, a database), which is exactly the image most
+// store apps have in common, and the name is left to decide.
+func appRepo(raw []byte) string {
 	f, err := composefile.Parse(raw)
-	if err != nil {
+	if err != nil || len(f.Services) != 1 {
 		return ""
 	}
-	name := ""
-	if ca, err := f.App(); err == nil {
-		name = ca.Main
-	}
-	svc, ok := f.Services[name]
-	if !ok {
-		if len(f.Services) != 1 {
-			return ""
-		}
-		for _, only := range f.Services {
-			svc = only
-		}
+	var svc composefile.Service
+	for _, only := range f.Services {
+		svc = only
 	}
 	r := imageRepo(svc.Image)
 	// An image spelled through a variable says nothing comparable.
@@ -339,7 +330,7 @@ func (in *Installer) catalogIndex() catalogIndex {
 		if err != nil {
 			continue
 		}
-		idx = append(idx, catalogEntry{app: a, project: projectName(f.Name, a.ID), repo: mainRepo(raw)})
+		idx = append(idx, catalogEntry{app: a, project: projectName(f.Name, a.ID), repo: appRepo(raw)})
 	}
 	return idx
 }
@@ -347,7 +338,7 @@ func (in *Installer) catalogIndex() catalogIndex {
 // suggest finds the store app an untracked project most plausibly came from.
 //
 // Two kinds of evidence: the name — the project an install of that store app would
-// have created, which is how CasaOS named it too — and the main service's image. Both
+// have created, which is how CasaOS named it too — and, for a single-service stack, its image. Both
 // together is a match. The image alone beats the name alone: a stack someone called
 // "files" that runs dufs is dufs, while a store app whose image moved on (a
 // linuxserver build swapped for the official one) still matches by name when nothing
@@ -355,7 +346,7 @@ func (in *Installer) catalogIndex() catalogIndex {
 // resolves to the copy that won the merge, and anything still ambiguous is no
 // suggestion rather than a guess.
 func (idx catalogIndex) suggest(project string, installed []byte) *Suggestion {
-	have := mainRepo(installed)
+	have := appRepo(installed)
 	var both, byImage, byName []catalogEntry
 	for _, e := range idx {
 		named := e.project == project || strings.EqualFold(e.app.ID, project)

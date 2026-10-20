@@ -253,16 +253,16 @@ func TestImageMatchBeatsANameCoincidence(t *testing.T) {
 	}
 }
 
-// Store apps share sidecars; only the main service identifies an app.
-func TestMainRepoIgnoresSidecars(t *testing.T) {
-	raw := []byte("services:\n  proxy:\n    image: ghcr.io/yundera/nginx-hash-lock:1.0.7\n" +
-		"  jellyfin:\n    image: jellyfin/jellyfin:10.11\nx-casaos:\n  main: jellyfin\n")
-	if got := mainRepo(raw); got != "jellyfin/jellyfin" {
-		t.Errorf("mainRepo = %q, want jellyfin/jellyfin", got)
+// Store apps share sidecars, so only a single-service stack is identified by image.
+func TestAppRepoIgnoresMultiServiceStacks(t *testing.T) {
+	raw := []byte("services:\n  jellyfin:\n    image: jellyfin/jellyfin:10.11\n")
+	if got := appRepo(raw); got != "jellyfin/jellyfin" {
+		t.Errorf("appRepo = %q, want jellyfin/jellyfin", got)
 	}
-	// Two services and no main: no basis for a match.
-	raw = []byte("services:\n  a:\n    image: x/a:1\n  b:\n    image: x/b:1\n")
-	if got := mainRepo(raw); got != "" {
-		t.Errorf("mainRepo with no main = %q, want empty", got)
+	// Two services: no basis for a match, even with a CasaOS `main` naming one.
+	raw = []byte("services:\n  proxy:\n    image: ghcr.io/yundera/nginx-hash-lock:1.0.7\n" +
+		"  jellyfin:\n    image: jellyfin/jellyfin:10.11\nx-casaos:\n  main: jellyfin\n")
+	if got := appRepo(raw); got != "" {
+		t.Errorf("appRepo with two services = %q, want empty", got)
 	}
 }

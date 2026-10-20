@@ -39,7 +39,7 @@ x-casaos:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.ID != "jelly" || a.Title.Value() != "Jellyfin" || a.Icon != "https://e.x/i.png" || a.Main != "jellyfin" ||
+	if a.ID != "jelly" || a.Title.Value() != "Jellyfin" || a.Icon != "https://e.x/i.png" ||
 		a.Developer != "Jelly Team" || a.Tips.Value() != "Read me\n\nAnd me" ||
 		a.Hooks.PreInstall != "echo pre" || a.Hooks.PostInstall != "echo post" {
 		t.Fatalf("app = %+v", a)

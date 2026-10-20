@@ -119,7 +119,7 @@ does not undo the choice.
 
 Settings → Updates lists the apps with no reference together, and offers each the store
 app it most plausibly came from — by the project name an install of it would have
-created and by its main service's image. It is a suggestion and nothing more: the operator
+created and, for a single-service stack, by its image. It is a suggestion and nothing more: the operator
 confirms it per app, it goes through the same `PUT`, and there is deliberately no way to
 link them all at once. See [`lifecycle.md`](./lifecycle.md) § *Update all*.
 

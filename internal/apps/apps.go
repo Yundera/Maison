@@ -619,11 +619,7 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 	// the non-HTTP listener it exists for (Samba's 445), and a tile opening
 	// http://box:445 is worse than no click URL at all.
 	if app.URL == "" && (ca == nil || strings.TrimSpace(ca.WebUIHost) == "") && svcPorts != nil && app.View != xcomposeapp.ViewService {
-		main := ""
-		if ca != nil {
-			main = ca.Main
-		}
-		if hp := reachableHostPort(svcPorts, main, ca.WebUIContainerPort()); hp > 0 {
+		if hp := reachableHostPort(svcPorts, ca.WebUIContainerPort()); hp > 0 {
 			app.Port = strconv.Itoa(hp)
 		}
 	}
@@ -653,7 +649,7 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 // makes it a service.
 func deriveView(ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) string {
 	if ca == nil {
-		if reachableHostPort(svcPorts, "", 0) > 0 {
+		if reachableHostPort(svcPorts, 0) > 0 {
 			return xcomposeapp.ViewApps
 		}
 		return xcomposeapp.ViewService
@@ -668,8 +664,8 @@ func deriveView(ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) string 
 }
 
 // reachableHostPort picks a published host port to open: the one bound to the
-// web-UI port on the main service if present, otherwise the first published port.
-func reachableHostPort(svcPorts map[string][]dockerx.Port, main string, webui int) int {
+// web-UI port if any service publishes it, otherwise the first published port.
+func reachableHostPort(svcPorts map[string][]dockerx.Port, webui int) int {
 	try := func(ports []dockerx.Port) int {
 		if webui > 0 {
 			for _, p := range ports {
@@ -684,11 +680,6 @@ func reachableHostPort(svcPorts map[string][]dockerx.Port, main string, webui in
 			}
 		}
 		return 0
-	}
-	if main != "" {
-		if hp := try(svcPorts[main]); hp > 0 {
-			return hp
-		}
 	}
 	for _, ports := range svcPorts {
 		if hp := try(ports); hp > 0 {

@@ -97,7 +97,6 @@ with **every** field below set once, to show what a fully loaded block looks lik
 | `thumbnail` | path \| url | no | Store card image. See [Assets](#assets). | `thumbnail` |
 | `architectures` | string[] | no | e.g. `[amd64, arm64]`. Advisory: parsed, but not currently shown or checked. | `architectures` |
 | `min_memory` | int (MB) | no | Memory the app needs. Advisory, shown in the store. | `min_memory` |
-| `main` | string | no (default: the only service) | The compose service that **is** the app: its image identifies the app when Maison matches an installed stack to a store app, and its published port is the one opened when nothing else names an address. | `main` |
 | **`webui-host`** | string | **yes\*** | The web UI's **host** — the final URL host, templated exactly like the app's Caddy route (e.g. `jellyfin-${domain}`). Omit for headless apps. | `hostname` |
 | `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). Without a `webui-host` it names a port on the box's own address (the host the dashboard was opened on), which is how a CasaOS app with no `hostname` opens. | `port_map` (dropped when it is the scheme's default port) |
 | `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` (CasaOS default `http`) |
@@ -119,14 +118,15 @@ with **every** field below set once, to show what a fully loaded block looks lik
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
 `webui-host` is headless — its tile has no "open" action — unless it publishes a
-host port (see [`main`](#fields)).
+host port: then the one bound to the web UI's container port, else the first
+published, opens it.
 
 The one `x-casaos` field with no `x-compose-app` key, `webui_port` (the web UI's
 port *inside* the container), survives the translation only to pick which
 published host port opens a CasaOS app; a native app says the same with the
-`upstream-port` of a [`routes`](./domains.md) entry on its `main` service. Everything else in
-`x-casaos` — the per-service `apps` descriptions (`envs`, `ports`, `volumes`,
-`devices`) and the localized `image` map — is not read.
+`upstream-port` of its first [`routes`](./domains.md) entry. Everything else in
+`x-casaos` — `main` (which CasaOS reads), the per-service `apps` descriptions
+(`envs`, `ports`, `volumes`, `devices`) and the localized `image` map — is not read.
 
 ### Localized strings
 
@@ -318,14 +318,14 @@ x-compose-app:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `service` | the app's `main`, or its only service | The service the labels go on — the one serving the port. |
+| `service` | the app's only service (required when it has several) | The service the labels go on — the one serving the port. |
 | `name` | the app's id | The host's leading label: `outline` in `outline-${APP_DOMAIN}`. |
 | `upstream-port` | — | The port **inside** the container. Not `webui-port`, which is the click URL's port. |
 | `upstream-scheme` | `http` | `https` for an app that terminates TLS itself. |
 | `insecure-upstream` | `false` | Skip verifying the upstream's certificate (self-signed). |
 | `max-body` | proxy default | Raise the request-body cap, e.g. `10G`. |
 
-A route's `upstream-port` on the `main` service is also what picks the published
+The first route's `upstream-port` is also what picks the published
 host port that opens the app when no URL resolves. `routes` does not raise
 `schema_version`: a build that predates it generates nothing, so a label-free app is
 unreachable there but otherwise intact.

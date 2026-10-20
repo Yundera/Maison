@@ -38,7 +38,6 @@ func storeZipNamed(t *testing.T, appsPath, appName, storeName string) []byte {
 		"  app:\n" +
 		"    image: example/" + appName + ":1\n" +
 		"x-compose-app:\n" +
-		"  main: app\n" +
 		"  title: " + appName + "\n"
 
 	var buf bytes.Buffer

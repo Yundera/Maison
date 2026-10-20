@@ -155,7 +155,6 @@ func (s *StoreInfo) ComposeApp() map[string]any {
 	if s.MinMemory > 0 {
 		m["min_memory"] = s.MinMemory
 	}
-	set("main", s.Main)
 	if t := s.tips(); len(t) > 0 {
 		m["tips"] = t
 	}

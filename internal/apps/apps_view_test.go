@@ -154,7 +154,7 @@ func TestBuildAppServiceGetsNoPortURL(t *testing.T) {
 // A CasaOS app is opened the way CasaOS opens it: hostname, port_map and index
 // build the URL, an ${APP_DOMAIN} hostname resolving like a native webui-host, and
 // without a hostname the browser's own host on port_map — where the published
-// port bound to webui_port on the main service wins.
+// port bound to webui_port wins, whichever service publishes it.
 func TestBuildAppOpensCasaOSAppsLikeCasaOS(t *testing.T) {
 	app := buildApp("x", meta(t, "x-casaos:\n  scheme: https\n  hostname: x-${APP_DOMAIN}\n  port_map: \"443\"\n  index: /web\n"), "box.example", true, StatusRunning, nil)
 	if app.URL != "https://x-box.example/web" {
@@ -168,9 +168,9 @@ func TestBuildAppOpensCasaOSAppsLikeCasaOS(t *testing.T) {
 		"db":  {{Private: 5432, Public: 5432}},
 		"web": {{Private: 6881, Public: 6881}, {Private: 8080, Public: 18080}},
 	}
-	app = buildApp("x", meta(t, "x-casaos:\n  main: web\n  webui_port: \"8080\"\n"), "", true, StatusRunning, ports)
+	app = buildApp("x", meta(t, "x-casaos:\n  webui_port: \"8080\"\n"), "", true, StatusRunning, ports)
 	if app.Port != "18080" {
-		t.Fatalf("port = %q, want the one bound to webui_port on main", app.Port)
+		t.Fatalf("port = %q, want the one bound to webui_port", app.Port)
 	}
 }
 

@@ -93,7 +93,6 @@ x-compose-app:
   thumbnail: thumbnail.png
   architectures: [amd64, arm64]            # parsed, not used yet
   min_memory: 1024                         # MB, shown in the store
-  main: wikinest                           # the service that *is* the app
 
   # ── Dashboard placement ───────────────────────────────────────────────────
   view: apps                               # apps | service | system

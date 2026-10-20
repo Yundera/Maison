@@ -48,7 +48,7 @@ func TestLocalizedFieldsAcceptOnlyMapsWithEnUS(t *testing.T) {
 }
 
 // A refused string costs that string, never the rest of the block: Parse's error
-// is discarded by every caller and would take folders, secrets and hooks with it.
+// is discarded by every caller and would take folders, secrets and steps with it.
 func TestRefusedStringKeepsTheRestOfTheBlock(t *testing.T) {
 	a := parseBlock(t, `
 title: Plain
@@ -57,7 +57,7 @@ tips: plain tips
 webui-host: app-${domain}
 folders: [/DATA/AppData/app/config]
 secrets: {KEY: hex:32}
-hooks: {pre_up: "echo hi"}
+steps: [{name: hi, at: setup, script: "echo hi"}]
 credentials:
   - label: Admin
     username: admin
@@ -79,7 +79,7 @@ links:
 	if a.Title != nil || a.Tips != nil || a.Tagline.Value() != "Fine" {
 		t.Errorf("title=%v tips=%v tagline=%v", a.Title, a.Tips, a.Tagline)
 	}
-	if a.WebUIHost == "" || len(a.Folders) != 1 || a.Secrets["KEY"] == "" || a.Hooks.PreUp == "" {
+	if a.WebUIHost == "" || len(a.Folders) != 1 || a.Secrets["KEY"] == "" || len(a.Steps) != 1 {
 		t.Errorf("the rest of the block was lost: %+v", a)
 	}
 	if len(a.Credentials) != 1 || a.Credentials[0].Label != nil || a.Credentials[0].Username != "admin" ||

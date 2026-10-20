@@ -52,7 +52,7 @@ type PolicyView struct {
 // ErrNotChangeable reports a credential that declares no usable change.
 var ErrNotChangeable = errors.New("this credential cannot be changed from Maison")
 
-// ErrAppNotRunning reports a hook-applied change on a stopped app: the hook
+// ErrAppNotRunning reports a script-applied change on a stopped app: the script
 // changes the password inside the running app, so there is nothing to tell.
 var ErrAppNotRunning = errors.New("start the app first: the new password is set inside the running app")
 
@@ -163,8 +163,8 @@ func (r *Registry) GenerateCredential(id string, index int) (string, error) {
 //
 //   - env:  write .env, recreate, wait until ready. If the app does not come
 //     back, the previous .env is restored and the app recreated on it.
-//   - hook: run the declared hook against the running app first, with the new
-//     value in the environment; only then write .env and recreate. A failed hook
+//   - script: run the declared script entry against the running app first, with the
+//     new value in the environment; only then write .env and recreate. A failed script
 //     changes nothing. Once it has succeeded the app holds the new password, so a
 //     failed recreate keeps the new .env rather than reverting to a password the
 //     app no longer accepts.
@@ -211,18 +211,24 @@ func (r *Registry) ChangeCredential(ctx context.Context, id string, index int, v
 	}
 
 	label := t.cred.Label.Value()
-	if t.cred.Change.Apply == xcomposeapp.ApplyHook {
+	if t.cred.Change.Apply == xcomposeapp.ApplyScript {
 		if !credentialAppRunning(r, ctx, id) {
 			return ErrAppNotRunning
 		}
 		extra := []string{
-			"COMPOSE_PROJECT_NAME=" + id,
 			t.secret + "=" + value,
 			"OLD_" + t.secret + "=" + old,
 		}
-		if err := r.runChangeHook(ctx, id, t.dir, t.cred.Change.Hook, extra); err != nil {
-			log.Printf("credential change for %s (%s): hook failed", id, label)
-			return redact(fmt.Errorf("the change hook failed, nothing was changed: %w", err))
+		if err := r.runChangeScript(ctx, id, t.dir, t.cred.Change.Script, extra); err != nil {
+			log.Printf("credential change for %s (%s): script failed", id, label)
+			return redact(fmt.Errorf("the change script failed, nothing was changed: %w", err))
+		}
+		// The script may have added keys through $MAISON_ENV: patch the file as it
+		// stands now rather than the copy read before it ran.
+		if now, err := os.ReadFile(envPath); err == nil {
+			if patched, err := patchEnv(now, vars); err == nil {
+				next = patched
+			}
 		}
 	}
 
@@ -234,7 +240,7 @@ func (r *Registry) ChangeCredential(ctx context.Context, id string, index int, v
 		log.Printf("credential changed for %s (%s)", id, label)
 		return nil
 	}
-	if t.cred.Change.Apply == xcomposeapp.ApplyHook {
+	if t.cred.Change.Apply == xcomposeapp.ApplyScript {
 		log.Printf("credential change for %s (%s): password changed, restart failed", id, label)
 		return redact(fmt.Errorf("the password was changed, but the app did not restart cleanly: %w", err))
 	}
@@ -300,8 +306,8 @@ func patchEnv(raw []byte, vars map[string]string) ([]byte, error) {
 	return b, nil
 }
 
-// redactErr replaces every occurrence of the given values in err's text. A hook's
-// or an up's error carries its full output, and a hook that echoes its input
+// redactErr replaces every occurrence of the given values in err's text. A script's
+// or an up's error carries its full output, and a script that echoes its input
 // would otherwise hand the password to the API response and the log.
 func redactErr(err error, values ...string) error {
 	if err == nil {
@@ -320,16 +326,24 @@ func redactErr(err error, values ...string) error {
 	return errors.New(redacted)
 }
 
-// runChangeHook, upAndWait and the running check go through these seams so
+// runChangeScript, upAndWait and the running check go through these seams so
 // tests can drive a change without a Docker daemon.
 var (
-	credentialHook       = stackup.RunHookWith
+	credentialScript     = stackup.RunScript
 	credentialUp         = stackup.Up
 	credentialAppRunning = (*Registry).isRunning
 )
 
-func (r *Registry) runChangeHook(ctx context.Context, id, dir, script string, extra []string) error {
-	return credentialHook(ctx, r.cfg, id, dir, script, extra)
+// runChangeScript runs a credential's change script entry. What it writes to
+// $MAISON_ENV reaches the .env like any script's; $MAISON_OUTPUT has nothing to
+// feed in this operation (the up that follows renders afresh) and is dropped.
+func (r *Registry) runChangeScript(ctx context.Context, id, dir string, s xcomposeapp.Script, extra []string) error {
+	_, err := credentialScript(ctx, r.cfg, id, dir, s, stackup.ScriptOpts{
+		Label:          "credential change",
+		DefaultTimeout: xcomposeapp.DefaultCredentialChangeTimeout,
+		Extra:          extra,
+	})
+	return err
 }
 
 func (r *Registry) upAndWait(ctx context.Context, id, dir string) error {

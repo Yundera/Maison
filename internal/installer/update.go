@@ -204,7 +204,11 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// below would otherwise cost the whole download, not just the swap. Not fatal —
 	// `compose up` pulls whatever is still missing, and fails loudly if it cannot.
 	if f, err := composefile.Parse(newBase); err == nil {
-		in.pullList(ctx, append(composeImages(f), migrationImages(plan)...), func(ev Event) { step(UpdatePhasePull, ev.Message, ev.Download) })
+		images := append(composeImages(f), migrationImages(plan)...)
+		if a, err := f.App(); err == nil && a != nil {
+			images = append(images, stepImages(a.Steps)...)
+		}
+		in.pullList(ctx, images, func(ev Event) { step(UpdatePhasePull, ev.Message, ev.Download) })
 	}
 
 	// The backup, before anything is written: to every enabled destination, the same
@@ -282,9 +286,9 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// changes the tile. Unlike the seed tree it cannot fail the update: a tile with
 	// last version's icon is not a reason to roll an app back.
 	writeIcon(ctx, app, dir, project)
-	// The migration scripts, from the same sync again, so a script step runs the
-	// script its compose was written against.
-	if err := writeMigrations(app, dir); err != nil {
+	// The script files, from the same sync again, so a script entry that names a
+	// file runs the file its compose was written against.
+	if err := writeScripts(app, dir); err != nil {
 		return in.rollBack(ctx, project, res, err)
 	}
 
@@ -721,16 +725,14 @@ func (in *Installer) refuseData(project string, refused *DataRefusedError) error
 	return refused
 }
 
-// migrationImages lists the images the plan's steps run, for the update's pull. An
-// image spelled with a ${VAR} is left to the step itself, which renders and pulls it.
+// migrationImages lists the images the plan's steps declare they run, for the
+// update's pull — which happens while the old version still serves, where a step
+// that pulled its own image would extend the outage. An image spelled with a
+// ${VAR} is left to the step itself.
 func migrationImages(plan stackup.MigratePlan) []string {
 	var out []string
 	for _, m := range plan.Steps {
-		for _, img := range append([]string{m.Image}, m.Images...) {
-			if img != "" && !strings.Contains(img, "${") {
-				out = append(out, img)
-			}
-		}
+		out = append(out, literalImages(m.Images)...)
 	}
 	return out
 }

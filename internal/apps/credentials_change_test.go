@@ -12,6 +12,7 @@ import (
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/secretgen"
 	"github.com/yundera/maison/internal/stackup"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 const changeBase = `services: {}
@@ -41,11 +42,11 @@ x-compose-app:
       username: admin
       password: ${SMB_PASSWORD}
       change:
-        apply: hook
-        hook: echo "$SMB_PASSWORD"
+        apply: script
+        script: echo "$SMB_PASSWORD"
     - label: {en_us: Broken}
       password: ${SMB_PASSWORD}
-      change: {apply: hook}
+      change: {apply: script}
 `
 
 const changeEnv = "# hand comment\nSMB_PASSWORD=old-password-1\nSMB_HASH=$2a$10$xyz\nOTHER=abcd\n"
@@ -61,10 +62,10 @@ type fakeChange struct {
 
 func withFakeChange(t *testing.T, f *fakeChange) {
 	t.Helper()
-	oldHook, oldUp, oldRun := credentialHook, credentialUp, credentialAppRunning
-	credentialHook = func(_ context.Context, _ config.Config, _, _, _ string, extra []string) error {
-		f.hookEnv = extra
-		return f.hookErr
+	oldScript, oldUp, oldRun := credentialScript, credentialUp, credentialAppRunning
+	credentialScript = func(_ context.Context, _ config.Config, _, _ string, _ xcomposeapp.Script, o stackup.ScriptOpts) (stackup.ScriptResult, error) {
+		f.hookEnv = o.Extra
+		return stackup.ScriptResult{}, f.hookErr
 	}
 	credentialUp = func(context.Context, config.Config, string, string, []string) error {
 		f.ups++
@@ -76,7 +77,7 @@ func withFakeChange(t *testing.T, f *fakeChange) {
 		return nil
 	}
 	credentialAppRunning = func(*Registry, context.Context, string) bool { return f.running }
-	t.Cleanup(func() { credentialHook, credentialUp, credentialAppRunning = oldHook, oldUp, oldRun })
+	t.Cleanup(func() { credentialScript, credentialUp, credentialAppRunning = oldScript, oldUp, oldRun })
 }
 
 func readEnv(t *testing.T, dir string) string {
@@ -118,9 +119,9 @@ func TestRenderedCredentialsChangeInfo(t *testing.T) {
 		t.Errorf("Initial carries a change: %+v", c.Change)
 	}
 	if c := byLabel["Broken"]; c.Change != nil {
-		t.Errorf("a hook change without a hook must be dropped: %+v", c.Change)
+		t.Errorf("a script change without a script must be dropped: %+v", c.Change)
 	}
-	if c := byLabel["Hooked"]; c.Index != 4 || c.Change == nil || c.Change.Apply != "hook" {
+	if c := byLabel["Hooked"]; c.Index != 4 || c.Change == nil || c.Change.Apply != "script" {
 		t.Errorf("Hooked = %+v", c)
 	}
 }
@@ -219,7 +220,7 @@ func TestChangeCredentialHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := strings.Join(f.hookEnv, "\n")
-	for _, want := range []string{"SMB_PASSWORD=new-password-2", "OLD_SMB_PASSWORD=old-password-1", "COMPOSE_PROJECT_NAME=samba"} {
+	for _, want := range []string{"SMB_PASSWORD=new-password-2", "OLD_SMB_PASSWORD=old-password-1"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("hook env lacks %q: %v", want, f.hookEnv)
 		}
@@ -279,15 +280,17 @@ func TestGenerateCredentialMeetsPolicy(t *testing.T) {
 	}
 }
 
-// The real hook runner sees the extra variables over the app's .env.
-func TestRunHookWithOverridesEnv(t *testing.T) {
+// The real script runner sees the extra variables over the app's .env.
+func TestRunScriptExtraOverridesEnv(t *testing.T) {
 	cfg := config.Config{DataRoot: t.TempDir()}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("X=old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := stackup.RunHookWith(context.Background(), cfg, "app", dir, `test "$X" = new && test "$OLD_X" = old`, []string{"X=new", "OLD_X=old"})
+	_, err := stackup.RunScript(context.Background(), cfg, "app", dir,
+		xcomposeapp.Script{Script: `test "$X" = new && test "$OLD_X" = old`},
+		stackup.ScriptOpts{Extra: []string{"X=new", "OLD_X=old"}})
 	if err != nil {
-		t.Fatalf("hook did not see the overridden value: %v", err)
+		t.Fatalf("script did not see the overridden value: %v", err)
 	}
 }

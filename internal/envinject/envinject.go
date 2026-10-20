@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -220,9 +221,8 @@ func ContainerPath(src string, cfg config.Config) string {
 }
 
 // HostPath maps a path inside this container's data mount to the same location as
-// the Docker host sees it — the inverse of ContainerPath. Use it on real paths
-// (an app's directory, a bind source); use RewriteToHostPath on script text, which
-// carries the /DATA and ${DATA_ROOT} spellings instead of a resolved path.
+// the Docker host sees it — the inverse of ContainerPath. Inside this container the
+// result is valid too: EnsureHostPathAlias links it to the data mount.
 func HostPath(p string, cfg config.Config) string {
 	if cfg.DataRoot == "" || cfg.DataHostPath == "" || cfg.DataRoot == cfg.DataHostPath {
 		return p
@@ -233,20 +233,33 @@ func HostPath(p string, cfg config.Config) string {
 	return p
 }
 
-// RewriteToHostPath replaces literal /DATA and ${DATA_ROOT} references with the
-// host data path. Used on x-casaos install hooks, whose commands run against the
-// host daemon (via DOCKER_HOST) and must therefore use host paths.
-func RewriteToHostPath(s string, cfg config.Config) string {
-	if cfg.DataHostPath == "" || cfg.DataHostPath == "/DATA" {
-		return s
+// EnsureHostPathAlias makes the host's spelling of the data folder valid inside
+// this container. App scripts name paths the way the host does ($APP_DIR,
+// $DATA_ROOT), because their `docker run -v` is resolved by the host daemon; the
+// same path must then work for their own shell (`[ -e "$APP_DIR/db" ]`). When the
+// deployment mounts the data folder at the host's own path there is nothing to
+// do. When it mounts it elsewhere (Unraid: /mnt/user/appdata/maison → /DATA;
+// Docker Desktop), the host path is created here as a symlink to the mount.
+//
+// A host path that already exists and is not the mount is left alone and
+// reported: replacing someone's directory is not this function's call.
+func EnsureHostPathAlias(cfg config.Config) error {
+	host, data := filepath.Clean(cfg.DataHostPath), filepath.Clean(cfg.DataRoot)
+	if cfg.DataHostPath == "" || cfg.DataRoot == "" || host == data {
+		return nil
 	}
-	// One pass, not three ReplaceAll calls: a host path normally *ends* in /DATA
-	// (e.g. /opt/maison/DATA), so expanding ${DATA_ROOT} first and then rewriting
-	// /DATA would rewrite the path we just wrote — /opt/maison/opt/maison/DATA.
-	// A Replacer scans left to right and never re-scans what it emitted.
-	return strings.NewReplacer(
-		"${DATA_ROOT}", cfg.DataHostPath,
-		"$DATA_ROOT", cfg.DataHostPath,
-		"/DATA", cfg.DataHostPath,
-	).Replace(s)
+	if fi, err := os.Lstat(host); err == nil {
+		if target, err := filepath.EvalSymlinks(host); err == nil {
+			if real, err := filepath.EvalSymlinks(data); err == nil && target == real {
+				return nil
+			}
+		}
+		return fmt.Errorf("%s exists in this container (%s) and is not the data mount %s: app scripts may not see their files", host, fi.Mode().Type(), data)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(host), 0o755); err != nil {
+		return err
+	}
+	return os.Symlink(data, host)
 }

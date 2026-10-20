@@ -16,6 +16,7 @@ import (
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/appenv"
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/server"
 	"github.com/yundera/maison/internal/ui"
 )
@@ -32,6 +33,14 @@ func main() {
 	log.SetPrefix(brand.Slug + ": ")
 
 	cfg := config.FromEnv()
+
+	// App scripts spell paths the way the host does; make that spelling resolve
+	// here too when the data folder is mounted somewhere else (Unraid, Docker
+	// Desktop). Not fatal: only scripts that touch their files from the shell
+	// would miss them.
+	if err := envinject.EnsureHostPathAlias(cfg); err != nil {
+		log.Printf("data path alias: %v", err)
+	}
 
 	// Half a feedback sink is a deployment mistake, not a choice: say so, rather than
 	// let the feature quietly not appear.

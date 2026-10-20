@@ -2,52 +2,37 @@ package stackup
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
-// failingRunner fails the run whose image is failOn, and records every spec.
-type failingRunner struct {
-	specs  []dockerx.RunSpec
-	failOn string
-}
-
-func (f *failingRunner) RunOnce(_ context.Context, spec dockerx.RunSpec) (string, error) {
-	f.specs = append(f.specs, spec)
-	if spec.Image == f.failOn {
-		return "", errors.New("exited 1: cannot convert")
-	}
-	return "", nil
-}
-
-func withFailingRunner(t *testing.T, f *failingRunner) {
-	t.Helper()
-	prev := newRunner
-	newRunner = func() (Runner, error) { return f, nil }
-	t.Cleanup(func() { newRunner = prev })
+func scriptStep(id int, body string) xcomposeapp.Migration {
+	return xcomposeapp.Migration{ID: id, Script: xcomposeapp.Script{Script: body}}
 }
 
 func threeSteps() MigratePlan {
 	return MigratePlan{From: 1, To: 4, Steps: []xcomposeapp.Migration{
-		{ID: 2, Name: xcomposeapp.Localized{"en_us": "pg-14-to-16"}, Image: "pgautoupgrade:16",
-			Volumes: []string{"/DATA/AppData/${AppID}/db:/var/lib/postgresql/data"}},
-		{ID: 3, Image: "convert:3"},
-		{ID: 4, Image: "convert:4"},
+		{ID: 2, Name: xcomposeapp.Localized{"en_us": "pg-14-to-16"}, Script: xcomposeapp.Script{Script: `echo "$MIGRATION_ID" >> ran`}},
+		scriptStep(3, `echo "$MIGRATION_ID" >> ran`),
+		scriptStep(4, `echo "$MIGRATION_ID" >> ran`),
 	}}
 }
 
+func ranSteps(t *testing.T, dir string) string {
+	t.Helper()
+	b, _ := os.ReadFile(filepath.Join(dir, "ran"))
+	return strings.Join(strings.Fields(string(b)), ",")
+}
+
 func TestRunMigrationsInOrderWithAMarkerPerStep(t *testing.T) {
-	f := &failingRunner{}
-	withFailingRunner(t, f)
-	cfg, dir := dataRootApp(t, "odoo", "")
+	fixtureHookBin(t)
+	cfg, dir := hookTestApp(t)
 	var seen []string
-	err := RunMigrations(context.Background(), cfg, "odoo", dir, threeSteps(), map[string]string{},
+	err := RunMigrations(context.Background(), cfg, "app", dir, threeSteps(), map[string]string{},
 		func(i, n int, m xcomposeapp.Migration) { seen = append(seen, m.Label()) })
 	if err != nil {
 		t.Fatal(err)
@@ -55,12 +40,8 @@ func TestRunMigrationsInOrderWithAMarkerPerStep(t *testing.T) {
 	if got := strings.Join(seen, ","); got != "pg-14-to-16,step 3,step 4" {
 		t.Errorf("progress = %s", got)
 	}
-	if len(f.specs) != 3 || f.specs[0].Image != "pgautoupgrade:16" || f.specs[2].Image != "convert:4" {
-		t.Fatalf("ran %+v", f.specs)
-	}
-	// The daemon resolves a bind source, so it is spelled as the host spells it.
-	if b := f.specs[0].Binds; len(b) != 1 || b[0] != "/host/DATA/AppData/odoo/db:/var/lib/postgresql/data" {
-		t.Errorf("binds = %v", b)
+	if got := ranSteps(t, dir); got != "2,3,4" {
+		t.Fatalf("ran %s", got)
 	}
 	if v, _, _ := ReadDataVersion(dir); v != 4 {
 		t.Errorf("marker = %d, want 4", v)
@@ -70,15 +51,16 @@ func TestRunMigrationsInOrderWithAMarkerPerStep(t *testing.T) {
 // A failure stops the run with the marker at the last step that succeeded — the
 // rollback point puts it back, but the log and the folder say how far it got.
 func TestRunMigrationsStopsAtTheFailingStep(t *testing.T) {
-	f := &failingRunner{failOn: "convert:3"}
-	withFailingRunner(t, f)
-	cfg, dir := dataRootApp(t, "odoo", "")
-	err := RunMigrations(context.Background(), cfg, "odoo", dir, threeSteps(), map[string]string{}, nil)
+	fixtureHookBin(t)
+	cfg, dir := hookTestApp(t)
+	plan := threeSteps()
+	plan.Steps[1] = scriptStep(3, `echo "$MIGRATION_ID" >> ran; exit 1`)
+	err := RunMigrations(context.Background(), cfg, "app", dir, plan, map[string]string{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "data migration 3") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(f.specs) != 2 {
-		t.Errorf("ran %d steps, want the run to stop at the failing one", len(f.specs))
+	if got := ranSteps(t, dir); got != "2,3" {
+		t.Errorf("ran %s, want the run to stop at the failing step", got)
 	}
 	if v, _, _ := ReadDataVersion(dir); v != 2 {
 		t.Errorf("marker = %d, want 2", v)
@@ -96,25 +78,29 @@ func TestRunMigrationsRefusesABlockedStep(t *testing.T) {
 	}
 }
 
-// A script step runs from .migrate/ in the hook environment, and is told where the
-// data is going.
-func TestRunMigrationsScriptStep(t *testing.T) {
+// A file step runs from .scripts/, in the shared script environment, and is told
+// where the data is going. What it writes to $MAISON_OUTPUT reaches the converge.
+func TestRunMigrationsFileStep(t *testing.T) {
 	fixtureHookBin(t)
 	cfg, dir := hookTestApp(t)
-	os.MkdirAll(filepath.Join(dir, MigrateDir, "migrations"), 0o755)
-	os.WriteFile(filepath.Join(dir, MigrateDir, "migrations", "0002.sh"),
-		[]byte(`echo "$MIGRATION_ID $DATA_VERSION_FROM $DATA_VERSION_TO /DATA" > seen`), 0o644)
-	plan := MigratePlan{From: 1, To: 2, Steps: []xcomposeapp.Migration{{ID: 2, Script: "migrations/0002.sh"}}}
-	if err := RunMigrations(context.Background(), cfg, "app", dir, plan, nil, nil); err != nil {
+	os.MkdirAll(filepath.Join(dir, ScriptsStateDir), 0o755)
+	os.WriteFile(filepath.Join(dir, ScriptsStateDir, "0002.sh"),
+		[]byte(`echo "$MIGRATION_ID $DATA_VERSION_FROM $DATA_VERSION_TO $APP_DIR" > seen
+echo "CONVERTED=yes" >> "$MAISON_OUTPUT"`), 0o644)
+	plan := MigratePlan{From: 1, To: 2, Steps: []xcomposeapp.Migration{{ID: 2, Script: xcomposeapp.Script{File: "scripts/0002.sh"}}}}
+	captures := map[string]string{}
+	if err := RunMigrations(context.Background(), cfg, "app", dir, plan, captures, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "seen"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// /DATA is rewritten to the host path, as in any hook.
-	if got := strings.TrimSpace(string(b)); got != "2 1 2 /hostroot" {
+	if got := strings.TrimSpace(string(b)); got != "2 1 2 /hostroot/AppData/app" {
 		t.Errorf("script saw %q", got)
+	}
+	if captures["CONVERTED"] != "yes" {
+		t.Errorf("captures = %v, want the step's output", captures)
 	}
 	if v, _, _ := ReadDataVersion(dir); v != 2 {
 		t.Errorf("marker = %d", v)
@@ -124,10 +110,8 @@ func TestRunMigrationsScriptStep(t *testing.T) {
 func TestRunMigrationsScriptFailureFailsTheStep(t *testing.T) {
 	fixtureHookBin(t)
 	cfg, dir := hookTestApp(t)
-	os.MkdirAll(filepath.Join(dir, MigrateDir, "migrations"), 0o755)
-	os.WriteFile(filepath.Join(dir, MigrateDir, "migrations", "x.sh"), []byte("exit 3"), 0o644)
-	plan := MigratePlan{From: 1, To: 2, Steps: []xcomposeapp.Migration{{ID: 2, Script: "migrations/x.sh", Timeout: "5s"}}}
-	if err := RunMigrations(context.Background(), cfg, "app", dir, plan, nil, nil); err == nil {
+	plan := MigratePlan{From: 1, To: 2, Steps: []xcomposeapp.Migration{{ID: 2, Script: xcomposeapp.Script{Script: "exit 3", Timeout: "5s"}}}}
+	if err := RunMigrations(context.Background(), cfg, "app", dir, plan, map[string]string{}, nil); err == nil {
 		t.Fatal("a script exiting 3 was recorded as applied")
 	}
 	if _, ok, _ := ReadDataVersion(dir); ok {

@@ -12,7 +12,7 @@ import (
 // a map without en_us leaves some reader with nothing to show.
 //
 // A refused field is DROPPED, never fatal. Parse's error is discarded by every
-// caller and costs the app its whole block — folders, secrets, hooks and all — so
+// caller and costs the app its whole block — folders, secrets, steps and all — so
 // a title typo must cost the title and nothing else. The refusal is recorded on
 // App.Problems for the catalog log and `maison lint`.
 

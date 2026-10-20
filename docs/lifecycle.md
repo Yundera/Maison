@@ -8,8 +8,8 @@ Its two companions:
 
 - [`app-model.md`](./app-model.md) — where an app **lives** on disk and how its tile
   state is derived. Read that first; this document is what happens *to* that layout.
-- [`x-compose-app.md`](./x-compose-app.md) — the **declaration** of `folders` and
-  `hooks`. This document is what Maison does with them.
+- [`x-compose-app.md`](./x-compose-app.md) — the **declaration** of `folders`,
+  `steps` and the other sections. This document is what Maison does with them.
 
 [`backup.md`](./backup.md) is the **design** for offsite backup and disaster recovery
 — not yet implemented. It builds on the stop and restart sequences below rather than
@@ -34,10 +34,9 @@ change. Five call sites, one guarantee.
   store update ────────┤                                         │
   save config  ────────┤   converge:                             │
   save web-UI  ────────┤     folders → secrets → variables       │
-                       │       → init(pre_up) → seed → files     │
-                       │     → pre_up                            │
-                       │       → compose up -d --remove-orphans  │
-                       │         → init(post_up) → post_up       │
+                       │       → setup steps → seed → files      │
+                       │     → compose up -d --remove-orphans    │
+                       │       → started steps                   │
                        └─────────────────────────────────────────┘
 ```
 
@@ -54,40 +53,39 @@ recreates a removed one, and re-applies a changed compose, all with the same cal
 
 | Step | What happens | On failure |
 |---|---|---|
-| **1. Resolve the spec** | Read `x-compose-app` (`folders`, `secrets`, `variables`, `files`, `init`, `hooks`) from base + override. Later files win, key by key. A base with no `x-compose-app` is a CasaOS app, whose `pre-install-cmd` / `post-install-cmd` become its install hooks; beside an `x-compose-app` block they never run. | — |
+| **1. Resolve the spec** | Read `x-compose-app` (`folders`, `secrets`, `variables`, `files`, `steps`) from base + override. Later files win, key by key. A base with no `x-compose-app` is a CasaOS app, whose `pre-install-cmd` / `post-install-cmd` become a `setup` and a `started` step (`run: once`); beside an `x-compose-app` block they never run. | — |
 | **2. Ensure folders** | Create every folder declared under `folders`; apply user/group/mode; walk the tree when `recursive`. Declared folders are the *only* directories Maison creates — it never infers them from `volumes:`. | **Fatal** — a declared folder is the author's contract. |
 | **3. Secrets** | Generate each `secrets` value the app's `.env` does not already carry, and write it there. A key already holding a value is **reused, never regenerated**. | **Fatal.** |
 | **4. Variables** | Render each `variables` template and refresh it in `.env`, so a derived value follows the deployment instead of freezing. | **Fatal.** |
-| **5. `init` (pre_up)** | Run each one-shot container whose `when:` guard says it is due; bind `capture:` output for the renderers below. | **Fatal** — a stack must not start on a store that was never seeded. |
+| **5. Setup steps** | Run each `at: setup` step that is due (`run: always`, or `once` without its `.init/` marker), in order. What one writes to `$MAISON_OUTPUT` is handed to the later steps and the renderers below; what it writes to `$MAISON_ENV` is added to `.env` where the key is missing. | **Fatal** — a stack must not start on a precondition that does not hold. |
 | **6. Seed** | Mirror the app's `.seed` tree into its folder: `.tmpl` rendered, everything else copied, **create-if-absent**. Paths a `files` entry claims are left to it. | **Fatal** — including an unresolved `${VAR}` in a template. |
 | **7. Files** | Write each `files` entry: `ensure: once` skips an existing file, `ensure: always` re-renders it. | **Fatal.** |
-| **8. `pre_up`** | Run the hook. | **Fatal** — a precondition that doesn't hold must not start the stack. |
-| **9. `docker compose up -d --remove-orphans`** | Base + override, with the app's `.env` and interpolation variables. `--remove-orphans` removes the containers of services the file no longer declares — a store update that renames a service would otherwise leave the old container holding its `container_name`, and the new service comes up as `<id>_<name>`. | **Fatal.** |
-| **10. `init` (post_up)** | Run each `phase: post_up` step — a seeder that needs the app's own network or a running service. | **Logged and swallowed.** |
-| **11. `post_up`** | Run the hook. | **Logged and swallowed** — the stack is already running; tearing a healthy app back down over a failed after-the-fact tweak is worse than the failed tweak. |
+| **8. `docker compose up -d --remove-orphans`** | Base + override, with the app's `.env` and interpolation variables. `--remove-orphans` removes the containers of services the file no longer declares — a store update that renames a service would otherwise leave the old container holding its `container_name`, and the new service comes up as `<id>_<name>`. | **Fatal.** |
+| **9. Started steps** | Run each `at: started` step that is due — work that needs the app's own network or a running service. Every one runs even when an earlier one failed. | **Logged and swallowed**, reported as an `app.hook:<app>` incident — the stack is already running; tearing a healthy app back down over a failed after-the-fact tweak is worse than the failed tweak. A failed step leaves no `once` marker, so the next up retries it. |
 
 Steps 2–7 are the **converge**: everything the app declared, brought into being
-before anything runs. Every one of them is idempotent, and every one of them is
-fatal, because the failure they replace was not — a shell hook whose `openssl`
-was missing wrote an empty secret and exited 0.
+before the stack runs. Every one of them is fatal, because the failure they replace
+was not — a shell hook whose `openssl` was missing wrote an empty secret and exited 0.
 
-The asymmetry in 8 vs 11 is deliberate and worth internalising: **pre-hooks gate,
-post-hooks garnish.** Anything flaky in a `pre_up` blocks the app on *every* start.
+The asymmetry in 5 vs 9 is deliberate and worth internalising: **setup steps gate,
+started steps garnish.** Anything flaky in a setup step blocks the app on *every*
+start.
 
-A hook is also failed when it calls a command outside the set Maison makes
-available to hooks — even if the script itself exited 0, which is the usual case
-when the command sat inside a `"$(...)"`. That verdict feeds the same table above,
-so it gates a `pre_*` and is only logged for a `post_*`. See
-[`x-compose-app.md`](./x-compose-app.md) § *The command set* for the list and for
-the sanctioned way to reach the host.
+A script is also failed when it calls a command outside the set Maison makes
+available to scripts — even if it exited 0, which is the usual case when the
+command sat inside a `"$(...)"`. That verdict feeds the same table above, so it
+gates a setup step and is only logged for a started one. See
+[`x-compose-app.md`](./x-compose-app.md) § *The script entry* for the command set
+and for the sanctioned way to reach the host.
 
 ---
 
 ## Install
 
-`Installer.Install` — the only operation that is not just "an up". It runs the
-install-only hooks around the ordinary up sequence, because it is the only caller
-that knows the app is being installed for the *first* time.
+`Installer.Install` writes the app folder and pulls its images, then runs the
+ordinary up sequence. Nothing runs *only* on install: the first-run work an app
+needs is a `run: once` step, which the up sequence runs on this up and skips on
+every later one.
 
 ```
  1. fetch the app's compose from the store
@@ -96,28 +94,29 @@ that knows the app is being installed for the *first* time.
                                 install/update, never otherwise)
  4. write .env                 (prefilled, and NEVER clobbered if one already exists)
  5. write the update reference into the override's x-compose-app
- 6. copy the store's seed/ tree to .seed   (the app folder stands on its own after)
- 7. ensure folders             ← early, because pre_install seeds files into them
- 8. pull images                (Download progress bar, 0 → 100)
- 9. pre_install hook           ← fatal on failure
-10. ┌ stackup.Up ─────────────────────────────────────┐
+ 6. copy the store's seed/ tree to .seed, and scripts/ to .scripts
+                               (the app folder stands on its own after)
+ 7. ensure folders             ← early, before the image pull
+ 8. pull images                (Download progress bar, 0 → 100) — the services'
+                               and every image the steps declare under `images`
+ 9. ┌ stackup.Up ─────────────────────────────────────┐
     │ converge (again, idempotent):                   │   (Start progress bar)
-    │   folders → secrets → variables → init          │
+    │   folders → secrets → variables → setup steps   │
     │   → seed → files                                │
-    │ pre_up → compose up -d → init(post_up) → post_up│
+    │ compose up -d → started steps                   │
     └─────────────────────────────────────────────────┘
-11. post_install hook          ← logged, not fatal
-12. await readiness            (poll Docker until running + healthy, ~30s)
+10. await readiness            (poll Docker until running + healthy, ~30s)
 ```
 
-Folders are ensured **twice** — at step 7 and again inside step 10. That is not
-redundancy to clean up: step 7 is what makes them exist before the `pre_install`
-hook and the image pull, and step 10 is what makes them exist for every *later*
-start, when there is no installer in the picture at all.
+Folders are ensured **twice** — at step 7 and again inside step 9. That is not
+redundancy to clean up: step 7 is what makes them exist before the image pull, and
+step 9 is what makes them exist for every *later* start, when there is no
+installer in the picture at all.
 
 Step 6 copies, it does not write: the store's `seed/` becomes the app's own
-`.seed/`, and the files themselves are written by the converge in step 10 — so
-the same code path seeds a fresh install and re-seeds every later start.
+`.seed/`, and the files themselves are written by the converge in step 9 — so
+the same code path seeds a fresh install and re-seeds every later start. The
+store's `scripts/` becomes `.scripts/`, which a script entry's `file:` names.
 
 Steps 4–5 are the non-destructive contract that makes "install from backup" work
 without special-casing: the strict base is meant to be replaceable, an existing
@@ -141,15 +140,15 @@ dismissed.
 
 | Operation | Managed app (Maison wrote its folder) | Unmanaged app (a stack Maison merely discovered) |
 |---|---|---|
-| **Start** | `stackup.Up` — so a fully-down stack whose containers were removed is *recreated*, folders and hooks included. | `docker start` on the existing containers. There are no compose files, so there is nothing to declare. |
-| **Stop** | `docker stop` on the project's containers. No hooks. The folder stays. | Same. |
-| **Restart** | `docker restart`. **No hooks, no folders, no compose** — it is a container-level bounce, not an up. | Same. |
+| **Start** | `stackup.Up` — so a fully-down stack whose containers were removed is *recreated*, folders and steps included. | `docker start` on the existing containers. There are no compose files, so there is nothing to declare. |
+| **Stop** | `docker stop` on the project's containers. No steps. The folder stays. | Same. |
+| **Restart** | `docker restart`. **No steps, no folders, no compose** — it is a container-level bounce, not an up. | Same. |
 
 An app that declares `lifecycle.stoppable: false` is refused **Stop** (`403`; the menu
 withholds it) — see [`x-compose-app.md`](./x-compose-app.md#lifecycle-what-the-operator-may-do-to-the-app). Start and Restart stay available.
 
 Restart deliberately does *not* run the up sequence. If you want folders and
-`pre_up` re-applied, that is a **Start** (or a config save), not a restart.
+its steps re-applied, that is a **Start** (or a config save), not a restart.
 
 While any of these run the tile is **busy**: greyed with a `…` overlay and no burger
 menu (see `app-model.md`).
@@ -176,10 +175,10 @@ install time (`store-ref`) and editable from the Update tab (`Installer.SetUpdat
 5. stop the old version  (not for an app declaring lifecycle.stoppable: false)
                       ← the update's time budget starts here
 6. overwrite docker-compose.yml (the strict base only)
-7. refresh .seed and .migrate from the same store sync as the compose above
+7. refresh .seed and .scripts from the same store sync as the compose above
 8. stackup.UpWith → converge (folders, secrets, variables, migrations — each pending
-                 step once, in order, .data-version after each — init, seed, files)
-                 → pre_up → up → post_up      ← in place, on the data already on disk
+                 step once, in order, .data-version after each — setup steps, seed,
+                 files) → up → started steps  ← in place, on the data already on disk
 9. Up failed? → restore the backup over the app, start it, watch it, and report
 ```
 
@@ -237,7 +236,7 @@ multi-GB file filled a 512 MiB limit with dirty pages and got Maison OOM-killed
 mid-update (watch.nsl.sh, 2026-09-30).
 
 The old version is **stopped before anything of the new one runs** (step 5). The new
-version's `init` steps run in `pre_up`, against the app's data, and the old containers
+version's setup steps run before `compose up`, against the app's data, and the old containers
 still have that data open — taking the backup restarts them on its way out. A
 database that takes an exclusive lock fails every such step: FileBrowser's bolt database
 answers `timeout` after a second, and the update is rolled back for nothing. The images
@@ -286,8 +285,8 @@ the previous version is back and running, **critical** when it is not, when the 
 itself failed, or when there was no backup to undo it. See `incidents.md`.
 
 The override and `.env` are never touched — that is the entire point of keeping the
-base byte-identical to the store. `pre_install` / `post_install` do **not** re-run;
-`pre_up` / `post_up` do, because an update is an up.
+base byte-identical to the store. Steps run as on any up: `always` ones run, `once`
+ones whose marker exists do not — and a `once` step the new version adds runs now.
 
 ### Update all
 
@@ -342,7 +341,7 @@ leave an app whose only repair path is the config window that broke it), then
 `stackup.Up`. `SetWebUI` merges the `webui-*` keys into the override and does the
 same.
 
-So **saving a config re-runs the up sequence**, hooks and folders included. An
+So **saving a config re-runs the up sequence**, steps and folders included. An
 override that adds a `folders` entry gets its directory created on save, not on the
 next restart.
 
@@ -354,8 +353,8 @@ writes the override and stops there. No Docker call at all.
 ## Uninstall
 
 **Back the app up through the default backup engine, then remove it.** Nothing is
-deleted, and no hooks run — Maison has no `pre_uninstall` / `post_uninstall`, on
-purpose: a hook that fires while the app is being taken away is a hook that can fail
+deleted, and no steps run — there is no uninstall step, on purpose: a script that
+fires while the app is being taken away is a script that can fail
 and leave the operator unable to uninstall. The backup is the safety net instead. See
 `backup.md` §Uninstalling an app for the engine seam, and `app-model.md` for the
 archive format and the restore path.
@@ -531,43 +530,43 @@ Four properties that are not obvious from "run it daily":
 
 ---
 
-## What a hook sees
+## What a script sees
 
-Hooks run through `/bin/bash -c` **inside the Maison container**, with the working
-directory set to the app's folder, but they act on the **host** Docker daemon.
+A script entry — a step, a migration step, a credential change — runs as
+`bash -euo pipefail` **inside the Maison container**, in the app's folder, acting
+on the **host** Docker daemon. The full contract is
+[`x-compose-app.md`](./x-compose-app.md) § *The script entry*.
 
 | Variable | Value |
 |---|---|
 | `AppID` | The compose project name. |
-| `APP_DIR` | The app's directory, as the **host** sees it. |
+| `APP_DIR` | The app's directory, as the **host** spells it — valid in the script's shell too (see below). |
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` — the host daemon. |
+| `COMPOSE_PROJECT_NAME`, `COMPOSE_FILE` | The app's project, for `compose` / `docker compose`. |
+| `MAISON_OUTPUT`, `MAISON_ENV` | The files a script hands values on through. |
 | `DATA_ROOT`, `PUID`, `PGID`, `TZ`, `REF_*`, … | The app's base interpolation variables. |
-| everything in the app's `.env` | So a hook sees the same values its compose does. |
+| everything in the app's `.env` | So a script sees the same values its compose does. |
 
-Because they target the host daemon, `/DATA` and `${DATA_ROOT}` **inside a hook's
-script text** are rewritten to host paths — a `docker run -v` in a hook must name a
-path the host daemon can resolve.
+Nothing in the script text is rewritten. A `docker run -v "$APP_DIR/db:/db"` names
+a path for the host daemon, so `$APP_DIR` is the host's spelling; a
+`[ -e "$APP_DIR/db/x" ]` runs in Maison's own container, where the same spelling
+must resolve. On a deployment that mounts the data folder at the host's own path
+there is nothing to do. On one that does not (Unraid, Docker Desktop), Maison
+creates the host path inside its container at startup as a link to its data mount
+(`envinject.EnsureHostPathAlias`).
 
-That rewrite is also the one trap worth knowing:
-
-> A hook that just wants a directory to exist must **not** `mkdir` it. The path it
-> writes is a *host* path, but the `mkdir` runs *in the Maison container* —
-> creating the wrong directory in the wrong place, and leaving the app with an empty
-> mount. **Declare it under `folders`** instead: those are created through Maison's
-> data mount and are correct on both sides of the socket.
-
-Hooks are for Docker-level work (pulling a sidecar image, priming a volume with
-`docker run`, poking another stack). Directories are what `folders` is for.
+> A script that just wants a directory to exist should **not** `mkdir` it: the
+> directory lands owned by Maison's user. **Declare it under `folders`**.
 
 ### Paths, in code
 
-Two mappings, easy to confuse, both in `internal/envinject`:
+Two mappings, both in `internal/envinject`:
 
 | Function | Use on | Does |
 |---|---|---|
 | `ContainerPath` | a **real path** | host spelling (`/DATA/…`, `${DATA_ROOT}/…`, the literal host path) → this container's data mount. This is how folders get created. |
 | `HostPath` | a **real path** | the inverse: container path → host path. This is how `APP_DIR` is built. |
-| `RewriteToHostPath` | **script text** | rewrites the `/DATA` / `${DATA_ROOT}` *spellings* a hook author wrote. Single-pass — a host path normally ends in `/DATA`, so rewriting twice would yield `/opt/maison/opt/maison/DATA`. |
+| `EnsureHostPathAlias` | startup | makes the host path resolve inside this container when the two differ, so a script needs only one spelling. |
 
 ---
 
@@ -576,8 +575,8 @@ Two mappings, easy to confuse, both in `internal/envinject`:
 | Step | Fails the operation? | Why |
 |---|---|---|
 | Declared `folders` entry (bad path, unknown user, unquoted mode) | **Yes** | It is the author's explicit contract, and starting without it gives the app an unwritable mount — a confusing "permission denied" instead of a clear error. |
-| `pre_install`, `pre_up` | **Yes** | Preconditions. |
-| `post_install`, `post_up` | No (logged) | The stack is already up. |
+| A setup step | **Yes** | A precondition. |
+| A started step | No (logged, retried on the next up) | The stack is already up. |
 | `docker compose up` | **Yes** | Obviously. |
 | Ownership / mode (`chown`, `chmod`) on a folder | No (logged) | Not every filesystem supports it, and that should not block an otherwise healthy start. |
 | Free-space check before a backup | **Yes**, before anything is copied | Filling the data disk breaks every app on the box, not just this one. Skipped entirely for an engine that streams to a repository — it needs no room. |

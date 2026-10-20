@@ -25,13 +25,15 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -o /maison ./cmd/maison
 
 # 3) Minimal runtime: the binary + the docker compose plugin (installs shell out
-#    to `docker compose`) + bash (for x-casaos pre/post-install hooks).
+#    to `docker compose`) + bash (for app scripts: steps, migrations, credential
+#    changes).
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose bash tzdata
 
-# HOOK ABI — the complete set of commands available to app lifecycle hooks
-# (x-casaos pre/post-install-cmd, x-compose-app hooks). PATH is pointed here by
-# internal/stackup/hookshell.go, and anything outside it fails the hook with a
+# SCRIPT ABI — the complete set of commands available to app scripts (every
+# x-compose-app script entry: steps, migrations, credential changes; and the
+# translated x-casaos pre/post-install-cmd). PATH is pointed here by
+# internal/stackup/hookshell.go, and anything outside it fails the script with a
 # message naming the sanctioned alternative.
 #
 # THIS LIST IS A PUBLIC CONTRACT. App authors in three Yundera stores and any
@@ -61,11 +63,13 @@ RUN mkdir -p /opt/maison/hookbin && \
     ln -s /usr/bin/docker /opt/maison/hookbin/docker && \
     ln -s /bin/bash /opt/maison/hookbin/bash && \
     ln -s /bin/sh /opt/maison/hookbin/sh
+# `compose`: docker compose bound to the app's own project (see the file).
+COPY --chmod=0755 docker/compose /opt/maison/hookbin/compose
 
 COPY --from=backend /maison /maison
 # `maison` on PATH, for the deployment's CLI: `docker exec -i maison-app maison
 # settings set …` (cmd/maison/cli.go). Not in /opt/maison/hookbin — that allowlist
-# is what an app's hook may run, and a hook must never manage the dashboard.
+# is what an app's script may run, and a script must never manage the dashboard.
 RUN ln -s /maison /usr/local/bin/maison
 EXPOSE 8080
 ENTRYPOINT ["/maison"]

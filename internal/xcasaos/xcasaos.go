@@ -170,18 +170,28 @@ func (s *StoreInfo) ComposeApp() map[string]any {
 	}
 	set("webui-path", s.Index)
 
-	hooks := map[string]any{}
+	// The CasaOS install commands become `once` steps: pre-install before the
+	// first start, post-install after it. composefile.Resolve marks them lenient,
+	// since they were written for a plain `bash -c`.
+	var steps []any
 	if c := strings.TrimSpace(s.PreInstallCmd); c != "" {
-		hooks["pre_install"] = s.PreInstallCmd
+		steps = append(steps, map[string]any{"name": CasaOSPreInstallStep, "at": "setup", "run": "once", "script": s.PreInstallCmd})
 	}
 	if c := strings.TrimSpace(s.PostInstallCmd); c != "" {
-		hooks["post_install"] = s.PostInstallCmd
+		steps = append(steps, map[string]any{"name": CasaOSPostInstallStep, "at": "started", "run": "once", "script": s.PostInstallCmd})
 	}
-	if len(hooks) > 0 {
-		m["hooks"] = hooks
+	if len(steps) > 0 {
+		m["steps"] = steps
 	}
 	return m
 }
+
+// The names the translated CasaOS install commands run under — and so the names
+// of their `once` markers.
+const (
+	CasaOSPreInstallStep  = "casaos-pre-install"
+	CasaOSPostInstallStep = "casaos-post-install"
+)
 
 // tips merges the localized before_install guidance and the free-form custom note
 // into the locale map x-compose-app `tips` is: one entry per before_install locale,

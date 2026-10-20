@@ -25,8 +25,8 @@ const composeV3 = `services: {app: {image: a:1}}
 x-compose-app:
   data_version: 3
   migrations:
-    - {id: 2, image: m:2}
-    - {id: 3, image: m:3}
+    - {id: 2, script: "true"}
+    - {id: 3, script: "true"}
 `
 
 func TestDataVersionMarkerRoundTrips(t *testing.T) {

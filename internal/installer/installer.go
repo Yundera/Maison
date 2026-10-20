@@ -25,6 +25,7 @@ import (
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/stackup"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // Event is a progress update emitted during installation. Progress is split into
@@ -453,6 +454,11 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	if err := writeSeed(app, appDir); err != nil {
 		return err
 	}
+	// The store's script files, from the same sync, for the script entries that
+	// name one (`file: scripts/x.sh`) — steps, migrations, credential changes.
+	if err := writeScripts(app, appDir); err != nil {
+		return err
+	}
 
 	// The store's icon, copied in beside the compose for the same reason the seed
 	// tree is: the installed app carries what it needs to render itself, without
@@ -486,48 +492,22 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 		files = append(files, override)
 	}
 
-	// Create the app's folders before anything else touches them — the pre_install
-	// hook below routinely seeds config files into them. stackup.Up ensures them
-	// again at up time (idempotent), so an app started later still gets them.
+	// Create the app's folders before anything else touches them. stackup.Up
+	// ensures them again at up time (idempotent), so an app started later still
+	// gets them.
 	spec := stackup.Load(files)
 	if err := stackup.Prepare(in.cfg, project, appDir, spec); err != nil {
 		return err
 	}
 
-	// Track 1 — Download: pull images with real progress (0 → 100%).
-	in.pullImages(ctx, f, emit)
-
-	// The install hooks run exactly once, here; the up hooks run inside stackup.Up
-	// on this and every later start.
-	if h := spec.Hooks.PreInstall; h != "" {
-		emit(Event{Phase: "prepare", Message: "Running pre-install", Download: 100})
-		if err := stackup.RunHook(ctx, in.cfg, project, appDir, h); err != nil {
-			return fmt.Errorf("pre_install hook: %w", err)
-		}
-	}
+	// Track 1 — Download: pull images with real progress (0 → 100%) — the
+	// services' and those the app's steps declare they run.
+	in.pullList(ctx, append(composeImages(f), stepImages(spec.Steps)...), emit)
 
 	// Track 2 — Start: bring the stack up, then follow Docker until it is running.
 	emit(Event{Phase: "start", Message: "Starting containers", Download: 100, Start: 15})
 	if err := stackup.UpWithPrior(ctx, in.cfg, project, appDir, files, prior); err != nil {
 		return err
-	}
-	if h := spec.Hooks.PostInstall; h != "" {
-		if err := stackup.RunHook(ctx, in.cfg, project, appDir, h); err != nil {
-			log.Printf("%s: post_install hook: %v", project, err)
-			// Swallowed on purpose — the app is up, and taking a running stack down
-			// over an after-the-fact step is the worse outcome — but not silent: a
-			// half-configured app looks installed and behaves oddly, and the only
-			// evidence used to be one line in a container log.
-			//
-			// Its own ID, not the install's: the install succeeded, and the success
-			// path below clears that one.
-			in.report(incident.Report{
-				ID: "app.hook:" + project, Kind: incident.KindAppStackup, Severity: incident.Warning,
-				Title:  "A setup step failed for " + project,
-				Detail: "The app is running, but its post-install step did not complete:\n" + err.Error() + "\n\nThe app may be only partly configured. Reinstalling it runs the step again.",
-				Args:   map[string]string{"app": project},
-			})
-		}
 	}
 	// `compose up -d` returns once containers are created/started; follow their
 	// live Docker state (and health checks) so the Start bar reflects real
@@ -553,6 +533,26 @@ func composeImages(f *composefile.File) []string {
 		}
 	}
 	return images
+}
+
+// stepImages lists the images an app's steps declare they run. An image spelled
+// with a ${VAR} is left to the step itself, which pulls it when it runs.
+func stepImages(steps []xcomposeapp.Step) []string {
+	var out []string
+	for _, s := range steps {
+		out = append(out, literalImages(s.Images)...)
+	}
+	return out
+}
+
+func literalImages(images []string) []string {
+	var out []string
+	for _, img := range images {
+		if img != "" && !strings.Contains(img, "${") {
+			out = append(out, img)
+		}
+	}
+	return out
 }
 
 // pullList pulls each image in turn, reporting progress across the whole list.

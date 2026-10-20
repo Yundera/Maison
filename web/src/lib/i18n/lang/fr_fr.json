@@ -608,7 +608,7 @@
   "cred_applying": "Application…",
   "cred_changed": "Mot de passe changé. Les clients qui avaient enregistré l’ancien ont besoin du nouveau.",
   "cred_apply_env": "{name} va redémarrer avec le nouveau mot de passe.",
-  "cred_apply_hook": "Le mot de passe est changé dans {name}, qui redémarre ensuite. L’application doit être démarrée.",
+  "cred_apply_script": "Le mot de passe est changé dans {name}, qui redémarre ensuite. L’application doit être démarrée.",
   "cred_not_changeable": "Ce mot de passe ne peut pas être changé ici.",
   "cred_not_changeable_shared": "Cette application utilise encore le mot de passe commun du serveur, qui ne peut pas être changé pour une seule application.",
   "cred_rule_length": "{min} à {max} caractères",

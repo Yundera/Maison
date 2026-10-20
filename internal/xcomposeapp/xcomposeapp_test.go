@@ -3,6 +3,7 @@ package xcomposeapp
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWebURL(t *testing.T) {
@@ -78,20 +79,53 @@ func TestParseFolders(t *testing.T) {
 	}
 }
 
-func TestParseHooks(t *testing.T) {
+func TestParseSteps(t *testing.T) {
 	a, err := Parse(map[string]any{
-		"hooks": map[string]any{
-			"pre_install": "echo installing",
-			"pre_up":      "echo starting",
-			"post_up":     "echo started",
+		"steps": []any{
+			map[string]any{"name": "seed", "at": "setup", "script": "echo seeding"},
+			map[string]any{"name": "tune", "at": "started", "run": "always", "file": "scripts/tune.sh",
+				"images": []any{"alpine:3.20"}, "timeout": "30s"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	want := Hooks{PreInstall: "echo installing", PreUp: "echo starting", PostUp: "echo started"}
-	if a.Hooks != want {
-		t.Fatalf("hooks = %+v, want %+v", a.Hooks, want)
+	if len(a.Steps) != 2 {
+		t.Fatalf("steps = %+v", a.Steps)
+	}
+	seed, tune := a.Steps[0], a.Steps[1]
+	if seed.Name != "seed" || seed.At != AtSetup || seed.RunMode() != RunOnce || seed.Script.Script != "echo seeding" {
+		t.Fatalf("seed = %+v", seed)
+	}
+	if tune.RunMode() != RunAlways || tune.File != "scripts/tune.sh" || len(tune.Images) != 1 || tune.TimeoutOr(0) != 30*time.Second {
+		t.Fatalf("tune = %+v", tune)
+	}
+	if errs := ValidateSteps(a.Steps); len(errs) != 0 {
+		t.Fatalf("valid steps refused: %v", errs)
+	}
+	if seed.Lenient {
+		t.Fatal("Lenient must never come from YAML")
+	}
+}
+
+func TestValidateStepsRefusesAuthoringErrors(t *testing.T) {
+	ok := Script{Script: "true"}
+	cases := map[string][]Step{
+		"no name":           {{At: AtSetup, Script: ok}},
+		"no at":             {{Name: "a", Script: ok}},
+		"unknown at":        {{Name: "a", At: "pre_up", Script: ok}},
+		"unknown run":       {{Name: "a", At: AtSetup, Run: "twice", Script: ok}},
+		"nothing to run":    {{Name: "a", At: AtSetup}},
+		"script and file":   {{Name: "a", At: AtSetup, Script: Script{Script: "true", File: "scripts/a.sh"}}},
+		"file outside":      {{Name: "a", At: AtSetup, Script: Script{File: "../a.sh"}}},
+		"file not scripts/": {{Name: "a", At: AtSetup, Script: Script{File: "seed/a.sh"}}},
+		"bad timeout":       {{Name: "a", At: AtSetup, Script: Script{Script: "true", Timeout: "soon"}}},
+		"duplicate name":    {{Name: "a", At: AtSetup, Script: ok}, {Name: "a", At: AtStarted, Script: ok}},
+	}
+	for name, steps := range cases {
+		if errs := ValidateSteps(steps); len(errs) == 0 {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 
@@ -365,5 +399,38 @@ func TestParseCredentials(t *testing.T) {
 	}
 	if c := a.Credentials[2]; c.Username != "" || c.Password != "" || c.Label != nil {
 		t.Fatalf("scalar entry = %+v, want empty", a.Credentials[2])
+	}
+}
+
+// A change is env, or a script entry; anything else — including the retired
+// `apply: hook` — leaves the credential initial-only rather than failing the block.
+func TestParseCredentialChange(t *testing.T) {
+	cred := func(change map[string]any) map[string]any {
+		return map[string]any{"username": "admin", "password": "${P}", "change": change}
+	}
+	a, err := Parse(map[string]any{
+		"credentials": []any{
+			cred(map[string]any{"apply": "env"}),
+			cred(map[string]any{"apply": "script", "script": "compose exec app set-password", "timeout": "1m"}),
+			cred(map[string]any{"apply": "script", "file": "scripts/passwd.sh"}),
+			cred(map[string]any{"apply": "hook", "hook": "echo old form"}),
+			cred(map[string]any{"apply": "script"}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c := a.Credentials
+	if c[0].Change == nil || c[0].Change.Apply != ApplyEnv {
+		t.Errorf("env: %+v", c[0].Change)
+	}
+	if c[1].Change == nil || c[1].Change.Apply != ApplyScript || c[1].Change.Script.Script == "" || c[1].Change.Timeout != "1m" {
+		t.Errorf("inline script: %+v", c[1].Change)
+	}
+	if c[2].Change == nil || c[2].Change.File != "scripts/passwd.sh" {
+		t.Errorf("file script: %+v", c[2].Change)
+	}
+	if c[3].Change != nil || c[4].Change != nil {
+		t.Errorf("unusable changes kept: %+v / %+v", c[3].Change, c[4].Change)
 	}
 }

@@ -119,7 +119,7 @@ API has no authentication of its own and every app on the shared network can rea
 so it must not be able to change who owns a setting or write a secret. The socket is
 neither on the network nor on the `/DATA` mount.
 
-Its boundary is "can run code in this container". App hooks also run in this container,
+Its boundary is "can run code in this container". App scripts also run in this container,
 but they already have the Docker socket, which means root on the host, so the socket
 gives them nothing new.
 

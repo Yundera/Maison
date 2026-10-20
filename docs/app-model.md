@@ -11,7 +11,7 @@ registry file — the filesystem and the Docker daemon **are** the state.
 > `AppData/<app>` layout.
 
 For what Maison *does* to this layout — the install / start / update / save /
-uninstall sequences, and the `folders` and `hooks` that hang off them — see
+uninstall sequences, and the `folders` and `steps` that hang off them — see
 [`lifecycle.md`](./lifecycle.md).
 
 ---
@@ -43,7 +43,8 @@ what the dashboard shows.
 | `.env` | **Prefilled by Maison on create** (PUID/PGID, TZ, `REF_*`, domain, generated secrets, …), then hand-editable. | Maison on create; user thereafter. | Variable substitution for both compose files. |
 | `.seed/` | Copied from the store app's `seed/` folder at install, refreshed on update. | Maison, on install and update. | The app's initial data tree, mirroring this folder. Written out create-if-absent on every up, so a missing file is restored and an edited one is left alone. Nothing ever writes back into it. See [`x-compose-app.md`](./x-compose-app.md). |
 | `.icon.<ext>` | Copied from the store app's folder at install, refreshed on update — the file the compose's `icon:` names beside itself, or a plain `icon.<ext>`; downloaded only when the compose names an absolute URL instead (see [Assets](./x-compose-app.md#assets)). | Maison, on install and update. | The tile's icon, so the dashboard renders an installed app from disk rather than from anyone's server — it keeps its icon offline, and after the store repo moves or disappears. The app list points every managed tile at `/api/apps/<app>/icon`; an app with no copy falls back to the `icon:` value in its compose when that is a URL. Delete the file and it is taken again at the next boot from whatever the app itself still has — a URL to download, or an image file in its own folder — and otherwise at the app's next update, which is the next time the store's copy is at hand. A compose dropped into an app folder by hand beside an `icon.png` gets a tile the same way. |
-| `.init/` | Written by Maison when a `when: once` init step succeeds. | Maison. | One empty file per completed step, so a seeder that must not run twice does not. It lives here rather than in Maison's own state so that it travels with the app's backup — an app restored from an archive does not re-seed a database it already has. |
+| `.scripts/` | Copied from the store app's `scripts/` folder at install, refreshed on update. | Maison, on install and update. | The files a script entry names with `file:` (steps, migrations, credential changes), from the same store sync as the compose. |
+| `.init/` | Written by Maison when a `run: once` step succeeds. | Maison. | One empty file per completed step, so a seeder that must not run twice does not. It lives here rather than in Maison's own state so that it travels with the app's backup — an app restored from an archive does not re-seed a database it already has. |
 | everything else | The app (bind-mount targets, config files, databases, …). | The app at runtime, and Maison's seed/files declarations on first write. | User data. **Never** deleted by Maison (see uninstall). |
 
 The stack is always brought up from this directory as

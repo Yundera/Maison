@@ -29,7 +29,7 @@ log nobody reads:
 
 - an update refused because it could not back the app up first (nothing changed; the incident says how to update without a backup)
 - an update that failed **and** whose rollback failed, leaving the app in neither state
-- a `post_install` or `post_up` hook that failed, leaving an app half-configured
+- a `started` step that failed, leaving an app half-configured
 - a nightly store refresh that has been 404ing for a month
 - a disk at 98%
 
@@ -113,7 +113,7 @@ what nobody is present for.
 | `backup.run` | `backup.failed` | `backup.Scheduler.reportOutcome`, every run |
 | `app.install:<app>` | `app.install` | `installer.StartInstall`, cleared by a later success |
 | `app.uninstall:<app>` | `app.uninstall` | `apps.Registry.StartUninstall`, cleared by a later success |
-| `app.hook:<app>` | `app.stackup` | `stackup.Up` (`.env` sync, `RunInit`, `post_up`) and `installer` (`post_install`) |
+| `app.hook:<app>` | `app.stackup` | `stackup.Up` (`.env` sync, started steps). The id keeps its historical name |
 | `app.update:<app>` | `app.update` | `installer.ApplyUpdate` — warning for "refused: it could not be backed up first" (nothing changed; `reason` is `no_room`, `backup_busy`, `backup_timeout` or `backup_failed`) and for "failed and rolled back" (the old version is running); **critical** for "the rollback failed too", "rolled back but not running" (`installer.Steady`) and "failed with no backup to undo it". Cleared by a later successful update |
 | `store.source` | `store.source` | `appstore.StartDailyRefresh`, after two consecutive failures |
 

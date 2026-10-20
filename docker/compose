@@ -1,0 +1,10 @@
+#!/bin/bash
+# `compose` for app scripts (installed into /opt/maison/hookbin): `docker compose`
+# bound to the app's own project, which Maison sets in COMPOSE_PROJECT_NAME and
+# COMPOSE_FILE. `exec` never asks for a TTY — a script has none — but still
+# passes stdin, so `printf … | compose exec db psql …` works.
+if [ "${1:-}" = exec ]; then
+  shift
+  exec docker compose exec -T "$@"
+fi
+exec docker compose "$@"

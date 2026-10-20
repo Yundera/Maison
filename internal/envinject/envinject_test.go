@@ -1,32 +1,44 @@
 package envinject
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yundera/maison/internal/config"
 )
 
-// A deployment's host path normally ends in /DATA, which is exactly what makes
-// naive sequential replacement double-rewrite an expanded ${DATA_ROOT}.
-func TestRewriteToHostPath(t *testing.T) {
-	cfg := config.Config{DataRoot: "/DATA", DataHostPath: "/opt/maison/DATA"}
-	cases := []struct{ in, want string }{
-		{"mkdir -p ${DATA_ROOT}/AppData/x", "mkdir -p /opt/maison/DATA/AppData/x"},
-		{"mkdir -p $DATA_ROOT/AppData/x", "mkdir -p /opt/maison/DATA/AppData/x"},
-		{"docker run -v /DATA/Media:/media img", "docker run -v /opt/maison/DATA/Media:/media img"},
-		{"echo ${DATA_ROOT} /DATA", "echo /opt/maison/DATA /opt/maison/DATA"},
-		{"echo nothing here", "echo nothing here"},
+// A deployment that mounts the data folder elsewhere gets the host path as a
+// symlink to the mount, so a script's $APP_DIR works in its own shell too.
+func TestEnsureHostPathAlias(t *testing.T) {
+	tmp := t.TempDir()
+	data := filepath.Join(tmp, "DATA")
+	if err := os.MkdirAll(filepath.Join(data, "AppData", "app"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		if got := RewriteToHostPath(c.in, cfg); got != c.want {
-			t.Errorf("RewriteToHostPath(%q) = %q, want %q", c.in, got, c.want)
-		}
+	host := filepath.Join(tmp, "mnt", "user", "appdata", "maison")
+	cfg := config.Config{DataRoot: data, DataHostPath: host}
+	if err := EnsureHostPathAlias(cfg); err != nil {
+		t.Fatal(err)
 	}
-
-	// When the container mount point and the host path agree there is nothing to do.
-	same := config.Config{DataRoot: "/DATA", DataHostPath: "/DATA"}
-	if got := RewriteToHostPath("cp x ${DATA_ROOT}/y", same); got != "cp x ${DATA_ROOT}/y" {
-		t.Errorf("identity deployment: got %q", got)
+	if _, err := os.Stat(filepath.Join(host, "AppData", "app")); err != nil {
+		t.Fatalf("host path does not reach the data mount: %v", err)
+	}
+	// Idempotent: a second start finds its own link.
+	if err := EnsureHostPathAlias(cfg); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	// Same path: nothing to do, nothing created.
+	if err := EnsureHostPathAlias(config.Config{DataRoot: data, DataHostPath: data}); err != nil {
+		t.Fatal(err)
+	}
+	// Someone else's directory at the host path is reported, never replaced.
+	other := filepath.Join(tmp, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureHostPathAlias(config.Config{DataRoot: data, DataHostPath: other}); err == nil {
+		t.Fatal("an unrelated directory at the host path was accepted")
 	}
 }
 

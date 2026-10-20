@@ -123,7 +123,7 @@ func TestLoadMergesSpec(t *testing.T) {
 	override := filepath.Join(dir, "docker-compose.override.yml")
 
 	// The base carries x-casaos install commands beside its x-compose-app block,
-	// which makes them dead: the override re-pins one hook and the folder list.
+	// which makes them dead: the override re-pins the steps and the folder list.
 	if err := os.WriteFile(base, []byte(`
 services:
   app:
@@ -134,8 +134,8 @@ x-casaos:
 x-compose-app:
   folders:
     - /DATA/AppData/app/config
-  hooks:
-    pre_up: base-pre-up
+  steps:
+    - {name: base, at: setup, script: base-step}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -144,25 +144,18 @@ x-compose-app:
   folders:
     - path: /DATA/AppData/app/data
       recursive: true
-  hooks:
-    pre_install: mine-pre-install
-    pre_up: override-pre-up
+  steps:
+    - {name: mine, at: started, run: always, script: override-step}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	spec := Load([]string{base, override})
 
-	if spec.Hooks.PreInstall != "mine-pre-install" {
-		t.Fatalf("pre_install = %q, want the x-compose-app hook", spec.Hooks.PreInstall)
-	}
 	// One block or the other: an x-casaos command beside an x-compose-app block
-	// never runs, even where x-compose-app declares no counterpart.
-	if spec.Hooks.PostInstall != "" {
-		t.Fatalf("post_install = %q, want none", spec.Hooks.PostInstall)
-	}
-	if spec.Hooks.PreUp != "override-pre-up" {
-		t.Fatalf("pre_up = %q, want the override's", spec.Hooks.PreUp)
+	// never runs, and the override replaces the step list wholesale.
+	if len(spec.Steps) != 1 || spec.Steps[0].Name != "mine" || spec.Steps[0].Script.Script != "override-step" {
+		t.Fatalf("steps = %+v, want only the override's", spec.Steps)
 	}
 	// The override replaces the folder list wholesale (Compose extension merge is
 	// key-by-key, not element-wise).
@@ -172,7 +165,8 @@ x-compose-app:
 	}
 }
 
-// A store app with no x-compose-app block at all keeps its CasaOS install hooks.
+// A store app with no x-compose-app block at all keeps its CasaOS install
+// commands, as lenient `once` steps.
 func TestLoadXCasaOSOnly(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "docker-compose.yml")
@@ -186,14 +180,14 @@ x-casaos:
 		t.Fatal(err)
 	}
 	// What Maison itself writes into the override's x-compose-app does not turn
-	// the app into a native one that has lost its hooks.
+	// the app into a native one that has lost its install commands.
 	override := filepath.Join(dir, "docker-compose.override.yml")
 	if err := os.WriteFile(override, []byte("x-compose-app:\n  store-ref: https://store.example/-/Apps/app\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	spec := Load([]string{base, override})
-	if spec.Hooks.PreInstall != "casaos-pre" {
-		t.Fatalf("pre_install = %q, want casaos-pre", spec.Hooks.PreInstall)
+	if len(spec.Steps) != 1 || spec.Steps[0].Script.Script != "casaos-pre" || spec.Steps[0].At != xcomposeapp.AtSetup || !spec.Steps[0].Lenient {
+		t.Fatalf("steps = %+v, want casaos-pre as a lenient setup step", spec.Steps)
 	}
 	if spec.Folders != nil {
 		t.Fatalf("folders = %+v, want none", spec.Folders)
@@ -235,16 +229,15 @@ x-compose-app:
 	}
 }
 
-// A hook sees the app's variables (base + .env), its AppID and APP_DIR, and has
-// its /DATA references rewritten to host paths — it runs in Maison's container
-// but acts on the host daemon.
-func TestRunHookEnvironment(t *testing.T) {
+// A script sees the app's variables (base + .env), its AppID, and APP_DIR /
+// DATA_ROOT as HOST paths — what a `docker run -v` needs, valid in the shell too
+// through the alias Maison creates at startup. Nothing in the text is rewritten.
+// COMPOSE_PROJECT_NAME and COMPOSE_FILE point `compose` at the app's own stack.
+func TestRunScriptEnvironment(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {
 		t.Skip("no /bin/bash")
 	}
 	cfg := testConfig(t)
-	// A host path with no "/DATA" in it: RewriteToHostPath rewrites every /DATA in
-	// the script, which would otherwise mangle this test's own expected values.
 	cfg.DataHostPath = "/hostroot"
 
 	appDir := filepath.Join(cfg.DataRoot, "AppData", "jellyfin")
@@ -255,22 +248,20 @@ func TestRunHookEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The hook asserts its own environment: a non-zero exit surfaces as an error.
-	// ${DATA_ROOT} and APP_DIR are asserted against the HOST path, not the container
-	// one — that rewrite is what makes a `docker run -v` inside a hook resolvable by
-	// the host daemon.
 	script := `
-set -eu
 test "$AppID" = "jellyfin"
 test "$PUID" = "1000"
 test "$SECRET" = "s3cr3t"
 test "$APP_DIR" = "/hostroot/AppData/jellyfin"
 test "${DATA_ROOT}" = "/hostroot"
+test "$COMPOSE_PROJECT_NAME" = "jellyfin"
+test "$COMPOSE_FILE" = "` + filepath.Join(appDir, "docker-compose.yml") + `"
+test "/DATA" = "/DATA"
 `
-	if err := RunHook(t.Context(), cfg, "jellyfin", appDir, script); err != nil {
-		t.Fatalf("RunHook: %v", err)
+	if err := runScript(t, cfg, "jellyfin", appDir, script); err != nil {
+		t.Fatalf("RunScript: %v", err)
 	}
-	if err := RunHook(t.Context(), cfg, "jellyfin", appDir, "exit 3"); err == nil {
-		t.Fatal("a failing hook returned nil")
+	if err := runScript(t, cfg, "jellyfin", appDir, "exit 3"); err == nil {
+		t.Fatal("a failing script returned nil")
 	}
 }

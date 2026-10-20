@@ -40,6 +40,8 @@ var reservedSeedTargets = map[string]bool{
 	"docker-compose.override.yml": true,
 	".env":                        true,
 	SeedDir:                       true,
+	ScriptsStateDir:               true,
+	InitStateDir:                  true,
 }
 
 // EnsureSeed mirrors the app's seed tree into its folder: a path inside

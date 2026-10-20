@@ -27,21 +27,21 @@ func TestParseDataDefaultsToOne(t *testing.T) {
 	}
 }
 
-func TestParseDataReadsTheThreeForms(t *testing.T) {
+func TestParseDataReadsTheForms(t *testing.T) {
 	d, err := parseDataYAML(t, `
 data_version: 4
 migrations:
   - id: 2
     name: {en_us: pg-14-to-16, fr_fr: pg-14-vers-16}
-    image: pgautoupgrade/pgautoupgrade:16-alpine
-    environment: {PGAUTO_ONESHOT: "yes"}
-    volumes: ["/DATA/AppData/${AppID}/db:/var/lib/postgresql/data"]
+    images: [pgautoupgrade/pgautoupgrade:16-alpine]
+    script: |
+      docker run --rm -e PGAUTO_ONESHOT=yes -v "$APP_DIR/db:/var/lib/postgresql/data" pgautoupgrade/pgautoupgrade:16-alpine
   - id: 4
     blocked:
       en_us: |
         Needs OpenUpgrade.
   - id: 3
-    script: migrations/0003-move-config.sh
+    file: scripts/0003-move-config.sh
     images: [nextcloud:28.0.14-apache]
     timeout: 30m
 `)
@@ -62,8 +62,11 @@ migrations:
 	if steps[0].Label() != "pg-14-to-16" || steps[2].Label() != "step 4" {
 		t.Errorf("labels = %q, %q", steps[0].Label(), steps[2].Label())
 	}
-	if len(steps[0].Env) != 1 || steps[0].Env[0] != "PGAUTO_ONESHOT=yes" {
-		t.Errorf("env = %v", steps[0].Env)
+	if !strings.Contains(steps[0].Script.Script, "PGAUTO_ONESHOT") || len(steps[0].Images) != 1 {
+		t.Errorf("script step = %+v", steps[0])
+	}
+	if steps[1].File != "scripts/0003-move-config.sh" || steps[1].Timeout != "30m" {
+		t.Errorf("file step = %+v", steps[1])
 	}
 }
 
@@ -78,18 +81,19 @@ func TestParseDataRejectsAuthoringErrors(t *testing.T) {
 		"id 1":           "data_version: 2\nmigrations: [{id: 1, blocked: {en_us: x}}, {id: 2, blocked: {en_us: y}}]",
 		"twice":          "data_version: 2\nmigrations: [{id: 2, blocked: {en_us: x}}, {id: 2, blocked: {en_us: y}}]",
 		"no form":        "data_version: 2\nmigrations: [{id: 2, name: {en_us: nothing}}]",
-		"two forms":      "data_version: 2\nmigrations: [{id: 2, image: a:1, script: b.sh}]",
-		"script+volumes": "data_version: 2\nmigrations: [{id: 2, script: migrations/b.sh, volumes: [/a:/b]}]",
-		"outside folder": "data_version: 2\nmigrations: [{id: 2, script: b.sh}]",
-		"dotdot escape":  "data_version: 2\nmigrations: [{id: 2, script: migrations/../b.sh}]",
-		"image+images":   "data_version: 2\nmigrations: [{id: 2, image: a:1, images: [b:1]}]",
-		"escaping path":  "data_version: 2\nmigrations: [{id: 2, script: ../../etc/x.sh}]",
-		"absolute path":  "data_version: 2\nmigrations: [{id: 2, script: /bin/x.sh}]",
-		"bad timeout":    "data_version: 2\nmigrations: [{id: 2, image: a:1, timeout: soon}]",
+		"script+file":    "data_version: 2\nmigrations: [{id: 2, script: \"true\", file: scripts/b.sh}]",
+		"retired image":  "data_version: 2\nmigrations: [{id: 2, image: a:1}]",
+		"outside folder": "data_version: 2\nmigrations: [{id: 2, file: b.sh}]",
+		"old folder":     "data_version: 2\nmigrations: [{id: 2, file: migrations/b.sh}]",
+		"dotdot escape":  "data_version: 2\nmigrations: [{id: 2, file: scripts/../b.sh}]",
+		"escaping path":  "data_version: 2\nmigrations: [{id: 2, file: ../../etc/x.sh}]",
+		"absolute path":  "data_version: 2\nmigrations: [{id: 2, file: /bin/x.sh}]",
+		"bad timeout":    "data_version: 2\nmigrations: [{id: 2, script: \"true\", timeout: soon}]",
+		"blocked+script": "data_version: 2\nmigrations: [{id: 2, blocked: {en_us: x}, script: \"true\"}]",
 		"blocked+extra":  "data_version: 2\nmigrations: [{id: 2, blocked: {en_us: x}, timeout: 1h}]",
 		"steps, no ver":  "migrations: [{id: 2, blocked: {en_us: x}}]",
 		"plain blocked":  "data_version: 2\nmigrations: [{id: 2, blocked: by hand}]",
-		"plain name":     "data_version: 2\nmigrations: [{id: 2, name: upgrade, image: a:1}]",
+		"plain name":     "data_version: 2\nmigrations: [{id: 2, name: upgrade, script: \"true\"}]",
 		"blocked no en":  "data_version: 2\nmigrations: [{id: 2, blocked: {fr_fr: à la main}}]",
 	}
 	for name, src := range cases {

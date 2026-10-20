@@ -608,7 +608,7 @@
   "cred_applying": "Applying…",
   "cred_changed": "Password changed. Clients that saved the old one need the new one.",
   "cred_apply_env": "{name} will restart with the new password.",
-  "cred_apply_hook": "The password is changed inside {name}, which then restarts. The app must be running.",
+  "cred_apply_script": "The password is changed inside {name}, which then restarts. The app must be running.",
   "cred_not_changeable": "This password cannot be changed from here.",
   "cred_not_changeable_shared": "This app still uses the server-wide password, which cannot be changed for one app.",
   "cred_rule_length": "{min} to {max} characters",

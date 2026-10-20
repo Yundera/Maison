@@ -17,7 +17,7 @@ Its companions:
 
 - [`lifecycle.md`](./lifecycle.md) — the install and update sequences this plugs into.
 - [`x-compose-app.md`](./x-compose-app.md) — the manifest the two new fields live in,
-  and the hook execution environment a migration script inherits.
+  and the [script entry](./x-compose-app.md#the-script-entry) a migration step is.
 - [`app-model.md`](./app-model.md) — the app folder, where the data-version marker
   lives beside `.init/`.
 
@@ -81,7 +81,7 @@ belongs to the app, not to a box.
 /DATA/AppData/<app>/
 ├── docker-compose.yml        # says where the data is going (data_version)
 ├── .data-version             # says where the data is — one integer
-├── .migrate/                 # .migrate/migrations/ = the store's migrations/, refreshed on update
+├── .scripts/                 # the store's scripts/, refreshed on install and update
 ├── .init/
 └── …
 ```
@@ -111,26 +111,25 @@ the earlier value back regardless.
 
 ## Migration steps
 
-A step is exactly one of three forms.
+A step is a [script entry](./x-compose-app.md#the-script-entry), or a refusal.
 
 ```yaml
 x-compose-app:
   data_version: 4
   migrations:
-    # 1. A container — preferred, like `init`.
+    # 1. Inline — the common case: one tool, in a pinned image.
     - id: 2
       name: { en_us: pg-14-to-16 }
-      image: pgautoupgrade/pgautoupgrade:16-alpine
-      environment:
-        PGAUTO_ONESHOT: "yes"
-      volumes:
-        - /DATA/AppData/${AppID}/db:/var/lib/postgresql/data
+      images: [pgautoupgrade/pgautoupgrade:16-alpine]   # pulled before the stop
+      script: |
+        docker run --rm -e PGAUTO_ONESHOT=yes \
+          -v "$APP_DIR/db:/var/lib/postgresql/data" pgautoupgrade/pgautoupgrade:16-alpine
 
-    # 2. A script — the escape hatch, run like a hook.
+    # 2. A file — for a migration that is genuinely a sequence.
     - id: 3
       name: { en_us: move-config }
-      script: migrations/0003-move-config.sh
-      images: [nextcloud:28.0.14-apache, nextcloud:29.0.16-apache]   # pre-pulled
+      file: scripts/0003-move-config.sh
+      images: [nextcloud:28.0.14-apache, nextcloud:29.0.16-apache]
 
     # 3. A refusal — "this cannot be automated".
     - id: 4
@@ -146,23 +145,19 @@ x-compose-app:
 |---|---|---|
 | `id` | all | **Required.** The `data_version` this step produces. Steps are `2 … data_version`, each present exactly once. |
 | `name` | all | [Localized](./x-compose-app.md#localized-strings). Shown in the update progress (operator's locale) and the logs (`en_us`). |
-| `image`, `command`, `entrypoint`, `user`, `environment`, `volumes`, `network` | container | The `docker run` surface, with the same semantics, interpolation and path spelling as an [`init`](./x-compose-app.md#init) step. |
-| `script` | script | Path under the store app's `migrations/` folder (e.g. `migrations/0003-move-config.sh`) — nothing else travels with an update. Copied to `.migrate/migrations/` and run from there. |
-| `images` | script | Images the script will `docker run`, pulled with the app's own images while the old version still serves. Optional; an unlisted image is pulled when the script runs. |
+| `script` / `file` | script entry | Inline bash, or a `.sh` under the store app's `scripts/` folder — nothing else travels with an update. The folder is copied to `.scripts/` from the same store sync as the compose. |
+| `images` | script entry | Images the step runs, pulled with the app's own images **while the old version still serves**. An unlisted image is pulled when the step runs — after the stop, so on the outage's clock. |
+| `timeout` | script entry | Go duration. Default `2h` — a dump/restore of a large database is legitimately long, a hang is not. |
 | `blocked` | refusal | [Localized](./x-compose-app.md#localized-strings) Markdown shown to the operator in their locale. An update that would cross this step is **refused before anything is pulled.** |
-| `timeout` | container, script | Go duration. Default `2h` — a dump/restore of a large database is legitimately long, a hang is not. |
 
-**Prefer the container form**, for the reason [hooks](./x-compose-app.md#hooks) are a
-last resort: a container step has a pinned image, a declared mount, argv without a
-shell, and fails loudly. A script is for the migration that is genuinely a sequence —
-booting `nextcloud:28` then `:29` against the same data, waiting for each to finish
-its own upgrade.
-
-A **script** runs in exactly the hook environment: `/bin/bash -c` inside the Maison
-container, working directory the app folder, the host Docker daemon, the sanctioned
-command set, `/DATA` rewritten to host paths. It additionally gets
-`MIGRATION_ID`, `DATA_VERSION_FROM` (the marker when the update started) and
-`DATA_VERSION_TO` (the compose's target).
+A step runs exactly like a [step](./x-compose-app.md#steps) or a credential change:
+`bash -euo pipefail` inside the Maison container, working directory the app folder,
+the host Docker daemon, `compose`, the sanctioned command set, `$APP_DIR` as the
+host spells it. It additionally gets `MIGRATION_ID`, `DATA_VERSION_FROM` (the marker
+when the update started) and `DATA_VERSION_TO` (the compose's target). What it
+writes to `$MAISON_OUTPUT` reaches the setup steps, seed tree and `files` of the
+same up; what it writes to `$MAISON_ENV` is added to the `.env` where missing —
+how a migration gives an existing install a key a fresh install gets another way.
 
 **Exit 0 means applied. Anything else means the update failed.** There is no
 "skipped" and no "try again next time": a step that has nothing to do (the state is
@@ -186,34 +181,35 @@ backup.
 
 ## When each step runs
 
-This is the table to read before writing either a `pre_install` or a migration.
+This is the table to read before choosing between a step and a migration.
 
 | Step | Fresh install | Update that raises `data_version` | Update that doesn't | Start / config save | Restart | Rollback / restore |
 |---|---|---|---|---|---|---|
-| `pre_install` (and `x-casaos` `pre-install-cmd`) | **once — the current version's** | never | never | never | never | never |
 | migrations | **never** — the marker is set to the target | **each pending step, once, in order** | — | never — refuses if any are pending | never | never |
-| `init` `when: once` | yes | yes, for a step this version adds | yes, for a step this version adds | yes, if its marker is missing | no | no — its marker is restored |
-| `init` `when: always` / `absent:` | yes | yes | yes | yes | no | yes |
-| `pre_up` / `post_up` | yes | yes | yes | yes | no | yes |
-| `post_install` | once | never | never | never | never | never |
+| a step, `run: once` (and an `x-casaos` `pre-install-cmd`) | yes | yes, for a step this version adds | yes, for a step this version adds | yes, if its marker is missing | no | no — its marker is restored |
+| a step, `run: always` | yes | yes | yes | yes | no | yes |
 
-A fresh install **never replays history**. It runs the current `pre_install` against
-an empty folder and writes `.data-version` equal to the compose's `data_version`.
+A fresh install **never replays history**. It runs the current steps against an
+empty folder and writes `.data-version` equal to the compose's `data_version`.
+
+**Step or migration?** A step is safe to run against any install at any time —
+idempotent, no backup needed. A migration happens exactly once at a version
+boundary, transforms data, and has a backup behind it.
 
 ### The maintainer's invariant
 
 > **A fresh install of data version N must produce the same state as an install of
 > any earlier version followed by every migration up to N.**
 
-`pre_install` (with `folders`, the seed tree, `files` and `init`) builds the version-N
+The declarations (`folders`, the seed tree, `files`) and the `once` steps build the version-N
 workspace from nothing. Migration N turns the version-(N-1) workspace into the
 version-N one. They are two routes to the same place.
 
-The consequence that matters: **a change to what `pre_install` or the declarations
-produce on disk is a change that existing installs will never see** — unless a
-migration carries it. Before this feature that gap was silent. Now it has a name, and
-it is what to check when reviewing a store change that touches `pre_install`, `files`
-or the seed tree.
+The consequence that matters: **a change to what a create-if-absent declaration
+(the seed tree, `ensure: once` files) or an existing `once` step produces on disk is
+a change that existing installs will never see** — unless a migration, or a new step,
+carries it. Before this feature that gap was silent. Now it has a name, and it is what
+to check when reviewing a store change that touches steps, `files` or the seed tree.
 
 It is also checkable without a human: install the store's previous commit of the app,
 update to the new one, and compare with a fresh install of the new one. That is a
@@ -236,11 +232,11 @@ Changes against [`lifecycle.md`](./lifecycle.md#update) are marked `◆`.
 4. back up to every enabled destination
 5. stop the old version
 6. overwrite docker-compose.yml
-7. refresh .seed ◆ and .migrate from the same store sync
+7. refresh .seed ◆ and .scripts from the same store sync
 8. stackup.Up in update mode:
      folders → secrets → variables
 ◆    → migrations from+1 … to, in order; .data-version written after each
-     → init(pre_up) → seed → files → pre_up → compose up → init(post_up) → post_up
+     → setup steps → seed → files → compose up → started steps
 9. any failure → restore the backup over the app (compose, data and marker together)
 ```
 
@@ -248,7 +244,7 @@ Changes against [`lifecycle.md`](./lifecycle.md#update) are marked `◆`.
 new database password generated by `secrets`, a new folder from `folders`. Both are
 idempotent and additive, so running them first costs nothing on the old data.
 
-**Why before `init`, the seed tree and `files`**: those write create-if-absent defaults
+**Why before the setup steps, the seed tree and `files`**: those write create-if-absent defaults
 for the *new* layout. Run first, they would put a fresh default config at the path a
 migration is about to move the user's real config into — and the migration would then
 find its target taken, or worse, `files` would have rendered over it.
@@ -301,13 +297,14 @@ disk), so the whole existing fleet starts exactly as before.
 ```
 Apps/<App>/
 ├── docker-compose.yml       # x-compose-app.data_version / migrations
-├── migrations/              # only for script steps
+├── scripts/                 # files a script entry names with `file:`
 │   └── 0003-move-config.sh
 └── …
 ```
 
-`migrations/` arrives with the same store sync as the compose (the store archive), so
-a compose and the scripts it names can never be from different commits.
+`scripts/` arrives with the same store sync as the compose (the store archive), so
+a compose and the files it names can never be from different commits. It is shared
+by every script entry — steps and credential changes name their files there too.
 
 The file name is not significant — the compose names each script — but
 `<id, zero-padded>-<what>.sh` keeps the folder readable in order.
@@ -343,12 +340,13 @@ it unnecessary.
 - `internal/xcomposeapp` — parse `version`, `data_version`, `migrations`; validate the
   step forms and contiguity of ids. Base-only, like the store-owned keys.
 - `internal/installer/update.go` — compute the plan before the room check; extend the
-  image pull; copy `.migrate/` beside `writeSeed`; refuse `NoBackup` with steps pending.
+  image pull; copy `scripts/` to `.scripts/` beside `writeSeed`; refuse `NoBackup`
+  with steps pending.
 - `internal/stackup` — an update mode on `Up` (an option, not a second function: the
   one-rule "every up goes through `stackup.Up`" stays true) that runs the pending steps
-  between `EnsureVariables` and `RunInit`; the marker check for every other mode. The
-  container form reuses `initrun.go`; the script form reuses `RunHook`.
-- `internal/installer` install path — write `.data-version` before `pre_install`.
+  between `EnsureVariables` and the setup steps; the marker check for every other mode.
+  A step is run by `RunScript`, the runner every script entry shares.
+- `internal/installer` install path — write `.data-version` before the first up.
   Over a restored folder the data already has a version (its marker, else the restored
   compose's); an install runs no migrations, so one that disagrees with the store's
   compose is refused rather than started on data of another shape.
@@ -369,6 +367,13 @@ it unnecessary.
 | v1.1.58 | `9e321be` | The runner: container and script steps between `variables` and `init`, marker after each step, per-step timeout, rollback on failure; `data_no_backup` refusal; step images pulled with the app's; `.migrate/migrations/` refreshed per update; a `migrate` progress phase; the `blocked` update state, left out of "Update all"; the Update tab running a migrating update as a background one-app run with the steps' time budget; UI for all of it (en/fr). |
 
 v1.1.57 (`6e6c049`, backup-engine approval) is unrelated and sits between the two.
+
+**Unreleased (2026-10-20):** a step became a [script entry](./x-compose-app.md#the-script-entry),
+shared with steps and credential changes. The container form (`image`, `command`,
+`volumes`, …) is gone — it is a `docker run` in `script`, with the image under
+`images`; `script:` is now inline bash and a file is `file: scripts/…`; the store's
+`migrations/` folder became `scripts/`, copied to `.scripts/` on install and update
+(`.migrate/` is removed). The history below describes the released forms.
 
 The store side (Yundera/AppStore): `beef35f` swept an optional `version` into 79 apps,
 and `6bbd981` documents `version` (optional, display-only) and `data_version` /
@@ -424,7 +429,7 @@ Updates, the tile's "Migrating data…" label) — only its API.
   version. Whether an operator may declare "I did it by hand" — set the marker from the
   UI — is open; it is a promise Maison cannot verify.
 - **Post-start steps.** Some conversions need the new version running
-  (`occ db:add-missing-indices`). A `phase: post_up` on a step, as `init` has, would
+  (`occ db:add-missing-indices`). An `at: started` on a migration step, as steps have, would
   cover it; left out until an app needs it, and its failure semantics (the stack is up —
   roll back or not?) need deciding then.
 - **"Healthy but broken".** `installer.Steady` looks at container restarts, which the

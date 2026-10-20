@@ -109,6 +109,11 @@ func Resolve(files ...*File) (*xcomposeapp.App, error) {
 	a, err := layer(ext)
 	if err == nil && legacy != nil {
 		a.Legacy = &xcomposeapp.Legacy{WebUIPort: legacy.WebUIPort}
+		for i := range a.Steps {
+			if n := a.Steps[i].Name; n == xcasaos.CasaOSPreInstallStep || n == xcasaos.CasaOSPostInstallStep {
+				a.Steps[i].Lenient = true
+			}
+		}
 	}
 	return a, err
 }

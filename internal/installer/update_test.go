@@ -217,7 +217,7 @@ func dataPlanFixture(t *testing.T, installed string, marker int) (*Installer, st
 
 const (
 	plainCompose   = "services: {app: {image: odoo:18.0}}\n"
-	migrateCompose = "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, name: {en_us: openupgrade}, image: openupgrade:19}]}\n"
+	migrateCompose = "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, name: {en_us: openupgrade}, images: [openupgrade:19, \"x:${TAG}\"], script: \"docker run --rm openupgrade:19\"}]}\n"
 )
 
 func TestPlanLetsAnOrdinaryUpdateThrough(t *testing.T) {
@@ -257,7 +257,7 @@ func TestPlanRefusals(t *testing.T) {
 			reason: DataRefusedBlocked},
 		{name: "data newer than the store", installed: plainCompose, marker: 3, next: plainCompose, reason: DataRefusedNewer},
 		{name: "malformed manifest", installed: plainCompose,
-			next:   "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 3, migrations: [{id: 3, image: x:1}]}\n",
+			next:   "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 3, migrations: [{id: 3, script: \"true\"}]}\n",
 			reason: DataRefusedStoreError},
 		{name: "update without backup", installed: plainCompose, next: migrateCompose,
 			opts: UpdateOptions{NoBackup: true}, reason: DataRefusedNoBackup},
@@ -316,16 +316,22 @@ func TestDescribeDataStates(t *testing.T) {
 	}
 }
 
-func TestWriteMigrationsReplacesTheCopy(t *testing.T) {
+func TestWriteScriptsReplacesTheCopy(t *testing.T) {
 	_, dir := refFixture(t, "")
-	stale := filepath.Join(dir, stackup.MigrateDir, "old.sh")
-	os.MkdirAll(filepath.Dir(stale), 0o755)
-	os.WriteFile(stale, []byte("exit 0"), 0o644)
-	if err := writeMigrations(nil, dir); err != nil {
+	stale := filepath.Join(dir, stackup.ScriptsStateDir, "old.sh")
+	legacy := filepath.Join(dir, ".migrate", "migrations", "0002.sh")
+	for _, p := range []string{stale, legacy} {
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("exit 0"), 0o644)
+	}
+	if err := writeScripts(nil, dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Error("a script the store no longer ships survived the update")
+	}
+	if _, err := os.Stat(filepath.Dir(legacy)); !os.IsNotExist(err) {
+		t.Error("the pre-steps .migrate copy survived")
 	}
 }
 

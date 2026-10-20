@@ -133,7 +133,9 @@ Open **http://\<host-ip\>:8080**.
 > Maison's container. `DATA_HOST_PATH` tells Maison where the data folder really is, so
 > every app's volumes point to the right place. If it doesn't match the bind `source`, the
 > apps' data ends up in a different directory from the one you think. Use a **host bind
-> mount**, not a named volume.
+> mount**, not a named volume. When the two paths differ, Maison also makes the host path
+> resolve inside its own container (a link to `/DATA`), so an app's scripts can use one
+> spelling for both their shell and their `docker run -v`.
 
 To build from source instead, clone this repo, then
 `cp .env.example .env && docker compose up -d --build`. The repo's
@@ -220,7 +222,7 @@ the variables **apps receive**.
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `DATA_ROOT` | `/DATA` | The data folder's path **inside** the container. |
-| `DATA_HOST_PATH` | = `DATA_ROOT` | The same folder's path **on the host**. Must equal the bind `source`. |
+| `DATA_HOST_PATH` | = `DATA_ROOT` | The same folder's path **on the host**. Must equal the bind `source`. When it differs from `DATA_ROOT`, Maison links it to `DATA_ROOT` inside its container at startup, so app scripts can use the host spelling everywhere. |
 | `APPSTORE_URL` | Yundera AppStore zip | Store zip URL(s), comma-separated. The boot default for the store list; a deployment adds its store with `maison stores ensure` instead. |
 | `PUID` / `PGID` | `1000` / `1000` | Owner applied to app folders, and passed to apps. |
 | `TZ` | (none) | Timezone for the dashboard and the apps. |
@@ -339,7 +341,7 @@ full settings page (`/settings/<section>`) has these sections:
 A store is a **zip of Compose apps served over HTTP**, in the
 [CasaOS App Store](https://github.com/IceWhaleTech/CasaOS-AppStore) layout. Every app is a
 `docker-compose.yml` with an `x-compose-app` block — Maison's definition of an app: title,
-icon, category, screenshots, web-UI address, data folders, secrets, lifecycle hooks, views,
+icon, category, screenshots, web-UI address, data folders, secrets, setup steps, views,
 backup exclusions. Any host that serves a zip works. Nothing in Maison is tied to one forge.
 
 - **Several stores:** set `APPSTORE_URL` to a comma-separated list, or add stores in
@@ -397,7 +399,7 @@ flowchart LR
 config) goes through `internal/stackup`:
 
 ```
-create declared folders → pre_up hook → docker compose up -d --remove-orphans → post_up hook
+folders → secrets → variables → setup steps → seed → files → docker compose up -d --remove-orphans → started steps
 ```
 
 If you call `composecmd.Up` directly, the app starts without its declared folders, and the
@@ -436,7 +438,7 @@ precedence if anything here disagrees with them.
 | [`app-model.md`](./docs/app-model.md) | Where an app lives on disk and how its tile state is derived. **Start here.** |
 | [`lifecycle.md`](./docs/lifecycle.md) | What install / start / update / save / uninstall / backup / restore do, in order, and how they fail. |
 | [`app-env.md`](./docs/app-env.md) | `.env.app`: what an app receives, and how it reaches the app's `.env`. |
-| [`x-compose-app.md`](./docs/x-compose-app.md) | Maison's compose extension: web-UI URL, folders, hooks, views, lifecycle, backup exclusions. |
+| [`x-compose-app.md`](./docs/x-compose-app.md) | Maison's compose extension: web-UI URL, folders, steps and the script entry, views, lifecycle, backup exclusions. |
 | [`domains.md`](./docs/domains.md) | Extra domains and the Caddy routes Maison generates for them. |
 | [`backup.md`](./docs/backup.md) | Backup and recovery: the two backup sets, engines, schedule, retention, encryption. Mostly implemented; the status note at the top lists the gaps. |
 | [`incidents.md`](./docs/incidents.md) | Incident register and notifications. |

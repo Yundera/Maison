@@ -149,7 +149,7 @@ Route generation is a step in the **up sequence**, so it happens on every path i
 a stack:
 
 ```
-sync routes  →  ensure folders  →  pre_up  →  docker compose up -d  →  post_up
+sync routes  →  folders … setup steps … files  →  docker compose up -d  →  started steps
 ```
 
 Install, start, store update, a config or `.env` save, and adding a domain all

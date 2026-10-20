@@ -508,7 +508,7 @@
   "cred_applying": "Wird angewendet…",
   "cred_changed": "Passwort geändert. Clients mit dem alten Passwort brauchen das neue.",
   "cred_apply_env": "{name} wird mit dem neuen Passwort neu gestartet.",
-  "cred_apply_hook": "Das Passwort wird in {name} geändert, danach startet die App neu. Die App muss laufen.",
+  "cred_apply_script": "Das Passwort wird in {name} geändert, danach startet die App neu. Die App muss laufen.",
   "cred_not_changeable": "Dieses Passwort kann hier nicht geändert werden.",
   "cred_not_changeable_shared": "Diese App verwendet noch das serverweite Passwort, das nicht für eine einzelne App geändert werden kann.",
   "cred_rule_length": "{min} bis {max} Zeichen",

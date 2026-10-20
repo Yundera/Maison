@@ -506,7 +506,7 @@
   "cred_applying": "正在应用…",
   "cred_changed": "密码已修改。保存了旧密码的客户端需要使用新密码。",
   "cred_apply_env": "{name} 将使用新密码重新启动。",
-  "cred_apply_hook": "密码将在 {name} 内部修改，随后应用重新启动。应用必须正在运行。",
+  "cred_apply_script": "密码将在 {name} 内部修改，随后应用重新启动。应用必须正在运行。",
   "cred_not_changeable": "此密码无法在这里修改。",
   "cred_not_changeable_shared": "此应用仍在使用服务器通用密码，无法为单个应用修改。",
   "cred_rule_length": "{min} 到 {max} 个字符",

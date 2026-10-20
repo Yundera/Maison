@@ -3,9 +3,7 @@ package xcomposeapp
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,41 +24,20 @@ type Data struct {
 }
 
 // Migration is one step of an app's data history: it turns data in shape ID-1 into
-// data in shape ID. Exactly one of Image (a container), Script (a hook-like shell
-// script) or Blocked (a refusal) is set.
+// data in shape ID. It is either a script entry (script or file, with the images
+// it runs pulled ahead with the app's own) or Blocked (a refusal).
 type Migration struct {
 	ID   int       `yaml:"id"`
 	Name Localized `yaml:"name,omitempty"`
 
-	// The container form: the `docker run` surface of an init step.
-	Image      string   `yaml:"image,omitempty"`
-	Entrypoint StrList  `yaml:"entrypoint,omitempty"`
-	Command    StrList  `yaml:"command,omitempty"`
-	User       string   `yaml:"user,omitempty"`
-	Env        EnvList  `yaml:"environment,omitempty"`
-	Volumes    []string `yaml:"volumes,omitempty"`
-	Network    string   `yaml:"network,omitempty"`
-
-	// The script form: a path under the store app's migrations/ folder, and the images it
-	// will `docker run`, pulled ahead with the app's own.
-	Script string   `yaml:"script,omitempty"`
-	Images []string `yaml:"images,omitempty"`
+	// Script is the step's script entry; its Timeout defaults to
+	// DefaultMigrationTimeout.
+	Script `yaml:",inline"`
 
 	// Blocked is the refusal form: Markdown shown to the operator, and an update
 	// that would cross this step is refused before anything is pulled.
 	Blocked Localized `yaml:"blocked,omitempty"`
-
-	// Timeout is a Go duration, DefaultMigrationTimeout when empty.
-	Timeout string `yaml:"timeout,omitempty"`
 }
-
-// MigrationsDir is the store app's folder its migration scripts live in; a script
-// step's path starts with it.
-const MigrationsDir = "migrations"
-
-// DefaultMigrationTimeout bounds a step that declares no timeout: a dump/restore
-// of a large database is legitimately long, a hang is not.
-const DefaultMigrationTimeout = 2 * time.Hour
 
 // Label is how the step is named to the operator: its name, else its id.
 func (m Migration) Label() string {
@@ -151,41 +128,16 @@ func (d Data) Validate() error {
 }
 
 func (m Migration) validate() error {
-	forms := 0
-	for _, set := range []bool{m.Image != "", m.Script != "", strings.TrimSpace(m.Blocked.Value()) != ""} {
-		if set {
-			forms++
-		}
-	}
-	if forms != 1 {
-		return errors.New("needs exactly one of image, script or blocked")
-	}
-	container := m.Entrypoint != nil || m.Command != nil || m.User != "" || m.Env != nil || m.Volumes != nil || m.Network != ""
-	switch {
-	case m.Image != "":
-		if m.Images != nil {
-			return errors.New("images belongs to a script step; a container step pulls its own image")
-		}
-	case m.Script != "":
-		if container {
-			return errors.New("a script step takes no container keys (entrypoint, command, user, environment, volumes, network)")
-		}
-		// Only the store app's migrations/ folder travels with an update, so that is
-		// the only place a script can be.
-		if !filepath.IsLocal(m.Script) || !strings.HasPrefix(filepath.ToSlash(filepath.Clean(m.Script)), MigrationsDir+"/") {
-			return fmt.Errorf("script %q must be a path under the app's %s/ folder", m.Script, MigrationsDir)
-		}
-	default: // blocked
-		if container || m.Images != nil || m.Timeout != "" {
+	if strings.TrimSpace(m.Blocked.Value()) != "" {
+		if !m.Script.IsZero() || m.Images != nil || m.Timeout != "" {
 			return errors.New("a blocked step takes nothing but id, name and blocked")
 		}
+		return nil
 	}
-	if m.Timeout != "" {
-		if d, err := time.ParseDuration(m.Timeout); err != nil || d <= 0 {
-			return fmt.Errorf("timeout %q is not a positive Go duration", m.Timeout)
-		}
+	if m.Script.IsZero() {
+		return errors.New("needs a script, a file or blocked")
 	}
-	return nil
+	return m.Script.Validate()
 }
 
 // ErrDataNewer marks data written by a newer version than the compose on hand:

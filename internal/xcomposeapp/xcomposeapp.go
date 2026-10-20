@@ -10,7 +10,6 @@ package xcomposeapp
 
 import (
 	"errors"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -29,7 +28,7 @@ var (
 )
 
 // SchemaVersion is the highest x-compose-app schema this build understands.
-// v2 added `folders` and `hooks`; v1 files keep working unchanged.
+// v2 added `folders` and `hooks` (since replaced by `steps`); v1 files keep working unchanged.
 const SchemaVersion = 2
 
 // App is the Maison-native app metadata. Only the fields Maison consumes are
@@ -118,16 +117,15 @@ type App struct {
 	// but the trade is worth stating. A build that predates this field ignores
 	// `routes` and generates nothing, so a label-free app is unreachable on it;
 	// raising the version instead makes that build drop the whole x-compose-app
-	// block, costing the app its folders and hooks as well (see stackup.Load).
+	// block, costing the app its folders and steps as well (see stackup.Load).
 	// Unreachable-but-correctly-built beats half-built. The real guard is the
 	// rollout: a store trimmed of its own labels ships as a *new* store URL, which
 	// only a build that understands routes ever subscribes to.
 	Routes []Route `yaml:"routes,omitempty"`
 
-	// Bring-up: directories ensured before every `compose up`, and the shell
-	// hooks that bracket install and up. See docs/x-compose-app.md.
+	// Bring-up: directories ensured before every `compose up`. See
+	// docs/x-compose-app.md.
 	Folders []Folder `yaml:"folders,omitempty"`
-	Hooks   Hooks    `yaml:"hooks,omitempty"`
 
 	// Lifecycle is what the app allows the operator to do to it: whether Maison
 	// may stop it, uninstall it, and update it. All three default to yes.
@@ -143,7 +141,7 @@ type App struct {
 	// it is for View or Routes: a build that predates this field ignores it and backs
 	// the app up whole, which is a superset and therefore never data loss. Raising
 	// the version instead makes that build drop the entire x-compose-app block (see
-	// stackup.Load) and with it the app's folders, hooks, title and URL — a much
+	// stackup.Load) and with it the app's folders, steps, title and URL — a much
 	// worse trade than storing a cache directory it did not have to.
 	//
 	// That argument survives `skip` intact, and it is also what fixes the field's
@@ -169,10 +167,10 @@ type App struct {
 	// or mode other than the default.
 	Files []File `yaml:"files,omitempty"`
 
-	// Init are one-shot containers run around the app's own stack: the cases that
-	// genuinely need a container rather than a declaration — seeding a database
-	// with the app's own binary, or computing a value for a config file.
-	Init []InitStep `yaml:"init,omitempty"`
+	// Steps are the script entries run around the app's stack on every up: the
+	// imperative work no declaration expresses — seeding a database with the
+	// app's own binary, configuring the running app, reaching the host.
+	Steps []Step `yaml:"steps,omitempty"`
 
 	// Variables are ordinary templates ensured in the app's .env on every up, so
 	// a value derived from the deployment (a domain, a URL) follows the
@@ -213,9 +211,9 @@ const (
 	// ApplyEnv: the app reads the variable on every start, so writing .env and
 	// recreating the stack is the whole change.
 	ApplyEnv = "env"
-	// ApplyHook: the app keeps its own copy (a user database), so a hook changes
-	// it inside the running app first; .env follows.
-	ApplyHook = "hook"
+	// ApplyScript: the app keeps its own copy (a user database), so a script
+	// changes it inside the running app first; .env follows.
+	ApplyScript = "script"
 )
 
 // CredentialChange says that a credential may be changed from Maison, and how.
@@ -224,10 +222,10 @@ const (
 type CredentialChange struct {
 	Apply  string           `yaml:"apply,omitempty"`
 	Policy CredentialPolicy `yaml:"policy,omitempty"`
-	// Hook is a bash snippet run exactly like pre_install (same runner, same
-	// environment and command set), with the secret's variable set to the NEW
-	// value and OLD_<NAME> to the previous one. ApplyHook only.
-	Hook string `yaml:"hook,omitempty"`
+	// Script is the script entry ApplyScript runs — the same runner, environment
+	// and command set as a step — with the secret's variable set to the NEW value
+	// and OLD_<NAME> to the previous one.
+	Script `yaml:",inline"`
 }
 
 // CredentialPolicy constrains a new value, typed or generated. Zero fields take
@@ -284,8 +282,8 @@ func decodeChange(n *yaml.Node) *CredentialChange {
 	ch.Apply = strings.ToLower(strings.TrimSpace(ch.Apply))
 	switch ch.Apply {
 	case ApplyEnv:
-	case ApplyHook:
-		if strings.TrimSpace(ch.Hook) == "" {
+	case ApplyScript:
+		if ch.Script.Validate() != nil {
 			return nil
 		}
 	default:
@@ -347,136 +345,6 @@ func (f *File) UnmarshalYAML(n *yaml.Node) error {
 		Group:   string(raw.Group),
 		Mode:    string(raw.Mode),
 	}
-	return nil
-}
-
-// When an init step runs, and which side of `compose up` it runs on.
-const (
-	// WhenOnce runs the step the first time and remembers that it has, so a
-	// seeder that refuses to run twice (filebrowser's `config init` aborts, and
-	// aborts the whole hook with it) is not asked to.
-	WhenOnce = "once"
-	// WhenAlways runs it on every up.
-	WhenAlways = "always"
-	// WhenAbsentPrefix guards on a path: `absent:/DATA/AppData/x/db/db.sqlite`
-	// runs the step only while that file is missing. It is the declarative form
-	// of the `if [ ! -f ]` every one of these hooks opens with.
-	WhenAbsentPrefix = "absent:"
-
-	// PhasePreUp runs the step before `compose up` (the default).
-	PhasePreUp = "pre_up"
-	// PhasePostUp runs it after, for a seeder that needs the app's own network or
-	// a running service to talk to.
-	PhasePostUp = "post_up"
-)
-
-// InitStep is one one-shot container.
-//
-// Volume sources are HOST paths, resolved by the daemon like a hook's
-// `docker run -v`; the path in When is resolved by Maison and so is
-// container-side. That split is inherent — two different processes resolve them —
-// which is why both spellings live in one struct.
-type InitStep struct {
-	Name       string   `yaml:"name,omitempty"`
-	Image      string   `yaml:"image,omitempty"`
-	Entrypoint StrList  `yaml:"entrypoint,omitempty"`
-	Command    StrList  `yaml:"command,omitempty"`
-	User       string   `yaml:"user,omitempty"`
-	Env        EnvList  `yaml:"environment,omitempty"`
-	Volumes    []string `yaml:"volumes,omitempty"`
-	Network    string   `yaml:"network,omitempty"`
-	// When is WhenOnce (default), WhenAlways, or WhenAbsentPrefix + a path.
-	When string `yaml:"when,omitempty"`
-	// Capture names a variable to bind the step's stdout to, visible to the seed
-	// renderer and to `files` for the rest of this converge. It is not written to
-	// the app's .env unless a `variables` entry asks for it.
-	Capture string `yaml:"capture,omitempty"`
-	// Phase is PhasePreUp (default) or PhasePostUp.
-	Phase string `yaml:"phase,omitempty"`
-}
-
-// StrList is compose's command/entrypoint shape: a list, or a string split on
-// whitespace with quoted runs kept together.
-type StrList []string
-
-// UnmarshalYAML accepts either form, because an author writing
-// `command: config init --database /db/db.sqlite` is writing what they would type.
-func (l *StrList) UnmarshalYAML(n *yaml.Node) error {
-	if n.Kind == yaml.ScalarNode {
-		*l = splitArgs(n.Value)
-		return nil
-	}
-	var out []string
-	if err := n.Decode(&out); err != nil {
-		return err
-	}
-	*l = out
-	return nil
-}
-
-// splitArgs splits a command string on whitespace, honouring single and double
-// quotes so a password or a path with a space survives as one argument.
-//
-// It is not a shell: no expansion, no escaping, no operators. The result is
-// passed to the daemon as argv and never to a shell, which is the difference
-// between this and the hook it replaces.
-func splitArgs(s string) []string {
-	var out []string
-	var cur strings.Builder
-	var quote rune
-	inWord := false
-	for _, r := range s {
-		switch {
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				cur.WriteRune(r)
-			}
-		case r == '\'' || r == '"':
-			quote = r
-			inWord = true
-		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
-			if inWord {
-				out = append(out, cur.String())
-				cur.Reset()
-				inWord = false
-			}
-		default:
-			cur.WriteRune(r)
-			inWord = true
-		}
-	}
-	if inWord {
-		out = append(out, cur.String())
-	}
-	return out
-}
-
-// EnvList is compose's environment shape: a KEY=VALUE list or a mapping,
-// normalised to the list form the Docker API takes.
-type EnvList []string
-
-// UnmarshalYAML accepts both forms.
-func (e *EnvList) UnmarshalYAML(n *yaml.Node) error {
-	if n.Kind == yaml.MappingNode {
-		var m map[string]text
-		if err := n.Decode(&m); err != nil {
-			return err
-		}
-		out := make([]string, 0, len(m))
-		for k, v := range m {
-			out = append(out, k+"="+string(v))
-		}
-		sort.Strings(out) // a mapping has no order; the container should still be reproducible
-		*e = out
-		return nil
-	}
-	var out []string
-	if err := n.Decode(&out); err != nil {
-		return err
-	}
-	*e = out
 	return nil
 }
 
@@ -754,16 +622,6 @@ func (t *text) UnmarshalYAML(n *yaml.Node) error {
 	}
 	*t = text(n.Value)
 	return nil
-}
-
-// Hooks are host shell snippets run around an app's lifecycle. The install hooks
-// run once, when Maison first installs the app; the up hooks run on every
-// `docker compose up` (install, start, update, config save).
-type Hooks struct {
-	PreInstall  string `yaml:"pre_install,omitempty"`
-	PostInstall string `yaml:"post_install,omitempty"`
-	PreUp       string `yaml:"pre_up,omitempty"`
-	PostUp      string `yaml:"post_up,omitempty"`
 }
 
 // Link is an extra button on the app detail view (absolute URL only).

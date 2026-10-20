@@ -3,6 +3,7 @@ package stackup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yundera/maison/internal/xcomposeapp"
@@ -10,7 +11,7 @@ import (
 
 // The declarations an app writes have to survive the whole path from YAML to
 // Spec — including the two shapes YAML would otherwise retype (a quoted octal
-// mode, a numeric variable) and the two compose spellings init accepts.
+// mode, a numeric variable) and both forms of a step's script entry.
 func TestLoadReadsTheDeclarativeSections(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "docker-compose.yml")
@@ -32,21 +33,18 @@ x-compose-app:
       from: element/config.json.tmpl
       ensure: always
       mode: "0640"
-  init:
+  steps:
     - name: seed-db
-      image: filebrowser/filebrowser:v2.63.2
-      command: config init --database /db/database.db
-      user: "${PUID}:${PGID}"
-      environment:
-        LOG_LEVEL: debug
-      volumes:
-        - /DATA/AppData/odysseus/db:/db
-      when: absent:/DATA/AppData/odysseus/db/database.db
+      at: setup
+      run: always
+      images: [filebrowser/filebrowser:v2.63.23]
+      script: |
+        [ -e "$APP_DIR/db/database.db" ] && exit 0
+        docker run --rm filebrowser/filebrowser:v2.63.23 config init
     - name: post-seed
-      image: example/seed:1
-      entrypoint: ["/seed"]
-      phase: post_up
-      capture: SEED_TOKEN
+      at: started
+      file: scripts/post-seed.sh
+      timeout: 5m
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -72,30 +70,15 @@ x-compose-app:
 		t.Fatalf("file = %+v", f)
 	}
 
-	if len(spec.Init) != 2 {
-		t.Fatalf("init = %v", spec.Init)
+	if len(spec.Steps) != 2 {
+		t.Fatalf("steps = %+v", spec.Steps)
 	}
-	// The string form of command is what an author types; it has to arrive as argv.
-	wantCmd := []string{"config", "init", "--database", "/db/database.db"}
-	got := spec.Init[0]
-	if len(got.Command) != len(wantCmd) {
-		t.Fatalf("command = %v, want %v", got.Command, wantCmd)
+	seed, post := spec.Steps[0], spec.Steps[1]
+	if seed.At != xcomposeapp.AtSetup || seed.RunMode() != xcomposeapp.RunAlways ||
+		!strings.Contains(seed.Script.Script, "config init") || len(seed.Images) != 1 {
+		t.Fatalf("setup step = %+v", seed)
 	}
-	for i, w := range wantCmd {
-		if got.Command[i] != w {
-			t.Fatalf("command = %v, want %v", got.Command, wantCmd)
-		}
-	}
-	if len(got.Env) != 1 || got.Env[0] != "LOG_LEVEL=debug" {
-		t.Fatalf("environment = %v, want the mapping form normalised to KEY=VALUE", got.Env)
-	}
-	if got.When != "absent:/DATA/AppData/odysseus/db/database.db" {
-		t.Fatalf("when = %q", got.When)
-	}
-	if spec.Init[1].Phase != xcomposeapp.PhasePostUp || spec.Init[1].Capture != "SEED_TOKEN" {
-		t.Fatalf("post-up step = %+v", spec.Init[1])
-	}
-	if len(spec.Init[1].Entrypoint) != 1 || spec.Init[1].Entrypoint[0] != "/seed" {
-		t.Fatalf("entrypoint = %v", spec.Init[1].Entrypoint)
+	if post.At != xcomposeapp.AtStarted || post.RunMode() != xcomposeapp.RunOnce || post.File != "scripts/post-seed.sh" || post.Timeout != "5m" {
+		t.Fatalf("started step = %+v", post)
 	}
 }

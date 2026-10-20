@@ -41,8 +41,17 @@ x-casaos:
 	}
 	if a.ID != "jelly" || a.Title.Value() != "Jellyfin" || a.Icon != "https://e.x/i.png" ||
 		a.Developer != "Jelly Team" || a.Tips.Value() != "Read me\n\nAnd me" ||
-		a.Hooks.PreInstall != "echo pre" || a.Hooks.PostInstall != "echo post" {
+		len(a.Steps) != 2 {
 		t.Fatalf("app = %+v", a)
+	}
+	// The install commands become `once` steps, run without strict mode: they
+	// were written for a plain `bash -c`.
+	pre, post := a.Steps[0], a.Steps[1]
+	if pre.Name != "casaos-pre-install" || pre.At != "setup" || pre.RunMode() != "once" || pre.Script.Script != "echo pre" || !pre.Lenient {
+		t.Fatalf("pre-install step = %+v", pre)
+	}
+	if post.Name != "casaos-post-install" || post.At != "started" || post.Script.Script != "echo post" || !post.Lenient {
+		t.Fatalf("post-install step = %+v", post)
 	}
 	if got := a.WebURL("box.example"); got != "https://jellyfin-box.example/web" {
 		t.Fatalf("url = %q (the scheme's default port must not be spelled out)", got)
@@ -65,7 +74,7 @@ x-compose-app:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Title.Value() != "" || a.Icon != "" || a.Hooks.PreInstall != "" || a.Legacy != nil {
+	if a.Title.Value() != "" || a.Icon != "" || len(a.Steps) != 0 || a.Legacy != nil {
 		t.Fatalf("x-casaos leaked into %+v", a)
 	}
 }

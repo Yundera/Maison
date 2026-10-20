@@ -164,7 +164,7 @@
               <p class="error">{$t(`cred_rule_${rule}`, { min: String(c.change.policy.min_length), max: String(c.change.policy.max_length), forbid: c.change.policy.forbid })}</p>
             {/each}
             {#if editError && !serverRules.length}<p class="error">{editError}</p>{/if}
-            <p class="note">{$t(c.change.apply === 'hook' ? 'cred_apply_hook' : 'cred_apply_env', { name })}</p>
+            <p class="note">{$t(c.change.apply === 'script' ? 'cred_apply_script' : 'cred_apply_env', { name })}</p>
             <div class="actions">
               <button class="ghost" onclick={cancelChange} disabled={saving}>{$t('cancel')}</button>
               <button class="primary" onclick={saveChange} disabled={saving || !draft || draftRules.length > 0}>

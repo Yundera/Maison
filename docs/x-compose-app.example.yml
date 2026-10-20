@@ -10,7 +10,7 @@
 #     docker-compose.yml        ← this file
 #     icon.png  thumbnail.png  screenshots/1.png  screenshots/2.png
 #     seed/config/app.yml.tmpl  seed/config/nginx.conf  seed/db/init.sh
-#     migrations/003-reindex.sh
+#     scripts/003-reindex.sh  scripts/warm-index.sh
 
 name: wikinest
 
@@ -169,9 +169,9 @@ x-compose-app:
         en_us: Also used for the API.
         fr_fr: Sert aussi pour l'API.
       change:
-        apply: hook                                 # the app keeps its own user DB
-        hook: |
-          docker compose exec -T -e ADMIN_PASSWORD wikinest \
+        apply: script                               # the app keeps its own user DB
+        script: |
+          compose exec -e ADMIN_PASSWORD wikinest \
             wikinest-cli user set-password admin --from-env ADMIN_PASSWORD
         policy:
           min_length: 12
@@ -207,41 +207,31 @@ x-compose-app:
       group: "${PGID}"
       mode: "0600"
 
-  # ── One-shot containers around the stack ──────────────────────────────────
-  init:
+  # ── Steps: script entries around the stack (see "The script entry") ──────
+  steps:
     - name: db-schema
-      image: ghcr.io/example/wikinest:2.4.0
-      command: wikinest-cli db init --config /config/app.yml
-      user: "${PUID}:${PGID}"
-      volumes:
-        - /DATA/AppData/${AppID}/config:/config
-        - /DATA/AppData/${AppID}/data:/data
-      when: absent:/DATA/AppData/${AppID}/data/.initialised
+      at: setup                                     # before compose up; fatal
+      run: always                                   # guarded on the data below
+      images: [ghcr.io/example/wikinest:2.4.0]
+      script: |
+        [ -e "$APP_DIR/data/.initialised" ] && exit 0
+        docker run --rm --user "$PUID:$PGID" \
+          -v "$APP_DIR/config:/config" -v "$APP_DIR/data:/data" \
+          ghcr.io/example/wikinest:2.4.0 wikinest-cli db init --config /config/app.yml
     - name: build-id
-      image: alpine:3.20
-      entrypoint: [sh, -c]
-      command: ["date +%Y%m%d%H%M"]
-      when: always
-      capture: BUILD_ID                             # stdout → var for seed/files
+      at: setup
+      run: always
+      script: |
+        id=$(date +%Y%m%d%H%M)
+        echo "BUILD_ID=$id" >> "$MAISON_OUTPUT"     # → seed .tmpl files and files
+    - name: plugin-dir
+      at: setup                                     # run: once (default)
+      script: |
+        echo "WIKINEST_PLUGINS=" >> "$MAISON_ENV"   # added to .env only if missing
     - name: warm-index
-      image: curlimages/curl:8.10.1
-      command: [-fsS, -X, POST, "http://search:7700/indexes"]
-      environment:
-        MEILI_KEY: ${SEARCH_TOKEN}
-      network: ${APP_NET:-pcs}
-      when: once
-      phase: post_up                                # needs the stack running
-
-  # ── Host shell (reach for it last) ────────────────────────────────────────
-  hooks:
-    pre_install: |
-      docker pull ghcr.io/example/wikinest-plugins:1.2.0
-    post_install: |
-      echo "$AppID installed at $(date)"
-    pre_up: |
-      docker network inspect "${APP_NET:-pcs}" >/dev/null
-    post_up: |
-      echo "$AppID up in $APP_DIR"
+      at: started                                   # after compose up; logged
+      file: scripts/warm-index.sh                   # the store app's scripts/
+      timeout: 5m
 
   # ── What the operator may do ──────────────────────────────────────────────
   lifecycle:
@@ -264,14 +254,14 @@ x-compose-app:
     - id: 2
       name:
         en_us: Postgres 15 → 16
-      image: tianon/postgres-upgrade:15-to-16
-      volumes:
-        - /DATA/AppData/${AppID}/db:/var/lib/postgresql
+      images: [tianon/postgres-upgrade:15-to-16]   # pulled before the stop
+      script: |
+        docker run --rm -v "$APP_DIR/db:/var/lib/postgresql" tianon/postgres-upgrade:15-to-16
       timeout: 30m
     - id: 3
       name:
         en_us: Rebuild search index
-      script: migrations/003-reindex.sh
+      file: scripts/003-reindex.sh
       images: [getmeili/meilisearch:v1.10.3]
     - id: 4
       name:

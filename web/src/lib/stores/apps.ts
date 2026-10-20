@@ -423,7 +423,7 @@ export interface CredentialPolicy {
 
 /** How a credential may be changed from Maison; absent = initial-only. */
 export interface CredentialChange {
-  apply: 'env' | 'hook'
+  apply: 'env' | 'script'
   changeable: boolean
   /** Why it cannot be changed: 'shared' (box-wide password) or 'template'. */
   reason?: string

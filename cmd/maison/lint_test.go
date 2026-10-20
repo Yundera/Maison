@@ -45,3 +45,47 @@ func TestLint(t *testing.T) {
 		t.Errorf("no files: code = %d, want 2", code)
 	}
 }
+
+// Every script entry is checked the way it would fail on a box — including a
+// `file:` the store app does not ship, and a credential change Maison would
+// silently drop.
+func TestLintScriptEntries(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "scripts"), 0o755)
+	os.WriteFile(filepath.Join(dir, "scripts", "there.sh"), []byte("true\n"), 0o644)
+	path := filepath.Join(dir, "docker-compose.yml")
+	os.WriteFile(path, []byte(`services: {app: {image: a:1}}
+x-compose-app:
+  title: {en_us: App}
+  steps:
+    - {name: ok, at: setup, file: scripts/there.sh}
+    - {name: gone, at: started, file: scripts/gone.sh}
+    - {name: when, at: pre_up, script: "true"}
+    - {name: ok, at: setup, script: "true"}
+  credentials:
+    - {label: {en_us: A}, password: "${P}", change: {apply: hook, hook: "echo old"}}
+    - {label: {en_us: B}, password: "${P}", change: {apply: script, file: scripts/passwd.sh}}
+  data_version: 2
+  migrations:
+    - {id: 2, file: scripts/0002.sh}
+`), 0o644)
+	var out, errOut bytes.Buffer
+	if code := runCLI([]string{"lint", path}, nil, &out, &errOut); code != 1 {
+		t.Fatalf("code = %d, want 1:\n%s", code, out.String())
+	}
+	for _, want := range []string{
+		"step gone: file scripts/gone.sh is not in the app's folder",
+		`step when: at "pre_up"`,
+		"step ok: name used twice",
+		"credentials[0].change cannot be used",
+		"credentials[1].change: file scripts/passwd.sh is not in the app's folder",
+		"migration 2: file scripts/0002.sh is not in the app's folder",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "there.sh") {
+		t.Errorf("a shipped file was reported:\n%s", out.String())
+	}
+}

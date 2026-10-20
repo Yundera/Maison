@@ -560,7 +560,7 @@ stops shrinking before stopping the app. Not needed for a first version.
 indexes, model downloads — and without a way to skip them, every one ships nightly and
 is billed as if it mattered. On a media app the cache can rival the real data.
 
-The declaration lives in **`x-compose-app`**, next to `folders` and `hooks`: the app
+The declaration lives in **`x-compose-app`**, next to `folders` and `steps`: the app
 author knows which of their directories are derived, and it travels with the app
 instead of living in a list Maison has to maintain per store app.
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // fixtureHookBin points hookBinDir at a directory containing only the named
@@ -30,6 +31,13 @@ func fixtureHookBin(t *testing.T, allow ...string) {
 	t.Cleanup(func() { hookBinDir = prev })
 }
 
+// runScript runs an inline script entry with nothing but the shared contract.
+func runScript(t *testing.T, cfg config.Config, project, dir, script string) error {
+	t.Helper()
+	_, err := RunScript(t.Context(), cfg, project, dir, xcomposeapp.Script{Script: script}, ScriptOpts{})
+	return err
+}
+
 func hookTestApp(t *testing.T) (config.Config, string) {
 	t.Helper()
 	if _, err := os.Stat("/bin/bash"); err != nil {
@@ -48,7 +56,7 @@ func hookTestApp(t *testing.T) (config.Config, string) {
 func TestRunHookAllowsCuratedCommands(t *testing.T) {
 	fixtureHookBin(t, "cat")
 	cfg, dir := hookTestApp(t)
-	if err := RunHook(t.Context(), cfg, "app", dir, "cat /dev/null"); err != nil {
+	if err := runScript(t, cfg, "app", dir, "cat /dev/null"); err != nil {
 		t.Fatalf("curated command rejected: %v", err)
 	}
 }
@@ -59,7 +67,7 @@ func TestRunHookAllowsCuratedCommands(t *testing.T) {
 func TestRunHookRejectsWithheldCommand(t *testing.T) {
 	fixtureHookBin(t, "cat")
 	cfg, dir := hookTestApp(t)
-	err := RunHook(t.Context(), cfg, "app", dir, "sysctl -w net.ipv4.ip_forward=1")
+	err := runScript(t, cfg, "app", dir, "sysctl -w net.ipv4.ip_forward=1")
 	if err == nil {
 		t.Fatal("withheld command was allowed")
 	}
@@ -81,7 +89,7 @@ func TestRunHookRejectsInsideCommandSubstitution(t *testing.T) {
 	script := `SECRET="$(openssl rand -hex 32)"
 printf 'secret=%s\n' "$SECRET" > /dev/null
 exit 0`
-	err := RunHook(t.Context(), cfg, "app", dir, script)
+	err := runScript(t, cfg, "app", dir, script)
 	if err == nil {
 		t.Fatal("hook exited 0 with an empty secret and was accepted")
 	}
@@ -95,7 +103,7 @@ exit 0`
 func TestRunHookRejectsInsideSubshell(t *testing.T) {
 	fixtureHookBin(t, "cat")
 	cfg, dir := hookTestApp(t)
-	if err := RunHook(t.Context(), cfg, "app", dir, "( ip link show ) || true\nexit 0"); err == nil {
+	if err := runScript(t, cfg, "app", dir, "( ip link show ) || true\nexit 0"); err == nil {
 		t.Fatal("rejection inside a subshell was lost")
 	}
 }
@@ -105,7 +113,7 @@ func TestRunHookRejectsInsideSubshell(t *testing.T) {
 func TestRunHookReportsEachRejectionOnce(t *testing.T) {
 	fixtureHookBin(t, "cat")
 	cfg, dir := hookTestApp(t)
-	err := RunHook(t.Context(), cfg, "app", dir, "openssl x; curl y; openssl z\nexit 0")
+	err := runScript(t, cfg, "app", dir, "openssl x || true; curl y || true; openssl z || true\nexit 0")
 	if err == nil {
 		t.Fatal("rejections were lost")
 	}
@@ -113,7 +121,7 @@ func TestRunHookReportsEachRejectionOnce(t *testing.T) {
 	if !strings.Contains(msg, "openssl") || !strings.Contains(msg, "curl") {
 		t.Errorf("not every rejected command reported: %v", err)
 	}
-	if strings.Count(msg[:strings.Index(msg, ", which app hooks")], "openssl") != 1 {
+	if strings.Count(msg[:strings.Index(msg, ", which app scripts")], "openssl") != 1 {
 		t.Errorf("duplicate rejection reported: %v", err)
 	}
 }

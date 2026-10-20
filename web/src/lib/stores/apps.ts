@@ -30,6 +30,9 @@ export interface App {
    *  (it is cached in localStorage); showCredentials fetches them on demand. */
   has_credentials?: boolean
   credentials_pending?: boolean
+  /** The app's effective tips are non-empty: the tile menu offers Tips only then
+   *  (they are still edited, or written from scratch, in Settings). */
+  has_tips?: boolean
   /** Fully-resolved click URL from x-compose-app (webui-*); wins when set. */
   url?: string
   /** Aggregated Docker health-check verdict; drives the tile status dot.
@@ -471,14 +474,19 @@ export async function setCredentialsDismissed(id: string, dismissed: boolean): P
   await api.put(`/api/apps/${encodeURIComponent(id)}/credentials/dismissed`, { dismissed })
 }
 
-export async function setConfig(id: string, override: string): Promise<void> {
-  await api.put(`/api/apps/${encodeURIComponent(id)}/config`, { override })
-  await loadApps()
+/** One save of the settings window's Config tab: the YAML view's draft of the
+ *  override, the Form view's edits (applied on top of the draft, or of the file
+ *  when no draft is sent), and/or the .env. A part left out is left as it is.
+ *  Validated by Compose before anything is written, then the app is recreated
+ *  once. */
+export interface SettingsChange {
+  override?: string
+  form?: OverrideForm
+  env?: EnvVar[]
 }
 
-/** Save the opening-URL fields into the app's override (webui-* shortcut). */
-export async function setWebUI(id: string, w: Omit<WebUI, 'url'>): Promise<void> {
-  await api.put(`/api/apps/${encodeURIComponent(id)}/webui`, w)
+export async function saveSettings(id: string, change: SettingsChange): Promise<void> {
+  await api.put(`/api/apps/${encodeURIComponent(id)}/settings`, change)
   await loadApps()
 }
 
@@ -486,16 +494,20 @@ export async function setWebUI(id: string, w: Omit<WebUI, 'url'>): Promise<void>
  *  …) and hand-editable since. It is what ${VAR} in the app's compose resolves
  *  against; it is NOT the same as a service's `environment:` block (that lives in
  *  the override form). Shares the EnvVar shape declared below. */
-export function getEnv(id: string): Promise<EnvVar[]> {
-  return api.get<EnvVar[]>(`/api/apps/${encodeURIComponent(id)}/env`)
+export function getEnv(id: string): Promise<EnvEntry[]> {
+  return api.get<EnvEntry[]>(`/api/apps/${encodeURIComponent(id)}/env`)
 }
 
-/** Rewrite the app's .env to exactly these vars and recreate the stack — compose
- *  reads .env only when it brings the project up. */
-export async function setEnv(id: string, vars: EnvVar[]): Promise<void> {
-  await api.put(`/api/apps/${encodeURIComponent(id)}/env`, { vars })
-  await loadApps()
+/** Who sets a .env key. `maison` (PUID, DATA_ROOT, AppID, …) and `deployment`
+ *  (forwarded from .env.app) are written back on every start, so an edit to one
+ *  never takes effect; `seeded` (the default password) is written once and is the
+ *  app's to keep. No source: the operator's own variable. */
+export type EnvSource = 'maison' | 'deployment' | 'seeded'
+
+export interface EnvEntry extends EnvVar {
+  source?: EnvSource
 }
+
 
 /** A single-valued override field. `value` is what runs, `base` what the store
  *  ships; clearing `value` resets the field to the store's. `complex` marks a
@@ -549,8 +561,20 @@ export interface FormService {
   cap_add: ListField
 }
 
+/** The app's opening URL (x-compose-app webui-*), as form scalars: an empty value
+ *  inherits the store's. */
+export interface FormWebUI {
+  scheme: Scalar
+  host: Scalar
+  port: Scalar
+  path: Scalar
+}
+
 export interface OverrideForm {
   services: FormService[]
+  webui?: FormWebUI
+  /** The click URL the app resolves to today (read-only preview). */
+  web_url?: string
 }
 
 /** The friendly view of the app's override — one entry per compose service. */
@@ -558,10 +582,25 @@ export function getOverrideForm(id: string): Promise<OverrideForm> {
   return api.get<OverrideForm>(`/api/apps/${encodeURIComponent(id)}/override/form`)
 }
 
-/** Patch the override with the form's values and recreate the app. */
-export async function setOverrideForm(id: string, form: OverrideForm): Promise<void> {
-  await api.put(`/api/apps/${encodeURIComponent(id)}/override/form`, form)
-  await loadApps()
+/** The override a form would save, without saving it (Form → YAML with edits):
+ *  the form applied onto `draft`, the YAML view's text. */
+export async function renderOverrideForm(
+  id: string,
+  form: OverrideForm,
+  draft: string,
+): Promise<string> {
+  const r = await api.post<{ override: string }>(
+    `/api/apps/${encodeURIComponent(id)}/override/form/render`,
+    { form, override: draft },
+  )
+  return r.override
+}
+
+/** The form for a candidate override, without saving it (YAML → Form with edits). */
+export function parseOverrideForm(id: string, override: string): Promise<OverrideForm> {
+  return api.post<OverrideForm>(`/api/apps/${encodeURIComponent(id)}/override/form/parse`, {
+    override,
+  })
 }
 
 /** Check a candidate override against the app's base compose without applying it.
@@ -573,10 +612,11 @@ export function validateOverride(id: string, override: string): Promise<{ ok: bo
   )
 }
 
-/** The project as Compose resolves it: base + override, merged and interpolated. */
-export async function effectiveConfig(id: string): Promise<string> {
+/** The project as Compose merges it: base + override. Variables stay written as
+ *  ${VAR} unless `resolve` asks for them filled in from the .env. */
+export async function effectiveConfig(id: string, resolve = false): Promise<string> {
   const r = await api.get<{ config?: string; error?: string }>(
-    `/api/apps/${encodeURIComponent(id)}/effective`,
+    `/api/apps/${encodeURIComponent(id)}/effective${resolve ? '?resolve=1' : ''}`,
   )
   if (r.error) throw new Error(r.error)
   return r.config ?? ''

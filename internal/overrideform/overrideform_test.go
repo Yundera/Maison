@@ -263,3 +263,70 @@ services:
 		t.Fatalf("a complex field was rewritten by the form:\n%s", out)
 	}
 }
+
+// The opening URL is read from both files' x-compose-app and written back next to
+// whatever else the override keeps there.
+func TestWebUIRoundTrip(t *testing.T) {
+	b := base + `x-compose-app:
+  webui-port: "8096"
+`
+	override := `# my notes
+x-compose-app:
+  tips: read me
+`
+	form, err := Build([]byte(b), []byte(override))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if form.WebUI == nil || form.WebUI.Port.Base != "8096" || form.WebUI.Host.Overridden {
+		t.Fatalf("webui not read from the base: %+v", form.WebUI)
+	}
+	form.WebUI.Host.Value = "media-${APP_DOMAIN}"
+
+	out, err := Apply([]byte(b), []byte(override), form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, want := range []string{"# my notes", "tips: read me", "webui-host: media-${APP_DOMAIN}"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q after a webui save:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "webui-port") {
+		t.Fatalf("an inherited field was written:\n%s", got)
+	}
+
+	// Clearing it again empties the block it created, and the file with it.
+	again, err := Build([]byte(b), []byte(`x-compose-app:
+  webui-host: x
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.WebUI.Host.Value = ""
+	out, err = Apply([]byte(b), []byte("x-compose-app:\n  webui-host: x\n"), again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != nil {
+		t.Fatalf("a cleared webui should leave no override, got:\n%s", out)
+	}
+}
+
+// A form posted without the opening URL (an older UI) must not clear it.
+func TestApplyWithoutWebUIKeepsIt(t *testing.T) {
+	override := "x-compose-app:\n  webui-host: x\n"
+	form, err := Build([]byte(base), []byte(override))
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.WebUI = nil
+	out, err := Apply([]byte(base), []byte(override), form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "webui-host: x") {
+		t.Fatalf("webui dropped by a form without it:\n%s", out)
+	}
+}

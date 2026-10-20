@@ -123,21 +123,27 @@ created and by its main service's image. It is a suggestion and nothing more: th
 confirms it per app, it goes through the same `PUT`, and there is deliberately no way to
 link them all at once. See [`lifecycle.md`](./lifecycle.md) § *Update all*.
 
-### Editing the override — form and YAML
+### Editing the override — the Config tab
 
-The settings window splits the two compose files by what you can *do* to them:
+Everything Compose runs for an app sits in one settings tab, **Config**, with one
+**Save & recreate** for all of it — a save that touches both the override and the
+`.env` recreates the app once.
 
-| Tab | View | What it is |
+| Section | View | What it is |
 |---|---|---|
-| **Override** | **Form** | Field-by-field editor (image, restart, ports, volumes, environment; devices, cap_add, command, privileged, limits under *Advanced*). Each field shows the store's value as a ghost placeholder and is marked when overridden; clearing a field resets it to the store's. |
-| **Override** | **YAML** | The `docker-compose.override.yml` itself. Anything the form can't express belongs here. |
-| **Compose** | **Store** | The strict `docker-compose.yml` as shipped. Read-only — Maison never modifies it. |
-| **Compose** | **Effective** | `docker compose config` over base + override: the merged, interpolated project. Read-only; this is what actually runs, and the view that answers "what did my override actually *do*" — which of the store's values survived, and which yours replaced. |
+| **Compose** | **Form** | The compose as it runs: the store's values merged with yours, variables kept as written (`${APP_DOMAIN}`, never resolved). The app's **opening URL** (`x-compose-app` `webui-*`) on top, then per service image, restart, ports, volumes, environment; devices, cap_add, command, privileged, limits under *Advanced*. Store rows are marked and read-only — removing one replaces the store's list — and your own rows are added below. A store scalar shows as a ghost placeholder; clearing a field resets it to the store's. |
+| **Compose** | **YAML** | The `docker-compose.override.yml` itself, editable, above the store's `docker-compose.yml`, read-only — Maison never modifies it. Anything the form can't express belongs here. A collapsed **Merged compose** shows `docker compose config` over both files: `--no-interpolate` by default, so it reads like the files, with a *Resolve variables* switch for "what value did this actually get". |
+| **Env** | — | The app's `.env`. Keys Maison computes (`AppID`, `PUID`, `PGID`, `TZ`, `DATA_ROOT`, `DATA_HOST_PATH`) and keys the deployment forwards from `.env.app` are written back on every start (`appenv.Sync`), so they are shown read-only with who sets them; the default passwords, written once and then the app's, are editable with a warning. The rest are the operator's own. |
 
-Form and YAML are two views of the same file and either can save it. The form
-**patches the override's YAML node tree** rather than regenerating it, so
-comments, key order, and keys it doesn't model (`x-compose-app`, `healthcheck`,
-`depends_on`, …) survive a save untouched.
+Form and YAML are two views of the same file. The YAML view holds the draft; the
+form's edits are applied on top of it — when switching views (`POST
+/api/apps/{id}/override/form/render` and `…/parse`, which write nothing) and when
+saving (`PUT /api/apps/{id}/settings` with `override`, `form` and/or `env`). The
+whole result is validated by Compose against the new `.env` before either file is
+written; a rejected save leaves both as they were. The form **patches the
+override's YAML node tree** rather than regenerating it, so comments, key order,
+and keys it doesn't model (`x-compose-app` tips, `healthcheck`, `depends_on`, …)
+survive a save untouched.
 
 **Compose's merge rules are not uniform, and the form speaks them:**
 

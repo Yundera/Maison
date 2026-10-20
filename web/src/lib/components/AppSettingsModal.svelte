@@ -1,8 +1,10 @@
 <script lang="ts">
   import {
     getConfig,
-    setConfig,
-    setWebUI,
+    getOverrideForm,
+    renderOverrideForm,
+    parseOverrideForm,
+    saveSettings,
     setTips,
     renderTips,
     getServices,
@@ -10,13 +12,13 @@
     applyUpdate,
     setUpdateRef,
     getEnv,
-    setEnv,
     validateOverride,
     effectiveConfig,
-    type WebUI,
+    type OverrideForm as Form,
     type AppService,
     type UpdateStatus,
-    type EnvVar,
+    type EnvEntry,
+    type EnvSource,
     apps,
   } from '../stores/apps'
   import { ApiError } from '../api/client'
@@ -25,7 +27,7 @@
   import { fetchStoreSources, type StoreSource } from '../stores/store'
   import { openStream } from '../live/stream'
   import { renderSize } from '../format'
-  import OverrideForm from './OverrideForm.svelte'
+  import OverrideForm, { normalizeForm } from './OverrideForm.svelte'
   import TipsView from './TipsView.svelte'
   import BackupsTab from './BackupsTab.svelte'
   import SecurityTab from './SecurityTab.svelte'
@@ -49,29 +51,8 @@
   // the override) and Backups — which is a managed-only page because it archives
   // and restores the app *folder*, and an unmanaged stack has none. Every app
   // gets logs + stats.
-  type Tab =
-    | 'tips'
-    | 'webui'
-    | 'env'
-    | 'compose'
-    | 'override'
-    | 'update'
-    | 'backups'
-    | 'security'
-    | 'logs'
-    | 'stats'
-  const MANAGED_TABS: Tab[] = [
-    'tips',
-    'webui',
-    'env',
-    'compose',
-    'override',
-    'update',
-    'backups',
-    'security',
-    'logs',
-    'stats',
-  ]
+  type Tab = 'tips' | 'config' | 'update' | 'backups' | 'security' | 'logs' | 'stats'
+  const MANAGED_TABS: Tab[] = ['tips', 'config', 'update', 'backups', 'security', 'logs', 'stats']
   const UNMANAGED_TABS: Tab[] = ['logs', 'stats']
   // An app that declares `lifecycle.updatable: false` is updated by something else
   // (its platform installer); the backend refuses its update routes, so no tab.
@@ -85,57 +66,114 @@
   const tabs = $derived<Tab[]>(tabsFor(managed, updatable, hasCredentials))
   const tabLabel: Record<Tab, string> = {
     tips: 'Tips',
-    webui: 'Web UI',
-    env: 'Env',
-    compose: 'Compose',
-    override: 'Override',
+    config: 'Config',
     update: 'Update',
     backups: 'Backups',
     security: 'Security',
     logs: 'Logs',
     stats: 'Stats',
   }
+
+  // The Config tab is what Compose runs, in two sections: the compose (store +
+  // override — Form | YAML) and the .env its ${VAR}s resolve against. They used to
+  // be four tabs (Web UI, Env, Compose, Override); a deep link to one of those
+  // lands on the section that replaced it.
+  type Section = 'compose' | 'env'
+  type View = 'form' | 'yaml'
+  const LEGACY: Record<string, { section: Section; view: View }> = {
+    webui: { section: 'compose', view: 'form' },
+    override: { section: 'compose', view: 'form' },
+    compose: { section: 'compose', view: 'yaml' },
+    env: { section: 'env', view: 'form' },
+  }
+
   // Open on the deep-linked tab when one was requested and it exists for this app
   // (managed apps have the config tabs; every app has logs + stats); otherwise the
   // default first tab.
   function firstTab(): Tab {
-    const wanted = initialTab as Tab | undefined
+    const wanted = (initialTab && LEGACY[initialTab] ? 'config' : initialTab) as Tab | undefined
     const app = $apps.find((a) => a.id === id)
     const available = tabsFor(managed, app?.updatable !== false, !!app?.has_credentials)
     if (wanted && available.includes(wanted)) return wanted
     return managed ? 'tips' : 'logs'
   }
   let tab = $state<Tab>(firstTab())
-
-  // Two tabs, two views each, split by what you can do to them:
-  //   Override — Form | YAML,      both editable, both the same override file.
-  //   Compose  — Store | Effective, both read-only.
-  type View = 'form' | 'yaml'
-  const views: View[] = ['form', 'yaml']
+  const legacy = () => (initialTab ? LEGACY[initialTab] : undefined)
+  let section = $state<Section>(legacy()?.section ?? 'compose')
+  let view = $state<View>(legacy()?.view ?? 'form')
+  const sectionLabel: Record<Section, string> = { compose: 'Compose', env: 'Env' }
   const viewLabel: Record<View, string> = { form: 'Form', yaml: 'YAML' }
-  let view = $state<View>('form')
 
-  type ComposeView = 'store' | 'effective'
-  const composeViews: ComposeView[] = ['store', 'effective']
-  const composeViewLabel: Record<ComposeView, string> = { store: 'Store', effective: 'Effective' }
-  let composeView = $state<ComposeView>('store')
+  // --- Compose: Form and YAML are two views of one file, the override ---------
+  //
+  // `override` is the YAML view's draft of the file. The form is built from a
+  // draft too (`formFor`; null = the file on disk), and its edits sit on top of
+  // that draft: switching to YAML folds them into the text (server-side, with the
+  // same code a save runs), switching back rebuilds the form from the text if it
+  // moved. A save sends the draft if it differs from the file, and the form's
+  // edits if it has any — the server applies them onto the draft, so an edit the
+  // form can't show (a healthcheck typed in YAML) is never dropped by one it can.
+  let form = $state<Form | null>(null)
+  let formBase = $state('') // JSON of the form as built from formFor, for dirtiness
+  let formDisk = $state('') // JSON of the form as built from the file, for Discard
+  let formFor = $state<string | null>(null)
+  let formErr = $state('')
+  async function loadForm() {
+    try {
+      const f = normalizeForm(await getOverrideForm(id))
+      formDisk = formBase = JSON.stringify(f)
+      formFor = null
+      form = f
+      formErr = ''
+    } catch (e) {
+      formErr = String(e)
+    }
+  }
+  const formDirty = $derived(!!form && JSON.stringify(form) !== formBase)
 
-  // Effective config — `docker compose config` over base + override, loaded when
-  // the view is first opened and after every save that could change it.
-  let effective = $state('')
-  let effectiveMsg = $state('')
+  let switching = $state(false)
+  let configMsg = $state('')
+  async function switchView(v: View) {
+    if (v === view || switching) return
+    configMsg = ''
+    switching = true
+    try {
+      if (v === 'yaml' && formDirty && form) {
+        override = await renderOverrideForm(id, $state.snapshot(form) as Form, override)
+        formBase = JSON.stringify(form)
+        formFor = override
+      } else if (v === 'form' && override !== (formFor ?? savedOverride)) {
+        const f = normalizeForm(await parseOverrideForm(id, override))
+        formBase = JSON.stringify(f)
+        formFor = override
+        form = f
+      }
+      view = v
+    } catch (e) {
+      // YAML the form can't read: stay on it, with the parser's message.
+      configMsg = e instanceof Error ? e.message : String(e)
+    } finally {
+      switching = false
+    }
+  }
+
+  // The merge of both files — `docker compose config`, variables as written unless
+  // "Resolve variables" is ticked. Loaded when the disclosure is first opened, and
+  // dropped after every save.
+  let mergedOpen = $state(false)
+  let resolveVars = $state(false)
+  let merged = $state('')
+  let mergedMsg = $state('')
   $effect(() => {
-    if (tab !== 'compose' || composeView !== 'effective' || effective) return
-    effectiveConfig(id)
-      .then((c) => (effective = c))
-      .catch((e) => (effectiveMsg = String(e)))
+    if (tab !== 'config' || view !== 'yaml' || !mergedOpen || merged || mergedMsg) return
+    effectiveConfig(id, resolveVars)
+      .then((c) => (merged = c))
+      .catch((e) => (mergedMsg = String(e)))
   })
-
-  // Form and YAML read the same file, so a save through either has to refresh the
-  // other — and the merge that the Compose tab's Effective view shows.
-  async function afterOverrideSave() {
-    effective = ''
-    await loadConfig()
+  function toggleResolve() {
+    resolveVars = !resolveVars
+    merged = ''
+    mergedMsg = ''
   }
 
   // Validate — Compose's own verdict on the override in the editor, without
@@ -143,12 +181,12 @@
   let validating = $state(false)
   async function validate() {
     validating = true
-    overrideMsg = ''
+    configMsg = ''
     try {
       const r = await validateOverride(id, override)
-      overrideMsg = r.ok ? 'Valid.' : (r.error ?? 'Invalid.')
+      configMsg = r.ok ? 'Valid.' : (r.error ?? 'Invalid.')
     } catch (e) {
-      overrideMsg = String(e)
+      configMsg = String(e)
     } finally {
       validating = false
     }
@@ -157,15 +195,17 @@
   // --- Config (base compose / override / web-UI / tips) ---
   let baseCompose = $state('')
   let override = $state('')
-  let webui = $state<WebUI>({ scheme: '', host: '', port: '', path: '', url: '' })
   let tips = $state('')
   let configLoaded = $state(false)
+  let savedOverride = $state('') // the override as last loaded, for the YAML view's dirtiness
+  const yamlDirty = $derived(configLoaded && override !== savedOverride)
 
-  async function loadConfig() {
+  // keepEdits: a reload after a tips save must not throw away YAML being edited.
+  async function loadConfig(keepEdits = false) {
     const c = await getConfig(id)
     baseCompose = c.base
-    override = c.override
-    webui = c.webui
+    if (!keepEdits || override === savedOverride) override = c.override
+    savedOverride = c.override
     tips = c.tips
     savedTips = c.tips
     configLoaded = true
@@ -211,6 +251,12 @@
     try {
       await setTips(id, tips)
       savedTips = tips
+      // Tips live in the override, so the Config tab's copy is stale now — reload
+      // it, unless it carries edits of its own (a form's edits patch the file, so
+      // they keep the new tips; a YAML draft would need re-reading by hand).
+      const editing = formDirty || override !== savedOverride
+      await loadConfig(true)
+      if (!editing) await loadForm()
       await loadRenderedTips()
       editingTips = false
       tipsMsg = 'Saved.'
@@ -220,37 +266,30 @@
       savingTips = false
     }
   }
-  // Override editor
-  let savingOverride = $state(false)
-  let overrideMsg = $state('')
-  async function saveOverride() {
-    savingOverride = true
-    overrideMsg = ''
+  // --- .env editor (the app's ${VAR} interpolation vars, one KEY=VALUE per row) ---
+  let envVars = $state<EnvEntry[]>([])
+  let envSaved = $state('') // JSON as last loaded, for dirtiness
+  let envLoaded = $state(false)
+  let envMsg = $state('')
+  async function loadEnv() {
     try {
-      await setConfig(id, override)
-      overrideMsg = 'Saved & recreated.'
-      effective = '' // the merge changed; the Effective view must re-read it
+      const v = await getEnv(id)
+      envSaved = JSON.stringify(v)
+      envVars = v
+      envLoaded = true
     } catch (e) {
-      overrideMsg = String(e)
-    } finally {
-      savingOverride = false
+      envMsg = String(e)
     }
   }
+  const envDirty = $derived(envLoaded && JSON.stringify(envVars) !== envSaved)
 
-  // --- .env editor (the app's ${VAR} interpolation vars, one KEY=VALUE per row) ---
-  let envVars = $state<EnvVar[]>([])
-  let envLoaded = $state(false)
-  let savingEnv = $state(false)
-  let envMsg = $state('')
-
+  // The whole Config tab loads together the first time it is opened: the save
+  // below covers all of it, and a dirty marker on a section never shown would be
+  // a lie.
   $effect(() => {
-    if (tab !== 'env' || envLoaded) return
-    getEnv(id)
-      .then((v) => {
-        envVars = v
-        envLoaded = true
-      })
-      .catch((e) => (envMsg = String(e)))
+    if (tab !== 'config' || !managed) return
+    if (!form && !formErr) loadForm()
+    if (!envLoaded && !envMsg) loadEnv()
   })
 
   // Same rules the server enforces before writing, surfaced while typing so a bad
@@ -270,23 +309,64 @@
     })(),
   )
 
+  // A maison or deployment row is put back by the start a save triggers, so the
+  // editor shows it read-only rather than accept an edit that has no effect.
+  const envLocked = (v: EnvEntry) => v.source === 'maison' || v.source === 'deployment'
+  const envSourceLabel: Record<EnvSource, string> = {
+    maison: 'Set by ' + BRAND,
+    deployment: 'From the box',
+    seeded: 'Set once',
+  }
+  const envSourceTitle: Record<EnvSource, string> = {
+    maison: `${BRAND} computes this one and writes it back on every start — edit it here and it reverts.`,
+    deployment: `Forwarded from the box's .env.app and written back on every start — change it there, not here.`,
+    seeded: `Written from the box's .env.app when the app was installed and never refreshed. The app has most likely already used it (an admin password, a database password) — changing it here won't change it inside the app.`,
+  }
+
   function addEnvVar() {
     envVars = [...envVars, { key: '', value: '' }]
   }
   function removeEnvVar(i: number) {
     envVars = envVars.filter((_, n) => n !== i)
   }
-  async function saveEnv() {
-    savingEnv = true
-    envMsg = ''
+  // --- One save for the whole Config tab ---
+  const dirty = $derived(formDirty || yamlDirty || envDirty)
+  const dirtyParts = $derived(
+    [formDirty || yamlDirty ? 'Compose' : '', envDirty ? 'Env' : ''].filter(Boolean),
+  )
+  let savingConfig = $state(false)
+  async function saveConfig() {
+    savingConfig = true
+    configMsg = ''
     try {
-      await setEnv(id, envVars)
-      envMsg = 'Saved & recreated.'
+      await saveSettings(id, {
+        ...(yamlDirty ? { override } : {}),
+        ...(formDirty && form ? { form: $state.snapshot(form) as Form } : {}),
+        ...(envDirty ? { env: envVars.map(({ key, value }) => ({ key, value })) } : {}),
+      })
+      await Promise.all([loadConfig(), loadForm(), loadEnv()])
+      merged = '' // the merge changed; the merged view must re-read it
+      mergedMsg = ''
+      configMsg = 'Saved & recreated.'
     } catch (e) {
-      envMsg = String(e)
+      configMsg = e instanceof Error ? e.message : String(e)
     } finally {
-      savingEnv = false
+      savingConfig = false
     }
+  }
+  function discardConfig() {
+    if (formDisk) form = JSON.parse(formDisk)
+    formBase = formDisk
+    formFor = null
+    override = savedOverride
+    envVars = JSON.parse(envSaved || '[]')
+    configMsg = ''
+  }
+
+  // Closing with unsaved Config edits asks first — they'd be lost silently.
+  function requestClose() {
+    if (dirty && !confirm('Discard unsaved changes to ' + dirtyParts.join(' and ') + '?')) return
+    onclose()
   }
 
   // --- Update (pull a fresher compose from the app's reference store) ---
@@ -385,40 +465,6 @@
     }
   }
 
-  // Web-UI (opening URL) form
-  let savingWebui = $state(false)
-  let webuiMsg = $state('')
-  // A client-side approximation of the click URL (server resolves ${domain}).
-  const previewUrl = $derived(
-    (() => {
-      const host = webui.host.trim()
-      if (!host) return ''
-      const scheme = webui.scheme.trim() || 'https'
-      const port = webui.port.trim() ? `:${webui.port.trim()}` : ''
-      let path = webui.path.trim() || '/'
-      if (!path.startsWith('/')) path = '/' + path
-      return `${scheme}://${host}${port}${path}`
-    })(),
-  )
-  async function saveWebUI() {
-    savingWebui = true
-    webuiMsg = ''
-    try {
-      await setWebUI(id, {
-        scheme: webui.scheme,
-        host: webui.host,
-        port: webui.port,
-        path: webui.path,
-      })
-      await loadConfig() // refresh override + resolved URL
-      webuiMsg = 'Saved & recreated.'
-    } catch (e) {
-      webuiMsg = String(e)
-    } finally {
-      savingWebui = false
-    }
-  }
-
   // --- Services (multi-service picker, shared by logs + stats) ---
   let services = $state<AppService[]>([])
   let selected = $state('')
@@ -485,11 +531,11 @@
   const liveHealth = $derived(stat?.health || selectedSvc?.health || '')
 </script>
 
-<div class="backdrop sheet-backdrop" onclick={onclose} role="presentation">
+<div class="backdrop sheet-backdrop" onclick={requestClose} role="presentation">
   <div class="modal sheet" onclick={(e) => e.stopPropagation()} role="presentation">
     <header>
       <h2>{name}</h2>
-      <button class="close" aria-label="Close" onclick={onclose}>✕</button>
+      <button class="close" aria-label="Close" onclick={requestClose}>✕</button>
     </header>
 
     <nav class="tabs segmented">
@@ -532,73 +578,89 @@
             </button>
           </div>
         {/if}
-      {:else if tab === 'webui'}
-        <p class="hint">
-          The <strong>opening URL</strong> is where the tile's <em>Open</em> button points. This is
-          a friendlier shortcut for the <code>x-compose-app</code> web-UI fields — saving writes them
-          into the <code>docker-compose.override.yml</code>.
-        </p>
-        <div class="form">
-          <label>
-            <span>Scheme</span>
-            <select bind:value={webui.scheme}>
-              <option value="">https (default)</option>
-              <option value="https">https</option>
-              <option value="http">http</option>
-            </select>
-          </label>
-          <label>
-            <span>Host</span>
-            <input
-              bind:value={webui.host}
-              spellcheck="false"
-              placeholder={`${id}-\${domain}`}
-            />
-          </label>
-          <label>
-            <span>Port</span>
-            <input bind:value={webui.port} spellcheck="false" placeholder="(none — 443 via gateway)" />
-          </label>
-          <label>
-            <span>Path</span>
-            <input bind:value={webui.path} spellcheck="false" placeholder="/" />
-          </label>
-        </div>
-        <p class="hint">
-          <code>{'${domain}'}</code> resolves to the deployment domain when the app is brought up.
-          {#if webui.url}
-            Current URL: <a href={webui.url} target="_blank" rel="noopener">{webui.url}</a>
-          {:else if previewUrl}
-            Preview: <span class="mono">{previewUrl}</span>
-          {:else}
-            No opening URL set — the tile has no <em>Open</em> action.
+      {:else if tab === 'config'}
+        <div class="config-bar">
+          <div class="views">
+            {#each ['compose', 'env'] as const as sct (sct)}
+              <button class:active={section === sct} onclick={() => (section = sct)}>
+                {sectionLabel[sct]}{#if (sct === 'compose' && (formDirty || yamlDirty)) || (sct === 'env' && envDirty)}<span
+                    class="dot"
+                    aria-label="unsaved"
+                  ></span>{/if}
+              </button>
+            {/each}
+          </div>
+          {#if section === 'compose'}
+            <div class="views">
+              {#each ['form', 'yaml'] as const as v (v)}
+                <button class:active={view === v} disabled={switching} onclick={() => switchView(v)}>
+                  {viewLabel[v]}
+                </button>
+              {/each}
+            </div>
           {/if}
-        </p>
-        <div class="actions">
-          <span class="msg">{webuiMsg}</span>
-          <button class="primary" disabled={savingWebui} onclick={saveWebUI}>
-            {savingWebui ? 'Saving…' : 'Save & recreate'}
-          </button>
         </div>
-      {:else if tab === 'env'}
-        <p class="hint">
-          The app's <code>.env</code> — the variables its <code>docker-compose.yml</code> resolves
-          <code>{'${VAR}'}</code> against. Prefilled at install (<code>PUID</code>,
-          <code>DATA_ROOT</code>, <code>REF_*</code>, …) and yours to edit. This is not a service's
-          <code>environment:</code> block — for that, edit the override. Saving recreates the stack,
-          because Compose only reads <code>.env</code> when it brings the app up.
-        </p>
-        {#if !envLoaded && !envMsg}
-          <p class="hint">Loading…</p>
+
+        {#if section === 'compose' && view === 'form'}
+          {#if formErr}
+            <p class="hint err">{formErr}</p>
+          {:else if form}
+            <OverrideForm bind:form />
+          {:else}
+            <p class="hint">Loading…</p>
+          {/if}
+        {:else if section === 'compose'}
+          <div class="yaml">
+            <p class="hint">
+              <strong>Your override</strong> — layered on the store's compose with Compose's override
+              semantics. The <strong>Form</strong> view writes this same file; anything it can't
+              express (long-syntax ports, a list-form command) belongs here.
+            </p>
+            <textarea
+              bind:value={override}
+              spellcheck="false"
+              placeholder={'services:\n  app:\n    ports:\n      - "8080:80"'}
+            ></textarea>
+            <p class="hint">
+              <strong>Store compose</strong> — <code>docker-compose.yml</code> as shipped,
+              <strong>read-only</strong>. {BRAND} never modifies it, so updates stay clean.
+            </p>
+            <pre class="code readonly">{baseCompose || (configLoaded ? '(empty)' : 'Loading…')}</pre>
+            <button class="disclosure" onclick={() => (mergedOpen = !mergedOpen)}>
+              {mergedOpen ? '▾' : '▸'} Merged compose
+              <span class="sub">what the two files add up to, as last saved</span>
+            </button>
+            {#if mergedOpen}
+              <label class="check">
+                <input type="checkbox" checked={resolveVars} onchange={toggleResolve} />
+                Resolve variables from the <code>.env</code>
+              </label>
+              <pre class="code readonly">{merged || mergedMsg || 'Loading…'}</pre>
+            {/if}
+          </div>
         {:else}
+          <p class="hint">
+            The app's <code>.env</code> — the variables its compose resolves
+            <code>{'${VAR}'}</code> against. Those {BRAND} or the box sets (<code>PUID</code>,
+            <code>DATA_ROOT</code>, <code>APP_DOMAIN</code>, …) are written back on every start, so
+            they are read-only here; the rest are yours. Not a service's
+            <code>environment:</code> block — that is in <strong>Compose</strong>.
+          </p>
+          {#if !envLoaded && envMsg}
+            <p class="hint err">{envMsg}</p>
+          {:else if !envLoaded}
+            <p class="hint">Loading…</p>
+          {:else}
           <div class="env-list">
             {#each envVars as v, i (i)}
-              <div class="env-row">
+              {@const locked = envLocked(v)}
+              <div class="env-row" class:locked>
                 <input
                   bind:value={v.key}
                   spellcheck="false"
                   placeholder="KEY"
                   aria-label="Variable name"
+                  readonly={!!v.source}
                   class:bad={v.key !== '' && !KEY_RE.test(v.key)}
                 />
                 <input
@@ -606,85 +668,48 @@
                   spellcheck="false"
                   placeholder="value"
                   aria-label="Value for {v.key || 'new variable'}"
+                  readonly={locked}
                 />
-                <button
-                  class="remove"
-                  aria-label="Remove {v.key || 'variable'}"
-                  onclick={() => removeEnvVar(i)}>✕</button
-                >
+                {#if v.source}
+                  <span class="env-source {v.source}" title={envSourceTitle[v.source]}>
+                    {envSourceLabel[v.source]}
+                  </span>
+                {:else}
+                  <button
+                    class="remove"
+                    aria-label="Remove {v.key || 'variable'}"
+                    onclick={() => removeEnvVar(i)}>✕</button
+                  >
+                {/if}
               </div>
             {:else}
               <p class="hint">No variables — this app's <code>.env</code> is empty.</p>
             {/each}
           </div>
-          <div class="actions">
-            <span class="msg">{envError || envMsg}</span>
-            <button onclick={addEnvVar}>Add variable</button>
-            <button
-              class="primary"
-              disabled={savingEnv || !!envError}
-              onclick={saveEnv}
-            >
-              {savingEnv ? 'Saving…' : 'Save & recreate'}
-            </button>
-          </div>
+            <button class="add-var" onclick={addEnvVar}>Add variable</button>
+          {/if}
         {/if}
-      {:else if tab === 'compose'}
-        <div class="views">
-          {#each composeViews as v (v)}
-            <button class:active={composeView === v} onclick={() => (composeView = v)}>
-              {composeViewLabel[v]}
-            </button>
-          {/each}
-        </div>
 
-        {#if composeView === 'store'}
-          <p class="hint">
-            The strict <code>docker-compose.yml</code> as shipped by the store —
-            <strong>read-only</strong>. {BRAND} never modifies it, so updates stay clean; your
-            changes live in the <strong>Override</strong> tab instead.
-          </p>
-          <pre class="code readonly">{baseCompose || (configLoaded ? '(empty)' : 'Loading…')}</pre>
-        {:else}
-          <p class="hint">
-            What Compose actually runs: the store's compose and your override merged, with every
-            <code>{'${VAR}'}</code> resolved from the <code>.env</code> —
-            <strong>read-only</strong>. Read this when an override doesn't do what you expected: it
-            shows which of the store's values survived and which yours replaced.
-          </p>
-          <pre class="code readonly">{effective || effectiveMsg || 'Loading…'}</pre>
-        {/if}
-      {:else if tab === 'override'}
-        <div class="views">
-          {#each views as v (v)}
-            <button class:active={view === v} onclick={() => (view = v)}>{viewLabel[v]}</button>
-          {/each}
-        </div>
-
-        {#if view === 'form'}
-          <OverrideForm {id} onsaved={afterOverrideSave} />
-        {:else}
-          <p class="hint">
-            Your edits, layered on top via Compose override semantics. The running stack is
-            <code>docker-compose.yml</code> + this override. The <strong>Form</strong> view writes
-            this same file — anything it can't express (long-syntax ports, a list-form command)
-            belongs here.
-          </p>
-          <textarea
-            bind:value={override}
-            spellcheck="false"
-            placeholder={'services:\n  app:\n    ports:\n      - "8080:80"'}
-          ></textarea>
-          <div class="actions">
-            <span class="msg">{overrideMsg}</span>
-            <button disabled={validating || savingOverride} onclick={validate}>
+        <div class="actions">
+          <span class="msg">
+            {envError ||
+              configMsg ||
+              (dirty ? `Unsaved: ${dirtyParts.join(', ')}.` : 'Saving recreates the app — Compose reads all of this only when it brings the app up.')}
+          </span>
+          {#if section === 'compose' && view === 'yaml'}
+            <button disabled={validating || savingConfig} onclick={validate}>
               {validating ? 'Checking…' : 'Validate'}
             </button>
-            <button class="primary" disabled={savingOverride} onclick={saveOverride}>
-              {savingOverride ? 'Saving…' : 'Save & recreate'}
-            </button>
-          </div>
-        {/if}
+          {/if}
+          <button disabled={!dirty || savingConfig} onclick={discardConfig}>Discard</button>
+          <button
+            class="primary"
+            disabled={!dirty || savingConfig || switching || !!envError}
+            onclick={saveConfig}
+          >
+            {savingConfig ? 'Saving…' : 'Save & recreate'}
+          </button>
+        </div>
       {:else if tab === 'update'}
         <p class="hint">
           Pulls a fresher <code>docker-compose.yml</code> from the app's update source and
@@ -962,12 +987,72 @@
     font-size: 0.8rem;
     margin: 0 0 0.5rem;
   }
+  .hint.err {
+    color: var(--red);
+  }
+  /* Config tab: section switch on the left, the Compose view switch on the right. */
+  .config-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 0.5rem;
+  }
+  .config-bar .views {
+    align-self: auto;
+  }
+  .dot {
+    display: inline-block;
+    width: 0.4rem;
+    height: 0.4rem;
+    margin-left: 0.35rem;
+    vertical-align: middle;
+    border-radius: 50%;
+    background: var(--orange);
+  }
+  /* YAML view: three blocks stacked, scrolled as one. */
+  .yaml {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding-right: 0.35rem;
+  }
+  .yaml textarea {
+    flex: none;
+    min-height: 11rem;
+    margin-bottom: 0.75rem;
+  }
+  .yaml pre.code {
+    flex: none;
+    max-height: 18rem;
+    overflow: auto;
+    margin-bottom: 0.5rem;
+  }
+  .disclosure {
+    align-self: flex-start;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 0.82rem;
+    padding: 0.4rem 0 0.3rem;
+  }
+  .disclosure .sub {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-left: 0.4rem;
+  }
+  /* Styled like the footer's buttons (below), a size smaller — hence the extra
+     class in the selector, to win over that later rule. */
+  .content .add-var {
+    align-self: flex-start;
+    margin-top: 0.4rem;
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8rem;
+  }
   pre.blocked {
     white-space: pre-wrap;
     margin: 0;
-  }
-  .hint a {
-    color: var(--primary);
   }
   code {
     background: var(--surface-2);
@@ -976,32 +1061,6 @@
   }
   .mono {
     font-family: ui-monospace, monospace;
-  }
-  /* Web-UI form */
-  .form {
-    display: grid;
-    gap: 0.6rem;
-    margin-bottom: 0.5rem;
-  }
-  .form label {
-    display: grid;
-    grid-template-columns: 5rem 1fr;
-    align-items: center;
-    gap: 0.75rem;
-  }
-  .form label span {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-  }
-  .form input,
-  .form select {
-    background: var(--surface-sunken);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.5rem 0.6rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.8rem;
   }
   /* .env editor */
   .env-list {
@@ -1014,7 +1073,7 @@
   }
   .env-row {
     display: grid;
-    grid-template-columns: 14rem 1fr 2rem;
+    grid-template-columns: 14rem 1fr 4.5rem;
     align-items: center;
     gap: 0.5rem;
   }
@@ -1030,6 +1089,24 @@
   }
   .env-row input.bad {
     border-color: var(--red);
+  }
+  .env-row input[readonly] {
+    color: var(--text-muted);
+    cursor: default;
+  }
+  .env-row.locked input {
+    background: transparent;
+    border-style: dashed;
+  }
+  .env-source {
+    font-size: 0.7rem;
+    line-height: 1.1;
+    color: var(--text-muted);
+    text-align: center;
+    cursor: help;
+  }
+  .env-source.seeded {
+    color: var(--orange);
   }
   .env-row .remove {
     background: none;
@@ -1094,7 +1171,8 @@
     padding: 0.5rem 1.1rem;
     font-size: 0.875rem;
   }
-  .actions button:not(.primary) {
+  .actions button:not(.primary),
+  .add-var {
     background: var(--surface-2);
     color: var(--text);
     border: 1px solid var(--border);

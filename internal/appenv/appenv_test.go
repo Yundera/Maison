@@ -305,3 +305,29 @@ func TestWriteRawCreatesTheFile(t *testing.T) {
 		t.Errorf("APP_NET = %q, want pcs", v)
 	}
 }
+
+func TestKeySourcesMirrorsSync(t *testing.T) {
+	cfg := newCfg(t, "APP_NET=pcs\nTZ=Asia/Tokyo\nAPP_DEFAULT_PASSWORD=s3cret\nEMPTY=\n")
+	got := KeySources(cfg)
+	want := map[string]string{
+		"AppID":                SourceMaison,
+		"PUID":                 SourceMaison,
+		"PGID":                 SourceMaison,
+		"DATA_ROOT":            SourceMaison,
+		"DATA_HOST_PATH":       SourceMaison,
+		"TZ":                   SourceDeployment, // .env.app wins over the computed TZ, as in Sync
+		"APP_NET":              SourceDeployment,
+		"APP_DEFAULT_PASSWORD": SourceSeeded,
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: got %q, want %q", k, got[k], v)
+		}
+	}
+	if _, ok := got["EMPTY"]; ok {
+		t.Error("an empty .env.app value is not forwarded, so it has no source")
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d keys, want %d: %v", len(got), len(want), got)
+	}
+}

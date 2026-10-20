@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/yundera/maison/internal/composecmd"
+	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/overrideform"
 )
@@ -24,7 +25,71 @@ func (r *Registry) GetOverrideForm(id string) (*overrideform.Form, error) {
 	if err != nil {
 		return nil, err
 	}
-	return overrideform.Build(base, override)
+	return r.buildForm(base, override)
+}
+
+// ParseOverrideForm builds the form from a candidate override instead of the one
+// on disk — how the settings window carries unsaved YAML edits into the Form view.
+func (r *Registry) ParseOverrideForm(id, override string) (*overrideform.Form, error) {
+	base, _, err := r.readCompose(id)
+	if err != nil {
+		return nil, err
+	}
+	return r.buildForm(base, []byte(override))
+}
+
+// RenderOverrideForm is the override a form would save, without saving it — how
+// the settings window carries unsaved Form edits into the YAML view. draft is the
+// override the form was built from when it is not the one on disk (the YAML view
+// has unsaved edits of its own); nil means the file.
+func (r *Registry) RenderOverrideForm(id string, form *overrideform.Form, draft *string) (string, error) {
+	base, override, err := r.readCompose(id)
+	if err != nil {
+		return "", err
+	}
+	if draft != nil {
+		override = []byte(*draft)
+	}
+	out, err := overrideform.Apply(base, override, form)
+	return string(out), err
+}
+
+// buildForm is overrideform.Build plus what only this package knows: the store's
+// opening URL as Maison reads it — translated from x-casaos for an app that has no
+// x-compose-app — and the click URL it resolves to on this deployment.
+func (r *Registry) buildForm(base, override []byte) (*overrideform.Form, error) {
+	form, err := overrideform.Build(base, override)
+	if err != nil {
+		return nil, err
+	}
+	baseF, err := composefile.Parse(base)
+	if err != nil {
+		return form, nil // the form itself parsed; the preview is a nicety
+	}
+	if ca := mergedMeta(baseF, nil); ca != nil {
+		w := form.WebUI
+		for _, f := range []struct {
+			s    *overrideform.Scalar
+			base string
+		}{
+			{&w.Scheme, ca.WebUIScheme},
+			{&w.Host, ca.WebUIHost},
+			{&w.Port, ca.WebUIPort},
+			{&w.Path, ca.WebUIPath},
+		} {
+			if f.s.Complex || f.s.Base != "" {
+				continue
+			}
+			// Base only: Apply compares against the base file's own x-compose-app,
+			// so a Value equal to a translated x-casaos one would be written out.
+			f.s.Base = f.base
+		}
+	}
+	overF, _ := composefile.Parse(override)
+	if ca := mergedMeta(baseF, overF); ca != nil {
+		form.WebURL = ca.WebURL(r.cfg.AppDomain())
+	}
+	return form, nil
 }
 
 // SetOverrideForm writes the settings form back into the override and recreates
@@ -35,15 +100,7 @@ func (r *Registry) GetOverrideForm(id string) (*overrideform.Form, error) {
 // won't parse never reaches the disk, so a bad save can't leave an app that no
 // longer comes up.
 func (r *Registry) SetOverrideForm(ctx context.Context, id string, form *overrideform.Form) error {
-	base, override, err := r.readCompose(id)
-	if err != nil {
-		return err
-	}
-	out, err := overrideform.Apply(base, override, form)
-	if err != nil {
-		return err
-	}
-	return r.SetConfig(ctx, id, string(out))
+	return r.SaveSettings(ctx, id, SettingsChange{Form: form})
 }
 
 // ValidateOverride checks a candidate override against the app's base compose
@@ -88,13 +145,17 @@ func (r *Registry) ValidateOverride(ctx context.Context, id, override string) er
 // EffectiveConfig returns the project as Compose actually resolves it — base plus
 // override, merged, with every variable interpolated. It is the answer to "what
 // did my override actually do", which neither file shows on its own.
-func (r *Registry) EffectiveConfig(ctx context.Context, id string) (string, error) {
+//
+// resolve chooses between the merge with every ${VAR} still written as a variable
+// (false — what the settings window shows by default) and the merge with them
+// filled in from the .env (true — "what value did this actually get").
+func (r *Registry) EffectiveConfig(ctx context.Context, id string, resolve bool) (string, error) {
 	dir := filepath.Join(r.cfg.AppsDir(), id)
 	basePath := filepath.Join(dir, "docker-compose.yml")
 	if _, err := os.Stat(basePath); err != nil {
 		return "", err
 	}
-	return composecmd.Config(ctx, dir, id, r.composeFiles(dir), envinject.Env(r.cfg, id))
+	return composecmd.Config(ctx, dir, id, r.composeFiles(dir), envinject.Env(r.cfg, id), resolve)
 }
 
 // readCompose reads an app's base compose (required — only managed apps have one)

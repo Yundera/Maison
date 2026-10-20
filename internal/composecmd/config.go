@@ -12,8 +12,16 @@ import (
 // files, interpolating the variables, applying the override tags — and returns
 // the result. It is what the settings window shows as the "effective" compose:
 // exactly what the two files add up to, which is otherwise invisible.
-func Config(ctx context.Context, dir, project string, files, env []string) (string, error) {
-	out, err := config(ctx, dir, project, files, env, false)
+//
+// With interpolate false, every ${VAR} is left as written (`--no-interpolate`):
+// the merge alone, which is what the settings window shows by default — the files
+// are written with variables, so their merge reads best with them too.
+func Config(ctx context.Context, dir, project string, files, env []string, interpolate bool) (string, error) {
+	extra := []string{}
+	if !interpolate {
+		extra = append(extra, "--no-interpolate")
+	}
+	out, err := config(ctx, dir, project, files, env, extra...)
 	if err != nil {
 		return "", err
 	}
@@ -25,19 +33,17 @@ func Config(ctx context.Context, dir, project string, files, env []string) (stri
 // typo'd YAML or an unknown key is caught here rather than by watching the stack
 // fail to come back up.
 func Validate(ctx context.Context, dir, project string, files, env []string) error {
-	_, err := config(ctx, dir, project, files, env, true)
+	_, err := config(ctx, dir, project, files, env, "--quiet")
 	return err
 }
 
-func config(ctx context.Context, dir, project string, files, env []string, quiet bool) (string, error) {
+func config(ctx context.Context, dir, project string, files, env []string, flags ...string) (string, error) {
 	args := []string{"compose", "-p", project}
 	for _, f := range files {
 		args = append(args, "-f", f)
 	}
 	args = append(args, "config")
-	if quiet {
-		args = append(args, "--quiet")
-	}
+	args = append(args, flags...)
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = dir

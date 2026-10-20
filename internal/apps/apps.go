@@ -91,6 +91,9 @@ type App struct {
 	// served on demand by POST /api/apps/{id}/credentials/show.
 	HasCredentials     bool `json:"has_credentials,omitempty"`
 	CredentialsPending bool `json:"credentials_pending,omitempty"`
+	// HasTips says the app's effective tips (store's, or the operator's override)
+	// are non-empty. The tile menu offers Tips only then; editing stays in Settings.
+	HasTips bool `json:"has_tips,omitempty"`
 	// Busy is set while a lifecycle operation (start/stop/restart/uninstall) is
 	// in flight for this app. The tile then shows a "…" overlay and hides its
 	// burger menu until the operation settles.
@@ -601,6 +604,7 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 		app.Parent = strings.TrimSpace(ca.Parent)
 		// Managed only: the credentials endpoint renders from the app's own folder.
 		app.HasCredentials = managed && declaresCredentials(ca)
+		app.HasTips = managed && strings.TrimSpace(ca.Tips.Value()) != ""
 	}
 	app.View = deriveView(ca, svcPorts)
 	lc := lifecycleOf(ca)

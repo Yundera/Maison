@@ -193,7 +193,7 @@
       {/if}
       {#if tile.kind === 'app'}
         <button onclick={openSettings}>{$t('settings')}</button>
-        {#if tile.app.managed}
+        {#if tile.app.managed && tile.app.has_tips}
           <button
             onclick={() => {
               menuOpen = false

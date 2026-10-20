@@ -75,11 +75,12 @@ x-compose-app:
 
 | Field | Type | Required | Meaning / Maison use | Translated from `x-casaos` |
 |---|---|---|---|---|
-| `schema_version` | int | no (default `1`) | Spec version (currently **2**). `secrets`, `variables`, `files`, `init` and the seed tree are **additive** and do not raise it — an older build ignores what it does not know instead of dropping the whole block (which would cost the app its folders and routes too). A build that predates the declared version treats the whole block as absent and reads the app as a CasaOS app (its `x-casaos`, if any) — note that it **does not refuse to install the app**, so raising the version degrades an app rather than gating it. v1 files keep working. A block that is merely malformed is *not* absent: it is an error, never a silent fallback. | — |
+| `schema_version` | int | no (default `1`) | Spec version (currently **2**). `secrets`, `variables`, `files`, `init` and the seed tree are **additive** and do not raise it — an older build ignores what it does not know instead of dropping the whole block (which would cost the app its folders and routes too). A build that predates the declared version treats the whole block as absent and reads the app as a CasaOS app (its `x-casaos`, if any) — note that it **does not refuse to install the app**, so raising the version degrades an app rather than gating it. v1 files keep working. A block that is merely malformed is *not* absent — Maison does not fall back to its `x-casaos` — but see [A malformed block](#a-malformed-block) for what it costs. | — |
 | `id` | string | no | Stable app identifier (should equal the Compose project `name`). Defaults to the project name. | `store_app_id` |
 | `title` | string \| localized | no | Tile + store display name. | `title` |
 | `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
 | `category` | string | no | Store grouping. | `category` |
+| `version` | string | no | The app's release as people read it (`2.4.0`, `2024.10.1-ls45`). Parsed but not yet displayed, and never compared: which data an install holds is `data_version`'s job. | — |
 | **`view`** | `apps` \| `service` \| `system` | no (default: `apps`, or `service` for an app with no web UI) | Which dashboard grid the app's tile lands in — **not** a store category, and not a behaviour. See [Views](#views). | — |
 | **`parent`** | string | no | Compose project name of the app this one **extends**. Its tile nests under that app's instead of standing alone. Unresolvable — absent, misspelled, itself an extension — falls back to an ordinary tile. See [`parent` makes the app an extension of another](#parent-makes-the-app-an-extension-of-another). | — |
 | `tagline` | string \| localized | no | One-line store summary. | `tagline` |
@@ -87,24 +88,27 @@ x-compose-app:
 | `developer` | string | no | Store attribution. | `developer`, else `author` |
 | `screenshots` | path[] \| url[] | no | Store gallery. See [Assets](#assets). | `screenshot_link` |
 | `thumbnail` | path \| url | no | Store card image. See [Assets](#assets). | `thumbnail` |
-| `architectures` | string[] | no | e.g. `[amd64, arm64]`. Advisory. | `architectures` |
+| `architectures` | string[] | no | e.g. `[amd64, arm64]`. Advisory: parsed, but not currently shown or checked. | `architectures` |
 | `min_memory` | int (MB) | no | Memory the app needs. Advisory, shown in the store. | `min_memory` |
 | `main` | string | no (default: the only service) | The compose service that **is** the app: its image identifies the app when Maison matches an installed stack to a store app, and its published port is the one opened when nothing else names an address. | `main` |
 | **`webui-host`** | string | **yes\*** | The web UI's **host** — the final URL host, templated exactly like the app's Caddy route (e.g. `jellyfin-${domain}`). Omit for headless apps. | `hostname` |
 | `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). Without a `webui-host` it names a port on the box's own address (the host the dashboard was opened on), which is how a CasaOS app with no `hostname` opens. | `port_map` (dropped when it is the scheme's default port) |
 | `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` (CasaOS default `http`) |
-| `webui-path` | string | no (default `/`) | Path appended to the host. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
-| `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url`. Never the tile's default action. | — |
+| `webui-path` | string | no (default `/`) | Path appended to the host; a missing leading `/` is added. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
+| **`routes`** | object[] | no | The app's web endpoints, stated without a domain or a proxy: `{ service?, name?, upstream-port, upstream-scheme?, insecure-upstream?, max-body? }`. Maison writes the Caddy labels and publishes each route on every domain the deployment carries. Counts as a web UI for [`view`](#an-app-with-no-web-ui-is-a-service). See [`domains.md`](./domains.md) and [Routes](#routes). | — |
+| `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url`. Parsed, but **not rendered by any current build**. | — |
 | `tips` | string \| localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. Clearing an edit falls back to the store's tips. | `tips.before_install` + `tips.custom`, joined |
 | **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). |
 | **`secrets`** | map | no | Values **generated once** and ensured in the app's `.env`. See [Secrets and variables](#secrets-and-variables). |
 | **`variables`** | map | no | Templates ensured in the app's `.env` on **every** up. See [Secrets and variables](#secrets-and-variables). |
-| **`credentials`** | object[] | no | The app's **initial logins**, shown to the operator the first time the app is opened. See [Credentials](#credentials). | `tips` naming `${APP_DEFAULT_PASSWORD}` |
+| **`credentials`** | object[] | no | The app's **initial logins**, shown to the operator the first time the app is opened. See [Credentials](#credentials). | — (a CasaOS app gets no credentials dialog) |
 | **`files`** | object[] | no | Individual files Maison writes — the escape hatch beside the [seed tree](#the-seed-tree). See [Files](#files). |
 | **`init`** | object[] | no | One-shot containers run around the app's stack. See [Init](#init). | — |
 | **`hooks`** | object | no | `{ pre_install, post_install, pre_up, post_up }` — host shell around the app's lifecycle. See [Hooks](#hooks). | `pre-install-cmd` → `pre_install`, `post-install-cmd` → `post_install` |
 | **`lifecycle`** | object | no | `{ stoppable, uninstallable, updatable }`, all default `true` — whether Maison may stop, uninstall or update the app. See [Lifecycle](#lifecycle-what-the-operator-may-do-to-the-app). | — |
 | **`backup`** | object | no | `{ exclude, skip }` — directories of **derived** data to leave out of backups, or the whole app. See [Backup exclusions](#backup-exclusions) and [Skipping an app entirely](#skipping-an-app-entirely). | — |
+| **`data_version`** | int | no (default `1`) | The shape of data this compose expects. An install's data is marked with it; a start refuses data in another shape, and an update converts it with `migrations`. Read from the **base** compose only. See [`migrations.md`](./migrations.md). | — |
+| **`migrations`** | object[] | no | One step per data version `2 … data_version`: `{ id, name?, timeout? }` plus exactly one of a container (`image`, `command`, … as in [`init`](#init)), a `script` under the store app's `migrations/` folder (with the `images` it runs), or `blocked` (Markdown; the update is refused). Read from the base compose only. See [`migrations.md`](./migrations.md). | — |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
 `webui-host` is headless — its tile has no "open" action — unless it publishes a
@@ -118,7 +122,28 @@ published host port opens a CasaOS app; a native app says the same with the
 `devices`) and the localized `image` map — is not read.
 
 **Localized** means either a plain string (`title: Jellyfin`) or a locale map
-(`title: { en_us: Jellyfin, fr_fr: Jellyfin }`). Maison prefers `en_us`.
+(`title: { en_us: Jellyfin, fr_fr: Jellyfin }`). Maison prefers `en_us`, else any
+entry.
+
+### A malformed block
+
+A block Maison cannot decode — a list where a map belongs, a scalar YAML types
+in a way a field refuses — is not reported anywhere. Every reader discards the
+parse error and treats the app as carrying **no metadata at all**:
+
+- the tile shows the folder name, no icon and no click URL;
+- on every up, `folders`, `secrets`, `variables`, `files`, `init` and `hooks` are
+  all skipped, and `docker compose up` runs anyway.
+
+One bad scalar therefore costs the whole block, not the one field. That is why the
+nested entries (`folders`, `files`, `routes`, `credentials`, `backup.exclude`)
+decode their scalars as text, so `mode: 0755`, `user: 1000` or
+`upstream-port: 80` are taken as written rather than failing the block, and why a
+malformed credential `change` only makes that credential initial-only.
+
+`data_version` / `migrations` are the exception: they are read separately, and a
+block Maison cannot read there refuses the update instead of meaning "no
+migrations".
 
 ### Assets
 
@@ -187,7 +212,11 @@ own configuration (so the value can be shared verbatim with the Caddy label):
 
 | Placeholder | Resolves to | Source |
 |---|---|---|
-| `${domain}` / `${DOMAIN}` | the deployment's base domain | Maison `REF_DOMAIN` |
+| `${domain}` / `${DOMAIN}` / `${APP_DOMAIN}` | the deployment's base domain | Maison `REF_DOMAIN` |
+
+`${APP_DOMAIN}` is the spelling the rest of an app's compose (Caddy labels) uses, so
+a `webui-host` copied from a `caddy_N` label resolves as-is. Any other `${…}` left in
+the host makes the URL unresolvable.
 
 - Resolution happens on **every render**, so the URL tracks a domain change and
   works for **unmanaged/discovered** apps Maison never installed — nothing is
@@ -220,7 +249,7 @@ x-compose-app:
 
 **Headless app**: omit `webui-host` → the tile has no "open" action.
 
-**Extra buttons**:
+**Extra buttons** (`links` — parsed, not yet rendered):
 
 ```yaml
 x-compose-app:
@@ -229,6 +258,33 @@ x-compose-app:
     - name: Docs
       url: https://docs.photoprism.app
 ```
+
+### Routes
+
+`routes` declares the app's web endpoints instead of hand-written Caddy labels.
+Maison generates the labels and publishes each route on every domain the
+deployment answers on; [`domains.md`](./domains.md) is authoritative.
+
+```yaml
+x-compose-app:
+  webui-host: outline-${APP_DOMAIN}
+  routes:
+    - upstream-port: 3000
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `service` | the app's `main`, or its only service | The service the labels go on — the one serving the port. |
+| `name` | the app's id | The host's leading label: `outline` in `outline-${APP_DOMAIN}`. |
+| `upstream-port` | — | The port **inside** the container. Not `webui-port`, which is the click URL's port. |
+| `upstream-scheme` | `http` | `https` for an app that terminates TLS itself. |
+| `insecure-upstream` | `false` | Skip verifying the upstream's certificate (self-signed). |
+| `max-body` | proxy default | Raise the request-body cap, e.g. `10G`. |
+
+A route's `upstream-port` on the `main` service is also what picks the published
+host port that opens the app when no URL resolves. `routes` does not raise
+`schema_version`: a build that predates it generates nothing, so a label-free app is
+unreachable there but otherwise intact.
 
 ---
 
@@ -258,9 +314,15 @@ Maison runs goes through — install, start from the tile, store update, and sav
 the app's config all take the same path:
 
 ```
-folders → secrets → variables → init(pre_up) → seed → files
-        → pre_up → docker compose up -d --remove-orphans → init(post_up) → post_up
+data_version check → sync generated routes → sync .env
+  → folders → secrets → variables → [migrations] → init(pre_up) → seed → files
+  → pre_up → docker compose up -d --remove-orphans → init(post_up) → post_up
 ```
+
+The data-version check refuses to start an app whose data is in another shape than
+its compose expects (an update checks instead that the data is where its plan
+starts). `[migrations]` runs only during an update that crosses a data version —
+see [`migrations.md`](./migrations.md).
 
 `pre_install` / `post_install` bracket that sequence, but only the **first** time —
 during the install itself:
@@ -276,7 +338,10 @@ pulled, before any hook runs, and before the containers start — on the first b
 declared file: the sequence is a **converge**, not an installer, and it runs in
 full on every start.
 
-Everything before `compose up` is **fatal** on failure, and that is the point. The
+Everything before `compose up` is **fatal** on failure, and that is the point (a
+`.env` sync failure is the exception: logged and reported as an incident). It
+presumes the block parsed — a [malformed block](#a-malformed-block) skips these
+steps instead of failing them. The
 shell version of this work was not: a hook whose `openssl` was missing wrote an
 empty secret, exited 0, and left an app that looked installed.
 
@@ -1093,8 +1158,8 @@ fire:
 
 `pre_install` sets up a **fresh** install only — it never re-runs on update, so a
 change to what it produces never reaches existing installs. Carrying that change to
-them is what a data migration is for; see [`migrations.md`](./migrations.md) (design)
-for which of the two runs when.
+them is what a data migration is for; see [`migrations.md`](./migrations.md) for
+which of the two runs when.
 
 ```yaml
 x-compose-app:
@@ -1132,7 +1197,7 @@ its install hooks; one that carries `x-compose-app` gets its `hooks` alone, and 
 Hooks run through `/bin/bash -c` **inside the Maison container**, with the working
 directory set to the app's folder, but they talk to the **host** Docker daemon
 (`DOCKER_HOST=unix:///var/run/docker.sock`). They get the app's interpolation
-variables plus its `.env`, `AppID`, and `APP_DIR`.
+variables plus its `.env`, `AppID`, and `APP_DIR` (the app folder's **host** path).
 
 > **A hook does not run on the host.** Older store documentation said it did. It
 > never has — the CasaOS fork Maison replaced ran hooks in its own container too.

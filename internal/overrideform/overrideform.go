@@ -49,10 +49,50 @@ const (
 	tagReset    = "!reset"    // drop the base's value entirely
 )
 
-// Form is an app's override, one entry per service of the merged project.
+// Form is an app's override, one entry per service of the merged project, plus
+// the app-level opening URL.
 type Form struct {
 	Services []Service `json:"services"`
+	// WebUI is always set by Build. A form posted without it leaves the override's
+	// webui-* keys alone rather than clearing them.
+	WebUI *WebUI `json:"webui,omitempty"`
+	// WebURL is the click URL the app resolves to today, for the form's preview.
+	// Filled by the caller (it needs the deployment's domain); ignored by Apply.
+	WebURL string `json:"web_url,omitempty"`
 }
+
+// WebUI is the app's opening URL: the x-compose-app webui-* keys, which the tile's
+// Open action points at. Each is a scalar like a service field — Base is the
+// store's, and an empty Value inherits it.
+//
+// Build reads Base from the base file's own x-compose-app block only. A store app
+// that declares its URL in x-casaos instead has it translated by composefile, which
+// this package does not know about — the caller fills Base from that translation.
+type WebUI struct {
+	Scheme Scalar `json:"scheme"`
+	Host   Scalar `json:"host"`
+	Port   Scalar `json:"port"`
+	Path   Scalar `json:"path"`
+}
+
+// webuiKeys pairs each WebUI field with its x-compose-app key.
+func webuiKeys(w *WebUI) []struct {
+	key string
+	f   *Scalar
+} {
+	return []struct {
+		key string
+		f   *Scalar
+	}{
+		{"webui-scheme", &w.Scheme},
+		{"webui-host", &w.Host},
+		{"webui-port", &w.Port},
+		{"webui-path", &w.Path},
+	}
+}
+
+// xcaKey is the block the opening URL lives in, in both files.
+const xcaKey = "x-compose-app"
 
 // Service is the set of fields the form can edit on one compose service. The
 // common ones sit at the top; the rest are behind the UI's "Advanced" disclosure.
@@ -144,6 +184,11 @@ func Build(base, override []byte) (*Form, error) {
 			CapAdd:     listField(b, o, "cap_add"),
 		})
 	}
+	form.WebUI = &WebUI{}
+	bx, ox := mapGet(baseRoot, xcaKey), mapGet(overRoot, xcaKey)
+	for _, k := range webuiKeys(form.WebUI) {
+		*k.f = scalarField(bx, ox, k.key)
+	}
 	return form, nil
 }
 
@@ -190,6 +235,19 @@ func Apply(base, override []byte, form *Form) ([]byte, error) {
 	}
 	if svcs := mapGet(overRoot, "services"); svcs != nil && len(svcs.Content) == 0 {
 		mapDelete(overRoot, "services")
+	}
+
+	// The opening URL, under the override's x-compose-app — next to the tips and
+	// whatever else the operator keeps there, which are left as they are.
+	if form.WebUI != nil {
+		bx := mapGet(baseRoot, xcaKey)
+		ox := yamlnode.EnsureMap(overRoot, xcaKey)
+		for _, k := range webuiKeys(form.WebUI) {
+			applyScalar(bx, ox, k.key, k.f.Value)
+		}
+		if len(ox.Content) == 0 {
+			mapDelete(overRoot, xcaKey)
+		}
 	}
 	if len(overRoot.Content) == 0 {
 		return nil, nil

@@ -1,29 +1,5 @@
-<script lang="ts">
-  import {
-    getOverrideForm,
-    setOverrideForm,
-    type EnvField,
-    type FormService,
-    type ListField,
-    type OverrideForm,
-    type Scalar,
-  } from '../stores/apps'
-
-  let { id, onsaved }: { id: string; onsaved?: () => void } = $props()
-
-  let form = $state<OverrideForm | null>(null)
-  let loadErr = $state('')
-  let svcIndex = $state(0)
-  let advanced = $state(false)
-  let saving = $state(false)
-  let msg = $state('')
-
-  let loaded = false
-  $effect(() => {
-    if (loaded) return
-    loaded = true
-    getOverrideForm(id).then(normalize).then((f) => (form = f)).catch((e) => (loadErr = String(e)))
-  })
+<script lang="ts" module>
+  import type { EnvField, FormService, ListField, OverrideForm, Scalar } from '../stores/apps'
 
   const scalarKeys = [
     'image',
@@ -34,14 +10,17 @@
     'cpus',
   ] as const satisfies readonly (keyof FormService)[]
   const listKeys = ['ports', 'volumes', 'devices', 'cap_add'] as const satisfies readonly (keyof FormService)[]
+  const webuiKeys = ['scheme', 'host', 'port', 'path'] as const
 
   /** Two adjustments the form makes to what the server sends:
    *  - a field the store sets but the user hasn't touched shows the store's value as
    *    a ghost placeholder rather than as text, so an empty box reads as "inherited"
    *    — and clearing one is exactly how you reset it (the server drops the key);
    *  - an absent list arrives as null (Go's empty slice), which the row editors and
-   *    the change detection below both need as an array. */
-  function normalize(f: OverrideForm): OverrideForm {
+   *    the change detection below both need as an array.
+   *  Exported: the settings window normalizes every form it receives (load, and the
+   *  YAML → Form switch) before handing it here. */
+  export function normalizeForm(f: OverrideForm): OverrideForm {
     for (const s of f.services) {
       for (const k of scalarKeys) if (!s[k].overridden) s[k].value = ''
       for (const k of listKeys) {
@@ -51,23 +30,36 @@
       s.environment.value ??= []
       s.environment.base ??= []
     }
+    if (f.webui) for (const k of webuiKeys) if (!f.webui[k].overridden) f.webui[k].value = ''
     return f
   }
+</script>
 
-  const svc = $derived(form?.services[svcIndex])
+<script lang="ts">
+  import { untrack } from 'svelte'
+  import type { EnvField as EF, ListField as LF, OverrideForm as OF, Scalar as SC } from '../stores/apps'
+
+  // Controlled: the settings window owns the form (it saves it, together with the
+  // .env, and carries it across the Form / YAML switch).
+  let { form = $bindable() }: { form: OF } = $props()
+
+  let svcIndex = $state(0)
+  let advanced = $state(false)
+
+  const svc = $derived(form?.services[Math.min(svcIndex, (form?.services.length ?? 1) - 1)])
 
   // --- what's overridden (drives the chips, the reset arrows, and the footer count)
 
   const sameList = (a: string[], b: string[]) =>
     a.length === b.length && a.every((v, i) => v === b[i])
 
-  function scalarSet(f: Scalar): boolean {
+  function scalarSet(f: SC): boolean {
     return f.value.trim() !== '' && f.value !== f.base
   }
-  function listSet(f: ListField): boolean {
+  function listSet(f: LF): boolean {
     return !sameList(clean(f.value), f.base)
   }
-  function envSet(f: EnvField): boolean {
+  function envSet(f: EF): boolean {
     const v = f.value.filter((e) => e.key.trim() !== '')
     return (
       v.length !== f.base.length ||
@@ -75,8 +67,8 @@
     )
   }
   /** A row the store ships and the user hasn't moved or edited. */
-  const fromStore = (f: ListField, i: number) => f.base[i] === f.value[i]
-  const envFromStore = (f: EnvField, i: number) => {
+  const fromStore = (f: LF, i: number) => f.base[i] === f.value[i]
+  const envFromStore = (f: EF, i: number) => {
     const b = f.base[i]
     return !!b && b.key === f.value[i].key && b.value === f.value[i].value
   }
@@ -93,70 +85,109 @@
 
   const clean = (rows: string[]) => rows.map((r) => r.trim()).filter((r) => r !== '')
 
-  function addRow(f: ListField) {
+  function addRow(f: LF) {
     f.value = [...f.value, '']
   }
-  function dropRow(f: ListField, i: number) {
+  function dropRow(f: LF, i: number) {
     f.value = f.value.filter((_, j) => j !== i)
   }
-  function addVar(f: EnvField) {
+  function addVar(f: EF) {
     f.value = [...f.value, { key: '', value: '' }]
   }
-  function dropVar(f: EnvField, i: number) {
+  function dropVar(f: EF, i: number) {
     f.value = f.value.filter((_, j) => j !== i)
   }
 
-  function resetScalar(f: Scalar) {
+  function resetScalar(f: SC) {
     f.value = ''
   }
-  function resetList(f: ListField) {
+  function resetList(f: LF) {
     f.value = [...f.base]
   }
-  function resetEnv(f: EnvField) {
+  function resetEnv(f: EF) {
     f.value = f.base.map((e) => ({ ...e }))
   }
 
-  async function save() {
-    if (!form) return
-    saving = true
-    msg = ''
-    try {
-      await setOverrideForm(id, form)
-      msg = 'Saved & recreated.'
-      onsaved?.()
-    } catch (e) {
-      msg = String(e)
-    } finally {
-      saving = false
-    }
-  }
+  // A client-side approximation of the click URL while the host is being edited;
+  // the server's resolved one (web_url) is shown otherwise.
+  const previewUrl = $derived(
+    (() => {
+      const w = form?.webui
+      if (!w) return ''
+      const pick = (f: SC) => f.value.trim() || f.base
+      const host = pick(w.host)
+      if (!host) return ''
+      const port = pick(w.port) ? `:${pick(w.port)}` : ''
+      let path = pick(w.path) || '/'
+      if (!path.startsWith('/')) path = '/' + path
+      return `${pick(w.scheme) || 'https'}://${host}${port}${path}`
+    })(),
+  )
+  // The URL fields as the form last arrived (a load, a save, a YAML → Form switch
+  // all hand over a new form object): while they still read that way, the server's
+  // resolved URL is the truth; once edited, only the client's preview can follow.
+  let webuiAsLoaded = $state('')
+  $effect.pre(() => {
+    const f = form
+    webuiAsLoaded = untrack(() => JSON.stringify(f?.webui ?? null))
+  })
+  const webuiEdited = $derived(JSON.stringify(form?.webui ?? null) !== webuiAsLoaded)
+  const webuiChanged = $derived(
+    !!form?.webui && webuiKeys.some((k) => scalarSet(form.webui![k])),
+  )
 </script>
 
-{#if loadErr}
-  <p class="hint err">{loadErr}</p>
-{:else if !form || !svc}
+{#if !form || !svc}
   <p class="hint">Loading…</p>
 {:else}
   <p class="hint">
-    Empty means <strong>inherit from the store</strong>. Rows marked <span class="chip">store</span>
-    come from <code>docker-compose.yml</code>; editing or removing one replaces the store's list
-    outright (Compose would otherwise keep both). Everything here is written to
-    <code>docker-compose.override.yml</code> — switch to <strong>YAML</strong> to see the file.
+    What runs: the store's <code>docker-compose.yml</code> with your changes on top, variables as
+    written. Rows marked <span class="chip">store</span> are the store's — remove one to replace the
+    store's list outright (Compose would otherwise keep both), or add your own below. Empty means
+    <strong>inherit from the store</strong>. Saved into <code>docker-compose.override.yml</code> —
+    switch to <strong>YAML</strong> to see the file.
+    <span class="count">
+      {changed + (webuiChanged ? 1 : 0) === 0
+        ? 'Nothing overridden.'
+        : `${changed + (webuiChanged ? 1 : 0)} overridden.`}
+    </span>
   </p>
 
-  {#if form.services.length > 1}
-    <nav class="services">
-      {#each form.services as s, i (s.name)}
-        <button class:active={i === svcIndex} onclick={() => (svcIndex = i)}>{s.name}</button>
-      {/each}
-    </nav>
-  {/if}
-
   <div class="fields">
+    {#if form.webui}
+      <div class="group">Opening URL</div>
+      {@render select('Scheme', form.webui.scheme, ['https', 'http'])}
+      {@render scalar('Host', form.webui.host, 'e.g. myapp-${APP_DOMAIN}')}
+      {@render scalar('Port', form.webui.port, '(none — 443 via the gateway)')}
+      {@render scalar('Path', form.webui.path, '/')}
+      <p class="note url">
+        Where the tile's <em>Open</em> points.
+        {#if webuiEdited && previewUrl}
+          Preview: <span class="mono">{previewUrl}</span>
+        {:else if form.web_url}
+          Now: <a href={form.web_url} target="_blank" rel="noopener">{form.web_url}</a>
+        {:else if previewUrl}
+          Preview: <span class="mono">{previewUrl}</span>
+        {:else}
+          None set — the tile has no <em>Open</em> action.
+        {/if}
+      </p>
+    {/if}
+
+    {#if form.services.length > 1}
+      <nav class="services">
+        {#each form.services as s, i (s.name)}
+          <button class:active={i === svcIndex} onclick={() => (svcIndex = i)}>{s.name}</button>
+        {/each}
+      </nav>
+    {:else}
+      <div class="group">Service <span class="mono">{svc.name}</span></div>
+    {/if}
+
     {@render scalar('Image', svc.image, 'e.g. jellyfin/jellyfin:10.9.6')}
     {@render select('Restart', svc.restart, ['unless-stopped', 'always', 'on-failure', 'no'])}
     {@render list('Ports', svc.ports, 'host:container — e.g. 8096:8096 or 8096:8096/udp')}
-    {@render list('Volumes', svc.volumes, 'host:container[:ro] — e.g. /DATA/AppData/app/config:/config')}
+    {@render list('Volumes', svc.volumes, 'host:container[:ro] — e.g. ${DATA_ROOT}/AppData/app/config:/config')}
     {@render env('Environment', svc.environment)}
 
     <button class="disclosure" onclick={() => (advanced = !advanced)}>
@@ -171,16 +202,6 @@
       {@render list('Devices', svc.devices, 'e.g. /dev/dri:/dev/dri')}
       {@render list('Capabilities', svc.cap_add, 'cap_add — e.g. NET_ADMIN')}
     {/if}
-  </div>
-
-  <div class="actions">
-    <span class="msg">{msg}</span>
-    <span class="count">
-      {changed === 0 ? 'Nothing overridden' : `${changed} setting${changed > 1 ? 's' : ''} overridden`}
-    </span>
-    <button class="primary" disabled={saving} onclick={save}>
-      {saving ? 'Saving…' : 'Save & recreate'}
-    </button>
   </div>
 {/if}
 
@@ -233,9 +254,10 @@
       <span class="label">{label}</span>
       <div class="col">
         {#each f.value as _, i (i)}
-          <div class="row">
-            <input bind:value={f.value[i]} spellcheck="false" {placeholder} />
-            {#if fromStore(f, i)}<span class="chip">store</span>{/if}
+          {@const store = fromStore(f, i)}
+          <div class="row" class:store>
+            <input bind:value={f.value[i]} spellcheck="false" {placeholder} readonly={store} />
+            {#if store}<span class="chip">store</span>{/if}
             <button class="icon" aria-label="Remove" onclick={() => dropRow(f, i)}>✕</button>
           </div>
         {/each}
@@ -254,10 +276,11 @@
       <span class="label">{label}</span>
       <div class="col">
         {#each f.value as _, i (i)}
-          <div class="row">
-            <input class="key" bind:value={f.value[i].key} spellcheck="false" placeholder="KEY" />
-            <input bind:value={f.value[i].value} spellcheck="false" placeholder="value" />
-            {#if envFromStore(f, i)}<span class="chip">store</span>{/if}
+          {@const store = envFromStore(f, i)}
+          <div class="row" class:store>
+            <input class="key" bind:value={f.value[i].key} spellcheck="false" placeholder="KEY" readonly={store} />
+            <input bind:value={f.value[i].value} spellcheck="false" placeholder="value" readonly={store} />
+            {#if store}<span class="chip">store</span>{/if}
             <button class="icon" aria-label="Remove" onclick={() => dropVar(f, i)}>✕</button>
           </div>
         {/each}
@@ -281,9 +304,6 @@
     color: var(--text-muted);
     font-size: 0.8rem;
     margin: 0 0 0.6rem;
-  }
-  .hint.err {
-    color: var(--red);
   }
   code {
     background: var(--surface-2);
@@ -421,30 +441,34 @@
     font-size: 0.72rem;
     color: var(--text-muted);
   }
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    gap: 0.75rem;
-    margin-top: 0.6rem;
-  }
-  .msg,
   .count {
-    font-size: 0.8rem;
+    margin-left: 0.25rem;
+    color: var(--text);
+  }
+  /* A heading inside the field list: the app-level opening URL, then the service. */
+  .group {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
     color: var(--text-muted);
+    padding-top: 0.4rem;
+    border-bottom: 1px solid var(--border);
   }
-  .msg {
-    margin-right: auto;
+  .mono {
+    font-family: ui-monospace, monospace;
+    text-transform: none;
+    letter-spacing: 0;
   }
-  .primary {
-    background: var(--primary);
-    color: var(--text-on-accent);
-    border: none;
-    border-radius: 8px;
-    padding: 0.5rem 1.1rem;
-    font-size: 0.875rem;
+  .note.url {
+    margin: 0 0 0 7.75rem;
   }
-  .primary:disabled {
-    opacity: 0.5;
+  .note.url a {
+    color: var(--primary);
+  }
+  /* The store's own rows: shown as what runs, not as something typed here. */
+  .row.store input {
+    background: transparent;
+    border-style: dashed;
+    color: var(--text-muted);
   }
 </style>

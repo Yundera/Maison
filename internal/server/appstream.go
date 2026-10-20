@@ -185,6 +185,87 @@ func (s *Server) handlePutOverrideForm(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// settingsBody is one Config-tab save: the YAML view's draft override, the Form
+// view's edits applied on top of it, and/or the .env. An absent part is left as
+// it is.
+type settingsBody struct {
+	Override *string            `json:"override,omitempty"`
+	Form     *overrideform.Form `json:"form,omitempty"`
+	Env      *[]envinject.Var   `json:"env,omitempty"`
+}
+
+// handlePutAppSettings applies a Config-tab save — override and .env together — and
+// recreates the app once.
+func (s *Server) handlePutAppSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	var body settingsBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if body.Env != nil {
+		if err := envinject.ValidateVars(*body.Env); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	err := s.apps.SaveSettings(r.Context(), chi.URLParam(r, "id"), apps.SettingsChange{
+		Override: body.Override, Form: body.Form, Env: body.Env,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.broadcastApps()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleRenderOverrideForm returns the override a form would save, writing
+// nothing — the settings window's Form → YAML switch with unsaved edits. The form
+// is applied onto `override` when given (the YAML view's own unsaved draft), onto
+// the file otherwise.
+func (s *Server) handleRenderOverrideForm(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	var body struct {
+		Form     *overrideform.Form `json:"form"`
+		Override *string            `json:"override,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Form == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	out, err := s.apps.RenderOverrideForm(chi.URLParam(r, "id"), body.Form, body.Override)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"override": out})
+}
+
+// handleParseOverrideForm returns the form for a candidate override, writing
+// nothing — the settings window's YAML → Form switch with unsaved edits. YAML
+// that doesn't parse is a 400 carrying the parser's message.
+func (s *Server) handleParseOverrideForm(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	var body configBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	form, err := s.apps.ParseOverrideForm(chi.URLParam(r, "id"), body.Override)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, form)
+}
+
 // handleValidateOverride parses a candidate override against the app's base
 // compose without applying it. A rejected override is a 200 with the parse error
 // in the body, not an HTTP error: the request itself succeeded, and the answer
@@ -206,12 +287,14 @@ func (s *Server) handleValidateOverride(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleEffectiveConfig returns the project as Compose resolves it — base plus
-// override, merged and interpolated.
+// override, merged. Variables stay as written unless ?resolve=1 asks for them
+// filled in from the .env.
 func (s *Server) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return
 	}
-	out, err := s.apps.EffectiveConfig(r.Context(), chi.URLParam(r, "id"))
+	resolve := r.URL.Query().Get("resolve") == "1"
+	out, err := s.apps.EffectiveConfig(r.Context(), chi.URLParam(r, "id"), resolve)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]string{"error": err.Error()})
 		return
@@ -220,8 +303,8 @@ func (s *Server) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePutTips persists the app's editable tips into its override. It writes
-// only the override file — no Docker recreate and no apps broadcast, since tips
-// are pure metadata that never affect the tile.
+// only the override file — no Docker recreate — then rebroadcasts the list, since
+// whether tips are empty decides if the tile menu offers them (has_tips).
 func (s *Server) handlePutTips(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApps(w) {
 		return
@@ -235,6 +318,7 @@ func (s *Server) handlePutTips(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.broadcastApps()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

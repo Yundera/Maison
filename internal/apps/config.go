@@ -10,6 +10,7 @@ import (
 
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/overrideform"
 	"github.com/yundera/maison/internal/stackup"
 )
 
@@ -133,81 +134,113 @@ func (r *Registry) SetTips(id, tips string) error {
 
 // SetConfig writes the override file (or removes it when empty) and recreates
 // the app as base + override — Maison never mutates the store-provided base.
-//
-// The candidate is validated first: an override Compose won't parse is rejected
-// before it is written, so a typo can't leave an app whose stack no longer comes
-// up and whose config window is the only way to fix it.
 func (r *Registry) SetConfig(ctx context.Context, id, override string) error {
-	dir := filepath.Join(r.cfg.AppsDir(), id)
-	basePath := filepath.Join(dir, "docker-compose.yml")
-	if _, err := os.Stat(basePath); err != nil {
-		return err // only managed apps have an editable config
-	}
-	if err := r.ValidateOverride(ctx, id, override); err != nil {
-		return err
-	}
-	overridePath := filepath.Join(dir, "docker-compose.override.yml")
-
-	files := []string{basePath}
-	if strings.TrimSpace(override) != "" {
-		if err := os.WriteFile(overridePath, []byte(override), 0o644); err != nil {
-			return err
-		}
-		files = append(files, overridePath)
-	} else {
-		_ = os.Remove(overridePath)
-	}
-	return stackup.Up(ctx, r.cfg, id, dir, files)
+	return r.SaveSettings(ctx, id, SettingsChange{Override: &override})
 }
 
 // SetWebUI writes the opening-URL fields into the override's x-compose-app block
-// and recreates the app. It is a friendly shortcut for editing those webui-*
-// keys by hand: the rest of the override (service tweaks, etc.) is preserved, and
-// empty fields are removed so they fall back to the base compose / x-casaos.
+// and recreates the app — the form's opening-URL group on its own. Empty fields
+// are removed so they fall back to the store's.
 func (r *Registry) SetWebUI(ctx context.Context, id string, w WebUI) error {
+	form, err := r.GetOverrideForm(id)
+	if err != nil {
+		return err
+	}
+	form.WebUI.Scheme.Value = w.Scheme
+	form.WebUI.Host.Value = w.Host
+	form.WebUI.Port.Value = w.Port
+	form.WebUI.Path.Value = w.Path
+	return r.SaveSettings(ctx, id, SettingsChange{Form: form})
+}
+
+// SettingsChange is one save of the settings window's Config tab. Override is
+// the YAML view's draft of the override and Form the Form view's edits, applied on
+// top of it — on top of the file on disk when Override is nil. Both nil leave the
+// override as it is. A nil Env leaves the .env as it is (an empty, non-nil one
+// empties it).
+type SettingsChange struct {
+	Override *string
+	Form     *overrideform.Form
+	Env      *[]envinject.Var
+}
+
+// SaveSettings applies a Config-tab save — override and .env together — and
+// recreates the app once. Every settings write goes through it.
+//
+// Nothing reaches the stack unchecked: the resulting project is validated by
+// Compose before the override is written, against the new .env, so a typo or a
+// variable the override now requires but nobody provides is caught here rather
+// than by watching the app fail to come back up. A save that fails validation
+// leaves both files as they were.
+func (r *Registry) SaveSettings(ctx context.Context, id string, c SettingsChange) error {
 	dir := filepath.Join(r.cfg.AppsDir(), id)
-	basePath := filepath.Join(dir, "docker-compose.yml")
-	if _, err := os.Stat(basePath); err != nil {
-		return err // only managed apps have an editable config
-	}
-	overridePath := filepath.Join(dir, "docker-compose.override.yml")
-
-	doc := map[string]any{}
-	if raw, err := os.ReadFile(overridePath); err == nil {
-		_ = yaml.Unmarshal(raw, &doc)
-		if doc == nil {
-			doc = map[string]any{}
-		}
+	base, current, err := r.readCompose(id) // only managed apps have an editable config
+	if err != nil {
+		return err
 	}
 
-	xca, _ := doc["x-compose-app"].(map[string]any)
-	if xca == nil {
-		xca = map[string]any{}
+	next := string(current)
+	if c.Override != nil {
+		next = *c.Override
 	}
-	setOrDelete(xca, "webui-host", w.Host)
-	setOrDelete(xca, "webui-port", w.Port)
-	setOrDelete(xca, "webui-scheme", w.Scheme)
-	setOrDelete(xca, "webui-path", w.Path)
-	if len(xca) == 0 {
-		delete(doc, "x-compose-app")
-	} else {
-		doc["x-compose-app"] = xca
-	}
-
-	files := []string{basePath}
-	if len(doc) == 0 {
-		_ = os.Remove(overridePath) // nothing left to override
-	} else {
-		out, err := yaml.Marshal(doc)
+	if c.Form != nil {
+		out, err := overrideform.Apply(base, []byte(next), c.Form)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(overridePath, out, 0o644); err != nil {
+		next = string(out)
+	}
+
+	// The .env goes first, because the validation below must see it — and comes
+	// back out if that validation fails.
+	envPath := filepath.Join(dir, ".env")
+	restoreEnv := func() {}
+	if c.Env != nil {
+		if err := envinject.ValidateVars(*c.Env); err != nil {
 			return err
 		}
-		files = append(files, overridePath)
+		old, err := os.ReadFile(envPath)
+		existed := err == nil
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		patched, err := envinject.PatchEnvFile(old, *c.Env)
+		if err != nil {
+			return err
+		}
+		if patched == nil {
+			// Every variable was removed. Keep an empty file rather than deleting it;
+			// the up below re-ensures what .env.app and Maison provide either way.
+			patched = []byte{}
+		}
+		if err := os.WriteFile(envPath, patched, 0o644); err != nil {
+			return err
+		}
+		restoreEnv = func() {
+			if existed {
+				_ = os.WriteFile(envPath, old, 0o644)
+			} else {
+				_ = os.Remove(envPath)
+			}
+		}
 	}
-	return stackup.Up(ctx, r.cfg, id, dir, files)
+
+	if err := r.ValidateOverride(ctx, id, next); err != nil {
+		restoreEnv()
+		return err
+	}
+
+	overridePath := filepath.Join(dir, overrideName)
+	if strings.TrimSpace(next) != "" {
+		if err := os.WriteFile(overridePath, []byte(next), 0o644); err != nil {
+			restoreEnv()
+			return err
+		}
+	} else if err := os.Remove(overridePath); err != nil && !os.IsNotExist(err) {
+		restoreEnv()
+		return err
+	}
+	return stackup.Up(ctx, r.cfg, id, dir, r.composeFiles(dir))
 }
 
 // setOrDelete sets m[k]=v, or removes the key when v is blank.

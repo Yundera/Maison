@@ -167,3 +167,33 @@ var seedOnce = map[string]bool{
 	"APP_DEFAULT_PASSWORD": true,
 	"DefaultPassword":      true,
 }
+
+// Where an app's .env key comes from, as the editor reports it. A key with no
+// source is the operator's own and Sync never touches it.
+const (
+	// SourceMaison: computed by Maison (envinject.BaseVars), re-ensured on every up.
+	SourceMaison = "maison"
+	// SourceDeployment: forwarded from .env.app, re-ensured on every up.
+	SourceDeployment = "deployment"
+	// SourceSeeded: forwarded from .env.app once (seedOnce), then the app's to keep.
+	SourceSeeded = "seeded"
+)
+
+// KeySources reports, for every key Sync would write into an app's .env, which of
+// the sources above supplies it. It mirrors Sync's precedence — .env.app over the
+// computed vars — so an editor that locks SourceMaison and SourceDeployment rows
+// locks exactly the ones a save would see put back on the next up.
+func KeySources(cfg config.Config) map[string]string {
+	out := map[string]string{}
+	for k := range envinject.BaseVars(cfg, "") {
+		out[k] = SourceMaison
+	}
+	for k := range Load(cfg) {
+		if seedOnce[k] {
+			out[k] = SourceSeeded
+		} else {
+			out[k] = SourceDeployment
+		}
+	}
+	return out
+}

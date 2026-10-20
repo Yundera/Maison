@@ -155,7 +155,11 @@ func (r *Registry) EffectiveConfig(ctx context.Context, id string, resolve bool)
 	if _, err := os.Stat(basePath); err != nil {
 		return "", err
 	}
-	return composecmd.Config(ctx, dir, id, r.composeFiles(dir), envinject.Env(r.cfg, id), resolve)
+	out, err := composecmd.Config(ctx, dir, id, r.composeFiles(dir), envinject.Env(r.cfg, id), resolve)
+	if err != nil || !resolve {
+		return out, err
+	}
+	return r.redactEnv(id, out), nil // resolved, it would print every secret in clear
 }
 
 // readCompose reads an app's base compose (required — only managed apps have one)

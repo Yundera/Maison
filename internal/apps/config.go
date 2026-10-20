@@ -196,15 +196,16 @@ func (r *Registry) SaveSettings(ctx context.Context, id string, c SettingsChange
 	envPath := filepath.Join(dir, ".env")
 	restoreEnv := func() {}
 	if c.Env != nil {
-		if err := envinject.ValidateVars(*c.Env); err != nil {
-			return err
-		}
 		old, err := os.ReadFile(envPath)
 		existed := err == nil
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		patched, err := envinject.PatchEnvFile(old, *c.Env)
+		vars := r.protectEnv(id, old, *c.Env) // locked and masked rows keep what is on disk
+		if err := envinject.ValidateVars(vars); err != nil {
+			return err
+		}
+		patched, err := envinject.PatchEnvFile(old, vars)
 		if err != nil {
 			return err
 		}

@@ -131,6 +131,13 @@ page shows credentials. It was always a readable file on a box with no auth (Mai
 assumes a trusted network — see the README); the page does not change who can read it,
 only how far they have to reach.
 
+An app's own `.env` (its settings window, Config › Env) is stricter. There the
+password is the one the app was **installed with**, not a value you might still edit, so
+`APP_DEFAULT_PASSWORD`, `DefaultPassword` and the app's declared
+[`secrets`](./x-compose-app.md#secrets-and-variables) are shown as `••••` and locked.
+Variables Maison or the box sets are locked as well, and the server enforces this on
+every save, not just the UI.
+
 `APP_DEFAULT_PASSWORD` is being phased out. Its successor is an app-declared
 [`credentials`](./x-compose-app.md#credentials) block backed by a per-app secret, which
 Maison shows the operator when the app is first opened. A listing moves an installed

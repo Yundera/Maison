@@ -177,6 +177,10 @@ const (
 	SourceDeployment = "deployment"
 	// SourceSeeded: forwarded from .env.app once (seedOnce), then the app's to keep.
 	SourceSeeded = "seeded"
+	// SourceSecret: one of the app's own x-compose-app secrets, or the variable a
+	// declared credential's password is. Generated once and part of the app's data;
+	// it changes through credentials[].change, never through the editor.
+	SourceSecret = "secret"
 )
 
 // KeySources reports, for every key Sync would write into an app's .env, which of

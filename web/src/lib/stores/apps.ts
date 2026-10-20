@@ -501,11 +501,16 @@ export function getEnv(id: string): Promise<EnvEntry[]> {
 /** Who sets a .env key. `maison` (PUID, DATA_ROOT, AppID, …) and `deployment`
  *  (forwarded from .env.app) are written back on every start, so an edit to one
  *  never takes effect; `seeded` (the default password) is written once and is the
- *  app's to keep. No source: the operator's own variable. */
-export type EnvSource = 'maison' | 'deployment' | 'seeded'
+ *  app's to keep; `secret` is one of the app's own generated secrets, changed only
+ *  through its credentials. Every sourced row is locked — the server keeps its
+ *  value whatever a save sends. No source: the operator's own variable. */
+export type EnvSource = 'maison' | 'deployment' | 'seeded' | 'secret'
 
 export interface EnvEntry extends EnvVar {
   source?: EnvSource
+  /** The value is withheld (served as ""). Sent back blank it is kept as is; an
+   *  unlocked masked row takes a typed value as a replacement. */
+  masked?: boolean
 }
 
 

@@ -71,6 +71,9 @@ x-compose-app:
   webui-path: /web/
 ```
 
+[`x-compose-app.example.yml`](./x-compose-app.example.yml) is a complete compose
+with **every** field below set once, to show what a fully loaded block looks like.
+
 ### Fields
 
 | Field | Type | Required | Meaning / Maison use | Translated from `x-casaos` |
@@ -428,6 +431,14 @@ an install event.
   change instead of freezing at install time.
 - Both are written key-by-key into the app's `.env`, the same path `.env.app` uses,
   so unrelated lines an operator added survive.
+- **The dashboard hides and locks them.** In an app's Config › Env, a declared
+  secret — and the variable a declared credential's `password` is — shows as
+  `••••` and is read-only. The server never sends the value and keeps the one on
+  disk whatever a save sends, a dropped row included, so the editor cannot regenerate
+  a secret by accident. Change a login password through
+  [`credentials[].change`](#credentials). A key the app does not declare but whose
+  name reads like a credential (`*PASSWORD*`, `*TOKEN*`, `*_KEY`, …) is hidden too,
+  but stays editable. The resolved Compose view masks the same values.
 - Do **not** write a generator inside `${…}`. `docker compose` interpolates this
   file too, and `${random.hex(32)}` fails as an invalid interpolation before Maison
   ever reads it.

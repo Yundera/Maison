@@ -309,18 +309,21 @@
     })(),
   )
 
-  // A maison or deployment row is put back by the start a save triggers, so the
-  // editor shows it read-only rather than accept an edit that has no effect.
-  const envLocked = (v: EnvEntry) => v.source === 'maison' || v.source === 'deployment'
+  // Every sourced row is locked: a maison or deployment row is put back by the
+  // start a save triggers, and a seeded or secret one is part of the app's data.
+  // The server enforces the same rule; read-only here only says so up front.
+  const envLocked = (v: EnvEntry) => !!v.source
   const envSourceLabel: Record<EnvSource, string> = {
     maison: 'Set by ' + BRAND,
     deployment: 'From the box',
     seeded: 'Set once',
+    secret: 'Secret',
   }
   const envSourceTitle: Record<EnvSource, string> = {
     maison: `${BRAND} computes this one and writes it back on every start — edit it here and it reverts.`,
     deployment: `Forwarded from the box's .env.app and written back on every start — change it there, not here.`,
-    seeded: `Written from the box's .env.app when the app was installed and never refreshed. The app has most likely already used it (an admin password, a database password) — changing it here won't change it inside the app.`,
+    seeded: `Written from the box's .env.app when the app was installed and never refreshed. The app has already used it (an admin password, a database password), so it is hidden and locked here — changing it would not change it inside the app.`,
+    secret: `Generated for this app when it was installed and part of its data from then on — changing it here would break the app. Hidden and locked; change a login password from Security, if the app allows it.`,
   }
 
   function addEnvVar() {
@@ -643,7 +646,8 @@
             The app's <code>.env</code> — the variables its compose resolves
             <code>{'${VAR}'}</code> against. Those {BRAND} or the box sets (<code>PUID</code>,
             <code>DATA_ROOT</code>, <code>APP_DOMAIN</code>, …) are written back on every start, so
-            they are read-only here; the rest are yours. Not a service's
+            they are read-only here. The app's secrets and passwords are hidden; its own
+            generated secrets are locked too. The rest are yours. Not a service's
             <code>environment:</code> block — that is in <strong>Compose</strong>.
           </p>
           {#if !envLoaded && envMsg}
@@ -663,14 +667,33 @@
                   readonly={!!v.source}
                   class:bad={v.key !== '' && !KEY_RE.test(v.key)}
                 />
-                <input
-                  bind:value={v.value}
-                  spellcheck="false"
-                  placeholder="value"
-                  aria-label="Value for {v.key || 'new variable'}"
-                  readonly={locked}
-                />
-                {#if v.source}
+                {#if v.masked}
+                  <!-- The server never sends a masked value. Left blank it is kept;
+                       an unlocked one takes what is typed as a replacement. -->
+                  <input
+                    type="password"
+                    bind:value={v.value}
+                    autocomplete="off"
+                    placeholder={locked ? '••••••••' : '•••••••• (type to replace)'}
+                    aria-label="Value for {v.key} (hidden)"
+                    readonly={locked}
+                  />
+                {:else}
+                  <input
+                    bind:value={v.value}
+                    spellcheck="false"
+                    placeholder="value"
+                    aria-label="Value for {v.key || 'new variable'}"
+                    readonly={locked}
+                  />
+                {/if}
+                {#if v.source === 'secret' && hasCredentials}
+                  <button
+                    class="env-source secret link"
+                    title={envSourceTitle.secret}
+                    onclick={() => (tab = 'security')}>{envSourceLabel.secret}</button
+                  >
+                {:else if v.source}
                   <span class="env-source {v.source}" title={envSourceTitle[v.source]}>
                     {envSourceLabel[v.source]}
                   </span>
@@ -1107,6 +1130,15 @@
   }
   .env-source.seeded {
     color: var(--orange);
+  }
+  .env-source.link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 0.7rem;
+    text-decoration: underline dotted;
+    cursor: pointer;
   }
   .env-row .remove {
     background: none;

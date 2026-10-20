@@ -150,6 +150,11 @@ x-compose-app:
 | `timeout` | script entry | Go duration. Default `2h` — a dump/restore of a large database is legitimately long, a hang is not. |
 | `blocked` | refusal | [Localized](./x-compose-app.md#localized-strings) Markdown shown to the operator in their locale. An update that would cross this step is **refused before anything is pulled.** |
 
+These rules are checked on the store's compose, at install and when an update is planned.
+The compose already installed is read for its `data_version` only: one installed under
+older rules (a plain-string `name`, say) still starts, and still updates to the store's
+current file.
+
 A step runs exactly like a [step](./x-compose-app.md#steps) or a credential change:
 `bash -euo pipefail` inside the Maison container, working directory the app folder,
 the host Docker daemon, `compose`, the sanctioned command set, `$APP_DIR` as the

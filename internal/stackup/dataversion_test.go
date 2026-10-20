@@ -95,6 +95,26 @@ func TestCheckDataVersion(t *testing.T) {
 	}
 }
 
+// A compose installed under older manifest rules — here a migration name written as
+// a plain string, before names were locale maps — still starts and still reports
+// its version, so an update can move it to the store's current format.
+func TestInstalledComposeIsNotRejudged(t *testing.T) {
+	const legacy = `services: {app: {image: a:1}}
+x-compose-app:
+  data_version: 2
+  migrations:
+    - {id: 2, name: postgres-13-to-17, script: "true"}
+`
+	dir := dataFixture(t, legacy)
+	if v, ok, err := InstalledDataVersion(dir); v != 2 || !ok || err != nil {
+		t.Fatalf("no marker: %d %v %v", v, ok, err)
+	}
+	WriteDataVersion(dir, 2)
+	if err := CheckDataVersion(dir); err != nil {
+		t.Fatalf("agreeing marker: %v", err)
+	}
+}
+
 // Up refuses before it touches anything: no .env synced, no folder created.
 func TestUpRefusesMismatchedDataBeforeWriting(t *testing.T) {
 	cfg := testConfig(t)

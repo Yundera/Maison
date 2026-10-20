@@ -80,6 +80,24 @@ func ParseData(ext map[string]any) (Data, error) {
 	return d, d.Validate()
 }
 
+// ParseVersion reads only data_version from a base compose's x-compose-app block:
+// 1 when the app declares none. It is for the compose already installed, whose
+// version is all a start or an update plan needs from it. That file was checked when
+// it came from the store, possibly by an older Maison with older rules, so nothing
+// else in it is judged again here: a step in a format this build no longer accepts
+// must not stop the app from starting, or from being updated out of that format.
+func ParseVersion(ext map[string]any) (int, error) {
+	v, ok := ext["data_version"]
+	if !ok || v == nil {
+		return 1, nil
+	}
+	n, ok := v.(int)
+	if !ok || n < 1 {
+		return 0, fmt.Errorf("x-compose-app data_version is %v, not a version of at least 1", v)
+	}
+	return n, nil
+}
+
 // checkMigrationsLocalized refuses a step whose name or blocked text is not a locale
 // map with en_us. Unlike the rest of the block (localized.go) this is an error, not
 // a drop: ParseData's error refuses the update, which is right here — dropping

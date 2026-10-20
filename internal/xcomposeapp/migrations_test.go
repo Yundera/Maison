@@ -112,6 +112,32 @@ func TestParseDataIgnoresSchemaVersion(t *testing.T) {
 	}
 }
 
+// The installed compose is read for its version only: a step written in a format
+// this build refuses (a plain-string name, from before locale maps) does not matter.
+func TestParseVersionIgnoresTheSteps(t *testing.T) {
+	for src, want := range map[string]int{
+		"":                  1,
+		"title: {en_us: x}": 1,
+		"data_version: 2\nmigrations: [{id: 2, name: postgres-13-to-17, script: \"true\"}]": 2,
+		"data_version: 3\nmigrations: [{id: 3, blocked: not localized}]":                    3,
+	} {
+		var ext map[string]any
+		if err := yaml.Unmarshal([]byte(src), &ext); err != nil {
+			t.Fatal(err)
+		}
+		if v, err := ParseVersion(ext); v != want || err != nil {
+			t.Errorf("%q: %d, %v; want %d", src, v, err, want)
+		}
+	}
+	for _, src := range []string{"data_version: 0", "data_version: three"} {
+		var ext map[string]any
+		yaml.Unmarshal([]byte(src), &ext)
+		if _, err := ParseVersion(ext); err == nil {
+			t.Errorf("%q: accepted", src)
+		}
+	}
+}
+
 func TestPendingRefusesNewerData(t *testing.T) {
 	d := Data{Version: 2, Migrations: []Migration{{ID: 2, Blocked: Localized{"en_us": "x"}}}}
 	if _, err := d.Pending(3); !errors.Is(err, ErrDataNewer) {

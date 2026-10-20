@@ -60,14 +60,15 @@ func WriteDataVersion(dir string, v int) error {
 	return os.Rename(tmp.Name(), filepath.Join(dir, DataVersionFile))
 }
 
-// BaseData reads data_version and migrations from the app's base compose — the
-// store's file in dir, never the override.
-func BaseData(dir string) (xcomposeapp.Data, error) {
+// BaseVersion reads data_version from the app's base compose — the store's file in
+// dir, never the override. Only the version: the installed compose is not re-judged
+// against this build's manifest rules (see xcomposeapp.ParseVersion).
+func BaseVersion(dir string) (int, error) {
 	f, err := composefile.Load(filepath.Join(dir, "docker-compose.yml"))
 	if err != nil {
-		return xcomposeapp.Data{}, err
+		return 0, err
 	}
-	return f.Data()
+	return xcomposeapp.ParseVersion(f.XComposeApp)
 }
 
 // InstalledDataVersion is where the data in dir is: the marker, or — for an
@@ -79,14 +80,14 @@ func InstalledDataVersion(dir string) (v int, ok bool, err error) {
 	if v, ok, err := ReadDataVersion(dir); err != nil || ok {
 		return v, ok, err
 	}
-	d, err := BaseData(dir)
+	cv, err := BaseVersion(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, false, nil
 	}
 	if err != nil {
 		return 0, false, fmt.Errorf("data version of the installed compose: %w", err)
 	}
-	return d.Version, true, nil
+	return cv, true, nil
 }
 
 // DataVersionError is a start refused because the app's data and its compose
@@ -115,12 +116,12 @@ func CheckDataVersion(dir string) error {
 	if err != nil || !ok {
 		return err
 	}
-	d, err := BaseData(dir)
+	cv, err := BaseVersion(dir)
 	if err != nil {
 		return fmt.Errorf("data version of the compose: %w", err)
 	}
-	if v != d.Version {
-		return &DataVersionError{Data: v, Compose: d.Version}
+	if v != cv {
+		return &DataVersionError{Data: v, Compose: cv}
 	}
 	return nil
 }

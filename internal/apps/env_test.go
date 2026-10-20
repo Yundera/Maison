@@ -13,12 +13,12 @@ import (
 
 const secretsBase = `services: {}
 x-compose-app:
-  title: Outline
+  title: {en_us: Outline}
   secrets:
     DB_PASSWORD: alnum:32
     ADMIN_HASH: bcrypt:${ADMIN_PASSWORD}
   credentials:
-    - label: Administrator
+    - label: {en_us: Administrator}
       username: admin
       password: ${ADMIN_PASSWORD}
 `

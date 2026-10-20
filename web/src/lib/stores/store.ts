@@ -1,11 +1,15 @@
 import { api } from '../api/client'
 import { refQuery, type StoreRef } from '../storeref'
+import type { Localized } from '../i18n'
 
 export interface StoreApp {
   id: string
+  /** The en_us title, else the catalog id — show `title` through $loc first. */
   name: string
-  tagline: string
-  description: string
+  /** The app's title, tagline and description in every locale it declares. */
+  title?: Localized
+  tagline: Localized
+  description: Localized
   icon: string
   thumbnail: string
   screenshots: string[]

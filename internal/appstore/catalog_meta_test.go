@@ -23,8 +23,8 @@ func TestParseStoreReadsXComposeAppAndFallsBackWhole(t *testing.T) {
 	write("native", `services: {app: {image: n:1}}
 x-compose-app:
   title: {en_us: Native, fr_fr: Natif}
-  tagline: One line
-  description: Long
+  tagline: {en_us: One line}
+  description: {en_us: Long}
   category: Media
   developer: Dev
   min_memory: 512
@@ -46,7 +46,7 @@ x-casaos:
   category: Ignored
   developer: Ignored
 x-compose-app:
-  title: Both
+  title: {en_us: Both}
 `)
 	write("bare", "services: {app: {image: x:1}}\n")
 
@@ -59,13 +59,13 @@ x-compose-app:
 		t.Fatalf("catalog = %v, want native, legacy and both only", got)
 	}
 	n := got["native"]
-	if n.Name != "Native" || n.Tagline != "One line" || n.Description != "Long" || n.Category != "Media" ||
+	if n.Name != "Native" || n.Tagline.Value() != "One line" || n.Description.Value() != "Long" || n.Category != "Media" ||
 		n.Developer != "Dev" || n.MinMemory != 512 || n.Parent != "host" ||
 		n.Icon != "https://cdn.example/native.png" || len(n.Screenshots) != 1 {
 		t.Fatalf("native = %+v", n)
 	}
 	l := got["legacy"]
-	if l.Name != "Legacy" || l.Tagline != "Old line" || l.Developer != "Someone" || l.MinMemory != 256 || l.Category != "Tools" {
+	if l.Name != "Legacy" || l.Tagline.Value() != "Old line" || l.Developer != "Someone" || l.MinMemory != 256 || l.Category != "Tools" {
 		t.Fatalf("legacy = %+v", l)
 	}
 	b := got["both"]

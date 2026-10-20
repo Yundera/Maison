@@ -3,10 +3,12 @@ package apps
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/yundera/maison/internal/config"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 func seedCredentialsApp(t *testing.T, r *Registry, id, base, override, env string) string {
@@ -31,13 +33,13 @@ func seedCredentialsApp(t *testing.T, r *Registry, id, base, override, env strin
 
 const credentialsBase = `services: {}
 x-compose-app:
-  title: Outline
+  title: {en_us: Outline}
   credentials:
-    - label: Administrator
+    - label: {en_us: Administrator}
       username: admin
       password: ${ADMIN_PASSWORD}
-      note: Change it after first login.
-    - label: Empty
+      note: {en_us: Change it after first login.}
+    - label: {en_us: Empty}
       username: ""
 `
 
@@ -52,8 +54,8 @@ func TestRenderedCredentialsResolvesFromEnv(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("credentials = %+v, want the empty entry dropped", got)
 	}
-	want := RenderedCredential{Label: "Administrator", Username: "admin", Password: "s3cret", Note: "Change it after first login."}
-	if got[0] != want {
+	want := RenderedCredential{Label: xcomposeapp.Localized{"en_us": "Administrator"}, Username: "admin", Password: "s3cret", Note: xcomposeapp.Localized{"en_us": "Change it after first login."}}
+	if !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("got %+v, want %+v", got[0], want)
 	}
 }

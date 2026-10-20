@@ -23,6 +23,7 @@
   } from '../stores/apps'
   import { ApiError } from '../api/client'
   import { BRAND } from '../brand'
+  import { loc, type Localized } from '../i18n'
   import { bare, isAddressableRef } from '../storeref'
   import { fetchStoreSources, type StoreSource } from '../stores/store'
   import { openStream } from '../live/stream'
@@ -206,8 +207,10 @@
     baseCompose = c.base
     if (!keepEdits || override === savedOverride) override = c.override
     savedOverride = c.override
-    tips = c.tips
-    savedTips = c.tips
+    // The editor works on one text: the operator's locale, else en_us. Saving
+    // stores it as the override's en_us, which every locale then falls back to.
+    tips = $loc(c.tips)
+    savedTips = tips
     configLoaded = true
   }
   $effect(() => {
@@ -219,14 +222,15 @@
   // came to read — a service's tile click lands here. Edit swaps in the raw source;
   // saving writes it into the override and goes back to the rendered view.
   let savedTips = $state('') // the source as last loaded or saved, for Cancel
-  let renderedTips = $state('')
+  let renderedAll = $state<Localized>({})
+  const renderedTips = $derived($loc(renderedAll))
   let renderedLoaded = $state(false)
   let editingTips = $state(false)
   let savingTips = $state(false)
   let tipsMsg = $state('')
   async function loadRenderedTips() {
     try {
-      renderedTips = await renderTips(id)
+      renderedAll = await renderTips(id)
     } catch (e) {
       tipsMsg = String(e)
     } finally {
@@ -796,11 +800,11 @@
               <p class="hint">
                 This update can't be applied automatically. The app's maintainer says:
               </p>
-              <pre class="hint blocked">{update.blocked}</pre>
+              <pre class="hint blocked">{$loc(update.blocked_message, update.blocked)}</pre>
             {:else if update.available && update.migrations?.length}
               <p class="hint">
                 This update converts the app's data (version {update.data_from} →
-                {update.data_to}: {update.migrations.map((m) => m.name).join(', ')}). It
+                {update.data_to}: {update.migrations.map((m) => $loc(m.title, m.name)).join(', ')}). It
                 may take a while; the app is always backed up first, and the backup is
                 restored if a step fails.
               </p>

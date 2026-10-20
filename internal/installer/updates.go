@@ -47,6 +47,7 @@ const (
 type CheckTarget struct {
 	ID      string
 	Name    string
+	Title   xcomposeapp.Localized // Name in every locale, for the UI
 	Icon    string
 	Managed bool
 	// StaysUp is set for an app that declares itself not stoppable
@@ -79,9 +80,10 @@ type Suggestion struct {
 
 // AppUpdate is one row of the Updates page.
 type AppUpdate struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Icon string `json:"icon,omitempty"`
+	ID    string                `json:"id"`
+	Name  string                `json:"name"`
+	Title xcomposeapp.Localized `json:"title,omitempty"`
+	Icon  string                `json:"icon,omitempty"`
 	// StaysUp: see CheckTarget. Such an app is left out of "Update all".
 	StaysUp bool   `json:"stays_up,omitempty"`
 	State   string `json:"state"`
@@ -102,14 +104,19 @@ type DataPlan struct {
 	DataFrom   int             `json:"data_from,omitempty"`
 	DataTo     int             `json:"data_to,omitempty"`
 	Migrations []MigrationInfo `json:"migrations,omitempty"`
-	// Blocked is the maintainer's message for a step marked as manual.
-	Blocked string `json:"blocked,omitempty"`
+	// Blocked is the maintainer's message for a step marked as manual, in en_us
+	// and wrapped in what Maison says about it; BlockedMessage is the maintainer's
+	// text alone, in every locale they wrote, for the UI to pick from.
+	Blocked        string                `json:"blocked,omitempty"`
+	BlockedMessage xcomposeapp.Localized `json:"blocked_message,omitempty"`
 }
 
 // MigrationInfo names one pending step.
 type MigrationInfo struct {
 	ID   int    `json:"id"`
-	Name string `json:"name"`
+	Name string `json:"name"` // en_us, else "step N"
+	// Title is the step's name in every locale the maintainer wrote.
+	Title xcomposeapp.Localized `json:"title,omitempty"`
 	// Timeout is the step's own budget, which the update's time budget grows by.
 	Timeout time.Duration `json:"-"`
 }
@@ -136,7 +143,7 @@ func describeData(dir string, newBase []byte) (DataPlan, string, string) {
 		if d, err := time.ParseDuration(m.Timeout); err == nil && m.Timeout != "" {
 			timeout = d
 		}
-		dp.Migrations = append(dp.Migrations, MigrationInfo{ID: m.ID, Name: m.Label(), Timeout: timeout})
+		dp.Migrations = append(dp.Migrations, MigrationInfo{ID: m.ID, Name: m.Label(), Title: m.Name, Timeout: timeout})
 	}
 	var refused *DataRefusedError
 	switch {
@@ -146,7 +153,7 @@ func describeData(dir string, newBase []byte) (DataPlan, string, string) {
 		}
 		return dp, StateAvailable, ""
 	case errors.As(err, &refused) && refused.Reason == DataRefusedBlocked:
-		dp.Blocked = refused.Detail
+		dp.Blocked, dp.BlockedMessage = refused.Detail, refused.Message
 		return dp, StateBlocked, ""
 	default:
 		return DataPlan{}, StateError, err.Error()
@@ -162,7 +169,7 @@ func (in *Installer) CheckAll(ctx context.Context, targets []CheckTarget) []AppU
 	untracked := false
 
 	for i, t := range targets {
-		out[i] = AppUpdate{ID: t.ID, Name: t.Name, Icon: t.Icon, StaysUp: t.StaysUp}
+		out[i] = AppUpdate{ID: t.ID, Name: t.Name, Title: t.Title, Icon: t.Icon, StaysUp: t.StaysUp}
 		if !t.Managed {
 			out[i].State = StateUnmanaged
 			continue

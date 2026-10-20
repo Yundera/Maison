@@ -1,0 +1,295 @@
+# A deliberately "maxed" store app: every x-compose-app field Maison reads, set
+# once, with plausible values. Not a real app — "Wikinest" is a wiki + Postgres
+# + a search worker. A reference for docs/x-compose-app.md, not a template to
+# copy: a real app declares only what it needs (most need a fraction of this).
+# Parses cleanly with Maison's reader (composefile.Resolve + Data().Validate()).
+#
+# Store layout this assumes:
+#
+#   Apps/Wikinest/
+#     docker-compose.yml        ← this file
+#     icon.png  thumbnail.png  screenshots/1.png  screenshots/2.png
+#     seed/config/app.yml.tmpl  seed/config/nginx.conf  seed/db/init.sh
+#     migrations/003-reindex.sh
+
+name: wikinest
+
+services:
+  wikinest:
+    image: ghcr.io/example/wikinest:2.4.0
+    restart: unless-stopped
+    cpu_shares: 512
+    mem_limit: 1g
+    user: "${PUID}:${PGID}"
+    expose: ["3000"]
+    environment:
+      DATABASE_URL: postgres://wikinest:${DB_PASSWORD}@db:5432/wikinest
+      SECRET_KEY: ${SECRET_KEY}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      PUBLIC_URL: ${WIKINEST_URL}
+      SEARCH_TOKEN: ${SEARCH_TOKEN}
+    volumes:
+      - ${DATA_ROOT:-/DATA}/AppData/${AppID}/config:/config
+      - ${DATA_ROOT:-/DATA}/AppData/${AppID}/data:/data
+      - ${DATA_ROOT:-/DATA}/Media/Wiki:/media
+    depends_on: [db]
+    networks: [default, app_net]
+
+  db:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    cpu_shares: 256
+    mem_limit: 512m
+    environment:
+      POSTGRES_USER: wikinest
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: wikinest
+    volumes:
+      - ${DATA_ROOT:-/DATA}/AppData/${AppID}/db:/var/lib/postgresql/data
+      - ${DATA_ROOT:-/DATA}/AppData/${AppID}/db-init:/docker-entrypoint-initdb.d:ro
+
+  search:
+    image: getmeili/meilisearch:v1.10.3
+    restart: unless-stopped
+    cpu_shares: 256
+    mem_limit: 512m
+    environment:
+      MEILI_MASTER_KEY: ${SEARCH_TOKEN}
+    expose: ["7700"]
+    volumes:
+      - ${DATA_ROOT:-/DATA}/AppData/${AppID}/search:/meili_data
+    networks: [default, app_net]
+
+networks:
+  app_net:
+    name: ${APP_NET:-pcs}
+    external: true
+
+x-compose-app:
+  schema_version: 2
+
+  # ── Store info ────────────────────────────────────────────────────────────
+  id: wikinest
+  title:                                   # every user-facing string: a locale map with en_us
+    en_us: Wikinest
+    fr_fr: Wikinest
+  icon: icon.png                           # beside this file; URLs also accepted
+  category: Productivity
+  version: 2.4.0                           # display only, never compared
+  tagline:
+    en_us: A self-hosted team wiki
+    fr_fr: Un wiki d'équipe auto-hébergé
+  description:
+    en_us: |
+      **Wikinest** keeps your team's knowledge in one place: Markdown pages,
+      full-text search, and per-space permissions.
+    fr_fr: |
+      **Wikinest** rassemble le savoir de votre équipe : pages Markdown,
+      recherche plein texte et permissions par espace.
+  developer: Example Labs
+  screenshots:
+    - screenshots/1.png
+    - screenshots/2.png
+  thumbnail: thumbnail.png
+  architectures: [amd64, arm64]            # parsed, not used yet
+  min_memory: 1024                         # MB, shown in the store
+  main: wikinest                           # the service that *is* the app
+
+  # ── Dashboard placement ───────────────────────────────────────────────────
+  view: apps                               # apps | service | system
+  parent: nextcloud                        # nests the tile under Nextcloud if installed
+
+  # ── Click URL (mirrors the route below) ───────────────────────────────────
+  webui-host: wikinest-${APP_DOMAIN}       # ${domain} / ${DOMAIN} / ${APP_DOMAIN}
+  webui-port: ""                           # URL port; empty behind the gateway (443)
+  webui-scheme: https
+  webui-path: /home
+
+  # ── Routes: Maison writes the Caddy labels, on every deployment domain ───
+  routes:
+    - service: wikinest                    # default: main
+      name: wikinest                       # → wikinest-${APP_DOMAIN}
+      upstream-port: 3000
+    - service: search
+      name: wikinest-search                # → wikinest-search-${APP_DOMAIN}
+      upstream-port: 7700
+      upstream-scheme: http
+      insecure-upstream: false
+      max-body: 100M
+
+  links:                                   # parsed, not rendered yet
+    - name:
+        en_us: Documentation
+      url: https://docs.example.com/wikinest
+      icon: https://docs.example.com/favicon.svg
+
+  tips:
+    en_us: |
+      Sign in as **admin** — the password is in the credentials dialog.
+      Search runs at https://wikinest-search-${APP_DOMAIN}.
+    fr_fr: |
+      Connectez-vous en **admin** — le mot de passe est dans la fenêtre des identifiants.
+
+  # ── Directories created + owned before every up ───────────────────────────
+  folders:
+    - /DATA/AppData/${AppID}/config                 # shorthand: path, all defaults
+    - path: /DATA/AppData/${AppID}/data
+      user: "${PUID}"
+      group: "${PGID}"
+      mode: "0750"                                  # always quoted
+    - path: /DATA/AppData/${AppID}/db
+      user: "70"                                    # postgres:alpine runs as 70
+      group: "70"
+      mode: "0700"
+    - /DATA/AppData/${AppID}/db-init
+    - /DATA/AppData/${AppID}/search
+    - path: /DATA/Media/Wiki
+      group: "${PGID}"
+      recursive: true                               # reclaim what's already there
+
+  # ── .env values: generated once (secrets) / re-rendered every up (variables)
+  secrets:
+    SECRET_KEY: hex:32                              # 64 hex chars
+    SEARCH_TOKEN: base64:24
+    SESSION_ID: uuid
+    DB_PASSWORD: ${APP_DEFAULT_PASSWORD}|alnum:32   # seeded: keeps an installed app's value
+    ADMIN_PASSWORD: ${APP_DEFAULT_PASSWORD}|password:20
+    ADMIN_PASSWORD_HASH: bcrypt:${ADMIN_PASSWORD}   # hashes a sibling, regenerated on change
+  variables:
+    WIKINEST_URL: https://wikinest-${APP_DOMAIN}
+    SEARCH_URL: http://search:7700
+
+  # ── Logins shown on first open; changeable from the Security tab ──────────
+  credentials:
+    - label:
+        en_us: Administrator
+        fr_fr: Administrateur
+      username: admin
+      password: ${ADMIN_PASSWORD}
+      note:
+        en_us: Also used for the API.
+        fr_fr: Sert aussi pour l'API.
+      change:
+        apply: hook                                 # the app keeps its own user DB
+        hook: |
+          docker compose exec -T -e ADMIN_PASSWORD wikinest \
+            wikinest-cli user set-password admin --from-env ADMIN_PASSWORD
+        policy:
+          min_length: 12
+          max_length: 64
+          charset: printable                        # printable | alnum
+          require: [lower, upper, digit]
+          forbid: ";"
+    - label:
+        en_us: Search master key
+      username: ""
+      password: ${SEARCH_TOKEN}
+      change:
+        apply: env                                  # read from env on every start
+        policy:
+          min_length: 16
+          charset: alnum
+
+  # ── Individual files (escape hatch beside seed/) ──────────────────────────
+  files:
+    - path: /DATA/AppData/${AppID}/config/app.yml
+      from: config/app.yml.tmpl                     # from seed/, rendered
+      ensure: always                                # follows ${APP_DOMAIN}
+    - path: /DATA/AppData/${AppID}/db-init/01-init.sh
+      from: db/init.sh
+      mode: "0755"
+    - path: /DATA/AppData/${AppID}/config/search.env
+      content: |
+        MEILI_URL=${SEARCH_URL}
+        MEILI_KEY=${SEARCH_TOKEN}
+        ADMIN_HASH=${ADMIN_PASSWORD_HASH}
+      ensure: once
+      user: "${PUID}"
+      group: "${PGID}"
+      mode: "0600"
+
+  # ── One-shot containers around the stack ──────────────────────────────────
+  init:
+    - name: db-schema
+      image: ghcr.io/example/wikinest:2.4.0
+      command: wikinest-cli db init --config /config/app.yml
+      user: "${PUID}:${PGID}"
+      volumes:
+        - /DATA/AppData/${AppID}/config:/config
+        - /DATA/AppData/${AppID}/data:/data
+      when: absent:/DATA/AppData/${AppID}/data/.initialised
+    - name: build-id
+      image: alpine:3.20
+      entrypoint: [sh, -c]
+      command: ["date +%Y%m%d%H%M"]
+      when: always
+      capture: BUILD_ID                             # stdout → var for seed/files
+    - name: warm-index
+      image: curlimages/curl:8.10.1
+      command: [-fsS, -X, POST, "http://search:7700/indexes"]
+      environment:
+        MEILI_KEY: ${SEARCH_TOKEN}
+      network: ${APP_NET:-pcs}
+      when: once
+      phase: post_up                                # needs the stack running
+
+  # ── Host shell (reach for it last) ────────────────────────────────────────
+  hooks:
+    pre_install: |
+      docker pull ghcr.io/example/wikinest-plugins:1.2.0
+    post_install: |
+      echo "$AppID installed at $(date)"
+    pre_up: |
+      docker network inspect "${APP_NET:-pcs}" >/dev/null
+    post_up: |
+      echo "$AppID up in $APP_DIR"
+
+  # ── What the operator may do ──────────────────────────────────────────────
+  lifecycle:
+    stoppable: true
+    uninstallable: true
+    updatable: true
+
+  # ── Backups ───────────────────────────────────────────────────────────────
+  backup:
+    skip: false                                     # the default; true = never backed up
+    exclude:
+      - search/                                     # rebuilt from the DB
+      - data/thumbnails/
+      - "**/cache/"                                 # quoted: * is a YAML alias
+      - /DATA/AppData/${AppID}/data/tmp
+
+  # ── Data history (base compose only) ──────────────────────────────────────
+  data_version: 4
+  migrations:
+    - id: 2
+      name:
+        en_us: Postgres 15 → 16
+      image: tianon/postgres-upgrade:15-to-16
+      volumes:
+        - /DATA/AppData/${AppID}/db:/var/lib/postgresql
+      timeout: 30m
+    - id: 3
+      name:
+        en_us: Rebuild search index
+      script: migrations/003-reindex.sh
+      images: [getmeili/meilisearch:v1.10.3]
+    - id: 4
+      name:
+        en_us: 3.x storage format
+      blocked:
+        en_us: |
+          The storage format change cannot run unattended. Export your spaces
+          from **Settings → Export** first, then reinstall and import them.
+        fr_fr: |
+          Le changement de format ne peut pas se faire sans vous. Exportez vos
+          espaces depuis **Réglages → Export**, puis réinstallez et importez-les.
+
+# What Maison itself writes into docker-compose.override.yml after install —
+# reserved keys, shown for completeness (not authored by the store):
+#
+#   x-compose-app:
+#     store-ref: yundera/-/Apps/wikinest
+#     generated-routes: [caddy_10, caddy_10.reverse_proxy, caddy_11, ...]
+#     tips: "Operator-edited tips replace the store's."
+#     credentials: [...]          # an override list replaces the store's whole

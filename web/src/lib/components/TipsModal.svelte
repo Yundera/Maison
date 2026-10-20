@@ -2,17 +2,19 @@
   import { tipsApp } from '../stores/ui'
   import { renderTips } from '../stores/apps'
   import TipsView from './TipsView.svelte'
-  import { t } from '../i18n'
+  import { loc, t } from '../i18n'
+  import type { Localized } from '../i18n'
 
   let { target }: { target: { id: string; name: string } } = $props()
 
-  let tips = $state('')
+  let all = $state<Localized>({})
+  const tips = $derived($loc(all))
   let loaded = $state(false)
   let error = $state('')
 
   async function load() {
     try {
-      tips = await renderTips(target.id)
+      all = await renderTips(target.id)
     } catch (e) {
       error = String(e)
     } finally {

@@ -1,6 +1,7 @@
 import { derived, writable } from 'svelte/store'
 import { api } from '../api/client'
 import { live } from '../live/ws'
+import type { Localized } from '../i18n'
 
 /** Settings › Updates: every app's update status in one list, and "update all".
  *  The server does the checking and runs the queue (internal/server/updates.go);
@@ -33,6 +34,8 @@ export interface Suggestion {
 export interface AppUpdate {
   id: string
   name: string
+  /** `name` in every locale the app declares. */
+  title?: Localized
   icon?: string
   /** The app declares itself not stoppable: it is kept running through its update,
    *  left out of "Update all", and updated on its own. */
@@ -47,8 +50,10 @@ export interface AppUpdate {
    *  ordinary update. `blocked` carries the maintainer's message for a manual step. */
   data_from?: number
   data_to?: number
-  migrations?: { id: number; name: string }[]
+  migrations?: { id: number; name: string; title?: Localized }[]
   blocked?: string
+  /** The maintainer's own text for the manual step, every locale of it. */
+  blocked_message?: Localized
 }
 
 export type RunStatus = 'queued' | 'updating' | 'done' | 'failed'

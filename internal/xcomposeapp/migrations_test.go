@@ -32,13 +32,14 @@ func TestParseDataReadsTheThreeForms(t *testing.T) {
 data_version: 4
 migrations:
   - id: 2
-    name: pg-14-to-16
+    name: {en_us: pg-14-to-16, fr_fr: pg-14-vers-16}
     image: pgautoupgrade/pgautoupgrade:16-alpine
     environment: {PGAUTO_ONESHOT: "yes"}
     volumes: ["/DATA/AppData/${AppID}/db:/var/lib/postgresql/data"]
   - id: 4
-    blocked: |
-      Needs OpenUpgrade.
+    blocked:
+      en_us: |
+        Needs OpenUpgrade.
   - id: 3
     script: migrations/0003-move-config.sh
     images: [nextcloud:28.0.14-apache]
@@ -72,11 +73,11 @@ func TestParseDataRejectsAuthoringErrors(t *testing.T) {
 	cases := map[string]string{
 		"zero version":   "data_version: 0",
 		"not a number":   "data_version: three",
-		"gap":            "data_version: 3\nmigrations: [{id: 3, blocked: x}]",
-		"beyond target":  "data_version: 2\nmigrations: [{id: 2, blocked: x}, {id: 3, blocked: y}]",
-		"id 1":           "data_version: 2\nmigrations: [{id: 1, blocked: x}, {id: 2, blocked: y}]",
-		"twice":          "data_version: 2\nmigrations: [{id: 2, blocked: x}, {id: 2, blocked: y}]",
-		"no form":        "data_version: 2\nmigrations: [{id: 2, name: nothing}]",
+		"gap":            "data_version: 3\nmigrations: [{id: 3, blocked: {en_us: x}}]",
+		"beyond target":  "data_version: 2\nmigrations: [{id: 2, blocked: {en_us: x}}, {id: 3, blocked: {en_us: y}}]",
+		"id 1":           "data_version: 2\nmigrations: [{id: 1, blocked: {en_us: x}}, {id: 2, blocked: {en_us: y}}]",
+		"twice":          "data_version: 2\nmigrations: [{id: 2, blocked: {en_us: x}}, {id: 2, blocked: {en_us: y}}]",
+		"no form":        "data_version: 2\nmigrations: [{id: 2, name: {en_us: nothing}}]",
 		"two forms":      "data_version: 2\nmigrations: [{id: 2, image: a:1, script: b.sh}]",
 		"script+volumes": "data_version: 2\nmigrations: [{id: 2, script: migrations/b.sh, volumes: [/a:/b]}]",
 		"outside folder": "data_version: 2\nmigrations: [{id: 2, script: b.sh}]",
@@ -85,8 +86,11 @@ func TestParseDataRejectsAuthoringErrors(t *testing.T) {
 		"escaping path":  "data_version: 2\nmigrations: [{id: 2, script: ../../etc/x.sh}]",
 		"absolute path":  "data_version: 2\nmigrations: [{id: 2, script: /bin/x.sh}]",
 		"bad timeout":    "data_version: 2\nmigrations: [{id: 2, image: a:1, timeout: soon}]",
-		"blocked+extra":  "data_version: 2\nmigrations: [{id: 2, blocked: x, timeout: 1h}]",
-		"steps, no ver":  "migrations: [{id: 2, blocked: x}]",
+		"blocked+extra":  "data_version: 2\nmigrations: [{id: 2, blocked: {en_us: x}, timeout: 1h}]",
+		"steps, no ver":  "migrations: [{id: 2, blocked: {en_us: x}}]",
+		"plain blocked":  "data_version: 2\nmigrations: [{id: 2, blocked: by hand}]",
+		"plain name":     "data_version: 2\nmigrations: [{id: 2, name: upgrade, image: a:1}]",
+		"blocked no en":  "data_version: 2\nmigrations: [{id: 2, blocked: {fr_fr: à la main}}]",
 	}
 	for name, src := range cases {
 		if _, err := parseDataYAML(t, src); err == nil {
@@ -98,14 +102,14 @@ func TestParseDataRejectsAuthoringErrors(t *testing.T) {
 // schema_version gates rendering, not the data: a build that cannot draw a newer
 // manifest must still know which data it would be starting.
 func TestParseDataIgnoresSchemaVersion(t *testing.T) {
-	d, err := parseDataYAML(t, "schema_version: 99\ndata_version: 2\nmigrations: [{id: 2, blocked: x}]")
+	d, err := parseDataYAML(t, "schema_version: 99\ndata_version: 2\nmigrations: [{id: 2, blocked: {en_us: x}}]")
 	if err != nil || d.Version != 2 {
 		t.Fatalf("got %+v, %v", d, err)
 	}
 }
 
 func TestPendingRefusesNewerData(t *testing.T) {
-	d := Data{Version: 2, Migrations: []Migration{{ID: 2, Blocked: "x"}}}
+	d := Data{Version: 2, Migrations: []Migration{{ID: 2, Blocked: Localized{"en_us": "x"}}}}
 	if _, err := d.Pending(3); !errors.Is(err, ErrDataNewer) {
 		t.Fatalf("err = %v, want ErrDataNewer", err)
 	}

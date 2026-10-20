@@ -38,7 +38,7 @@ func TestParseVersionGate(t *testing.T) {
 	if _, err := Parse(map[string]any{"schema_version": SchemaVersion + 1, "webui-host": "x"}); err != ErrUnsupportedVersion {
 		t.Fatalf("future schema_version: got err %v, want ErrUnsupportedVersion", err)
 	}
-	a, err := Parse(map[string]any{"webui-host": "j-${domain}", "title": "Jellyfin"})
+	a, err := Parse(map[string]any{"webui-host": "j-${domain}", "title": map[string]any{"en_us": "Jellyfin"}})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestDeclaresWebUI(t *testing.T) {
 func TestParseBackupExclude(t *testing.T) {
 	a, err := Parse(map[string]any{
 		"schema_version": 2,
-		"title":          "Jellyfin",
+		"title":          map[string]any{"en_us": "Jellyfin"},
 		"backup": map[string]any{
 			"exclude": []any{"cache/", "/DATA/AppData/${AppID}/transcodes", "**/thumbs/"},
 		},
@@ -214,7 +214,7 @@ func TestParseBackupExclude(t *testing.T) {
 // An app that declares nothing must produce a zero BackupSpec rather than anything a
 // caller has to guard — every backup path holds this value unconditionally.
 func TestParseWithoutBackupBlock(t *testing.T) {
-	a, err := Parse(map[string]any{"title": "Jellyfin"})
+	a, err := Parse(map[string]any{"title": map[string]any{"en_us": "Jellyfin"}})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestParseWithoutBackupBlock(t *testing.T) {
 func TestParseBackupSkip(t *testing.T) {
 	a, err := Parse(map[string]any{
 		"schema_version": 2,
-		"title":          "Kopia",
+		"title":          map[string]any{"en_us": "Kopia"},
 		"backup": map[string]any{
 			"skip":    true,
 			"exclude": []any{"**/cache/", "**/logs/"},
@@ -328,15 +328,16 @@ func TestParseLifecycleUpdatable(t *testing.T) {
 func TestParseCredentials(t *testing.T) {
 	a, err := Parse(map[string]any{
 		"schema_version": 2,
-		"title":          "Outline",
+		"title":          map[string]any{"en_us": "Outline"},
 		"credentials": []any{
 			map[string]any{
-				"label":    "Administrator",
+				"label":    map[string]any{"en_us": "Administrator"},
 				"username": "admin",
 				"password": "${ADMIN_PASSWORD}",
 				"note":     map[string]any{"en_us": "Change it", "fr_fr": "Changez-le"},
 			},
-			// A bare number must type as written, not cost the block.
+			// A bare number must type as written, not cost the block; a label with no
+			// en_us is refused and dropped, the entry kept.
 			map[string]any{"label": map[string]any{"fr_fr": "Lecteur"}, "username": 1000, "password": 123456},
 			// Not a mapping: decoded empty, never an error.
 			"oops",
@@ -356,8 +357,11 @@ func TestParseCredentials(t *testing.T) {
 		t.Fatalf("first credential = %+v", c)
 	}
 	c = a.Credentials[1]
-	if c.Label.Value() != "Lecteur" || c.Username != "1000" || c.Password != "123456" || c.Note.Value() != "" {
+	if c.Label != nil || c.Username != "1000" || c.Password != "123456" || c.Note.Value() != "" {
 		t.Fatalf("second credential = %+v", c)
+	}
+	if len(a.Problems) != 1 || !strings.HasPrefix(a.Problems[0], "credentials[1].label: ") {
+		t.Fatalf("problems = %v, want the en_us-less label refused", a.Problems)
 	}
 	if c := a.Credentials[2]; c.Username != "" || c.Password != "" || c.Label != nil {
 		t.Fatalf("scalar entry = %+v, want empty", a.Credentials[2])

@@ -171,7 +171,7 @@ func (s *Server) checkTargets(ctx context.Context, only map[string]bool) ([]inst
 			continue
 		}
 		targets = append(targets, installer.CheckTarget{
-			ID: a.ID, Name: a.Name, Icon: a.Icon, Managed: a.Managed, StaysUp: !a.Stoppable,
+			ID: a.ID, Name: a.Name, Title: a.Title, Icon: a.Icon, Managed: a.Managed, StaysUp: !a.Stoppable,
 		})
 	}
 	return s.installer.CheckAll(ctx, targets), nil

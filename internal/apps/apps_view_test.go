@@ -102,7 +102,7 @@ func TestBuildAppDerivesServiceView(t *testing.T) {
 		{"x-compose-app routes", "x-compose-app:\n  routes: [{upstream-port: 80}]\n", nil, xcomposeapp.ViewApps},
 		{"x-compose-app webui-path alone", "x-compose-app:\n  webui-path: /\n", nil, xcomposeapp.ViewService},
 		{"x-compose-app webui-port alone", "x-compose-app:\n  webui-port: \"8080\"\n", nil, xcomposeapp.ViewService},
-		{"x-casaos beside x-compose-app is ignored", "x-casaos:\n  webui_port: \"80\"\nx-compose-app:\n  title: X\n", nil, xcomposeapp.ViewService},
+		{"x-casaos beside x-compose-app is ignored", "x-casaos:\n  webui_port: \"80\"\nx-compose-app:\n  title: {en_us: X}\n", nil, xcomposeapp.ViewService},
 		{"explicit apps wins", "x-compose-app:\n  view: apps\n", nil, xcomposeapp.ViewApps},
 		{"explicit system wins", "x-compose-app:\n  view: system\n", nil, xcomposeapp.ViewSystem},
 		{"retired hidden view is derived", "x-compose-app:\n  view: hidden\n", nil, xcomposeapp.ViewService},

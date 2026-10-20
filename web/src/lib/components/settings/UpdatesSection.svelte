@@ -20,7 +20,7 @@
    * same progress. The live step of the app being updated rides on the app list —
    * the same overlay its tile draws.
    */
-  import { t } from '../../i18n'
+  import { loc, t } from '../../i18n'
   import { settingsApp } from '../../stores/ui'
   import { setUpdateRef, apps, appProgress, subscribeApps, type AppProgress } from '../../stores/apps'
   import { renderDuration, renderElapsed, renderRate, renderSize } from '../../format'
@@ -357,7 +357,7 @@
     {@render icon(row)}
     <div class="body">
       <div class="line">
-        <span class="title">{row.name}</span>
+        <span class="title">{$loc(row.title, row.name)}</span>
         {@render chip(st)}
       </div>
       <p class="meta mono" title={v.all}>
@@ -368,7 +368,7 @@
           {$t('updates_converts_data', {
             from: String(row.data_from ?? ''),
             to: String(row.data_to ?? ''),
-            steps: row.migrations.map((m) => m.name).join(', '),
+            steps: row.migrations.map((m) => $loc(m.title, m.name)).join(', '),
           })}
         </p>
       {/if}
@@ -467,7 +467,7 @@
         <strong>{$t('updates_banner_running', { i: String(Math.min(runDone + 1, runTotal)), n: String(runTotal) })}</strong>
         {#if runCurrent}
           <span class="muted">
-            — {byID.get(runCurrent.id)?.name ?? runCurrent.id}{#if currentLive?.p}
+            — {$loc(byID.get(runCurrent.id)?.title, byID.get(runCurrent.id)?.name ?? runCurrent.id)}{#if currentLive?.p}
               · {$t(currentLive.p.label)} {Math.round(currentLive.p.pct)}%{/if}
           </span>
         {/if}
@@ -518,12 +518,12 @@
           {@render icon(row)}
           <div class="body">
             <div class="line">
-              <span class="title">{row.name}</span>
+              <span class="title">{$loc(row.title, row.name)}</span>
               {#if p}{@render chip(rowState(row.id, p))}{/if}
             </div>
             {#if row.state === 'blocked'}
               <p class="explain">{$t('updates_blocked')}</p>
-              <p class="raw blocked">{row.blocked ?? ''}</p>
+              <p class="raw blocked">{$loc(row.blocked_message, row.blocked ?? '')}</p>
             {:else if row.state === 'error'}
               <p class="explain">{$t('updates_check_failed')}</p>
               <details class="more">
@@ -557,7 +557,7 @@
         <li class="item">
           {@render icon(row)}
           <div class="body">
-            <span class="title">{row.name}</span>
+            <span class="title">{$loc(row.title, row.name)}</span>
             {#if row.suggestion}
               <p class="meta">
                 {$t('updates_looks_like', { name: row.suggestion.name, store: row.suggestion.store_name ?? '' })}
@@ -601,7 +601,7 @@
       {#each unmanaged as row (row.id)}
         <li class="item">
           {@render icon(row)}
-          <div class="body"><span class="title">{row.name}</span></div>
+          <div class="body"><span class="title">{$loc(row.title, row.name)}</span></div>
         </li>
       {/each}
     </ul>
@@ -620,7 +620,7 @@
             {@render icon(row)}
             <div class="body">
               <div class="line">
-                <span class="title">{row.name}</span>
+                <span class="title">{$loc(row.title, row.name)}</span>
                 {@render chip(rowState(row.id, null))}
               </div>
               {#if row.store_name}<p class="meta">{row.store_name}</p>{/if}

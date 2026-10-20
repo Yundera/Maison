@@ -333,7 +333,7 @@ func (s *Server) handleRenderTips(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"tips": tips})
+	writeJSON(w, http.StatusOK, map[string]any{"tips": tips})
 }
 
 // handleShowCredentials returns a managed app's declared x-compose-app

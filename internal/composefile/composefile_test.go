@@ -74,7 +74,7 @@ x-compose-app:
 // mode, and its x-casaos is never read.
 func TestResolveLayersOverride(t *testing.T) {
 	base := parse(t, "x-casaos:\n  title: {en_us: Legacy}\n  icon: legacy.png\n  tips: {custom: store tips}\n")
-	over := parse(t, "x-casaos:\n  icon: ignored.png\nx-compose-app:\n  store-ref: https://s.example/-/Apps/x\n  tips: mine\n")
+	over := parse(t, "x-casaos:\n  icon: ignored.png\nx-compose-app:\n  store-ref: https://s.example/-/Apps/x\n  tips: {en_us: mine}\n")
 	a, err := Resolve(base, over)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestResolveLayersOverride(t *testing.T) {
 // x-casaos block whole. A block that is merely malformed does not: falling back
 // would hide the author's mistake behind a half-working tile.
 func TestResolveVersionAndErrors(t *testing.T) {
-	a, err := parse(t, "x-casaos:\n  title: {en_us: Legacy}\nx-compose-app:\n  schema_version: 99\n  title: Future\n").App()
+	a, err := parse(t, "x-casaos:\n  title: {en_us: Legacy}\nx-compose-app:\n  schema_version: 99\n  title: {en_us: Future}\n").App()
 	if err != nil || a.Title.Value() != "Legacy" {
 		t.Fatalf("app = %+v, err = %v; want the x-casaos fallback", a, err)
 	}

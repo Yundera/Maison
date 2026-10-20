@@ -23,7 +23,7 @@ func newCredentialsServer(t *testing.T) http.Handler {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	base := "services: {}\nx-compose-app:\n  credentials:\n    - label: Administrator\n      username: admin\n      password: ${ADMIN_PASSWORD}\n"
+	base := "services: {}\nx-compose-app:\n  credentials:\n    - label: {en_us: Administrator}\n      username: admin\n      password: ${ADMIN_PASSWORD}\n"
 	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(base), 0o644); err != nil {
 		t.Fatal(err)
 	}

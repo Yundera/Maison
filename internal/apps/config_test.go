@@ -38,7 +38,7 @@ func TestSetTipsWritesXComposeAppOverrideAndLeavesBaseAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(over), "x-compose-app:") || !strings.Contains(string(over), "my note") {
+	if !strings.Contains(string(over), "x-compose-app:") || !strings.Contains(string(over), "en_us: my note") {
 		t.Fatalf("tips not in the override's x-compose-app block:\n%s", over)
 	}
 	if strings.Contains(string(over), "x-casaos") {
@@ -53,7 +53,7 @@ func TestSetTipsWritesXComposeAppOverrideAndLeavesBaseAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Tips != "my note ${PUID}" {
+	if cfg.Tips.Value() != "my note ${PUID}" {
 		t.Fatalf("override tips should win over the store's, got %q", cfg.Tips)
 	}
 }
@@ -78,7 +78,7 @@ func TestSetTipsEmptyFallsBackToStoreTips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Tips != "store tips" {
+	if cfg.Tips.Value() != "store tips" {
 		t.Fatalf("cleared tips should fall back to the store's, got %q", cfg.Tips)
 	}
 }

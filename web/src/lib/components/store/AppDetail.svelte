@@ -5,7 +5,7 @@
     type StoreApp,
     type StoreSource,
   } from '../../stores/store'
-  import { t } from '../../i18n'
+  import { loc, t } from '../../i18n'
   import { renderMarkdown } from '../../markdown'
   import InstallButton from './InstallButton.svelte'
   import { refOf, type StoreRef } from '../../storeref'
@@ -73,7 +73,7 @@
   const parent = $derived(
     app?.parent ? (catalog.find((c) => c.store === app!.store && c.id === app!.parent) ?? null) : null,
   )
-  const parentName = $derived(parent?.name || app?.parent || '')
+  const parentName = $derived($loc(parent?.title, parent?.name) || app?.parent || '')
   const parentInstalled = $derived(!!app?.parent && installedIds.has(sanitizeProject(app.parent)))
 </script>
 
@@ -97,8 +97,8 @@
     <header class="app-header">
       <img class="plate" src={app.icon} alt="" />
       <div class="meta">
-        <h1>{app.name}</h1>
-        <p class="tagline">{app.tagline}</p>
+        <h1>{$loc(app.title, app.name)}</h1>
+        <p class="tagline">{$loc(app.tagline)}</p>
         <!-- The one place that offers to reinstall onto a backup: the catalog grid
              installs in a single click, and someone after their old data comes here. -->
         <InstallButton ref={refOf(app)} {installed} size="normal" offerBackups />
@@ -151,8 +151,8 @@
           <div class="ext-row">
             <img class="ext-icon" src={ext.icon} alt="" loading="lazy" />
             <button class="ext-meta" onclick={() => openStoreApp(refOf(ext))}>
-              <span class="ext-name one-line">{ext.name}</span>
-              <span class="ext-tag one-line">{ext.tagline}</span>
+              <span class="ext-name one-line">{$loc(ext.title, ext.name)}</span>
+              <span class="ext-tag one-line">{$loc(ext.tagline)}</span>
             </button>
             <InstallButton ref={refOf(ext)} installed={installedIds.has(sanitizeProject(ext.id))} />
           </div>
@@ -160,9 +160,9 @@
       </section>
     {/if}
 
-    {#if app.description}
+    {#if $loc(app.description)}
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-      <div class="description markdown">{@html renderMarkdown(app.description)}</div>
+      <div class="description markdown">{@html renderMarkdown($loc(app.description))}</div>
     {/if}
   {:else}
     <p class="error">{error || 'Not found'}</p>

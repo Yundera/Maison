@@ -21,29 +21,29 @@ x-compose-app:
     SMB_HASH: bcrypt:${SMB_PASSWORD}
     OTHER: hex:16
   credentials:
-    - label: SMB
+    - label: {en_us: SMB}
       username: admin
       password: ${SMB_PASSWORD}
       change:
         apply: env
         policy: {min_length: 10}
-    - label: Shared
+    - label: {en_us: Shared}
       username: admin
       password: ${APP_DEFAULT_PASSWORD}
       change: {apply: env}
-    - label: Composite
+    - label: {en_us: Composite}
       password: pre-${SMB_PASSWORD}
       change: {apply: env}
-    - label: Initial
+    - label: {en_us: Initial}
       username: root
       password: ${SMB_PASSWORD}
-    - label: Hooked
+    - label: {en_us: Hooked}
       username: admin
       password: ${SMB_PASSWORD}
       change:
         apply: hook
         hook: echo "$SMB_PASSWORD"
-    - label: Broken
+    - label: {en_us: Broken}
       password: ${SMB_PASSWORD}
       change: {apply: hook}
 `
@@ -102,7 +102,7 @@ func TestRenderedCredentialsChangeInfo(t *testing.T) {
 	}
 	byLabel := map[string]RenderedCredential{}
 	for _, c := range got {
-		byLabel[c.Label] = c
+		byLabel[c.Label.Value()] = c
 	}
 	if c := byLabel["SMB"]; c.Index != 0 || c.Change == nil || !c.Change.Changeable || c.Change.Policy.MinLength != 10 ||
 		!strings.Contains(c.Change.Policy.Forbid, "$") {

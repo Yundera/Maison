@@ -21,11 +21,12 @@ const credentialsDismissedFile = ".credentials-dismissed"
 // against the app's .env, ready to display. Index is its position in the declared
 // list — what a change names, since empty entries are dropped from this one.
 type RenderedCredential struct {
-	Index    int                   `json:"index"`
-	Label    string                `json:"label,omitempty"`
+	Index int `json:"index"`
+	// Label and Note are locale maps, rendered entry by entry; the UI picks its locale.
+	Label    xcomposeapp.Localized `json:"label,omitempty"`
 	Username string                `json:"username,omitempty"`
 	Password string                `json:"password,omitempty"`
-	Note     string                `json:"note,omitempty"`
+	Note     xcomposeapp.Localized `json:"note,omitempty"`
 	Change   *CredentialChangeInfo `json:"change,omitempty"`
 }
 
@@ -62,10 +63,10 @@ func (r *Registry) RenderedCredentials(id string) ([]RenderedCredential, error) 
 	for i, c := range ca.Credentials {
 		rc := RenderedCredential{
 			Index:    i,
-			Label:    render(c.Label.Value()),
+			Label:    c.Label.Map(render),
 			Username: render(c.Username),
 			Password: render(c.Password),
-			Note:     render(c.Note.Value()),
+			Note:     c.Note.Map(render),
 			Change:   changeInfo(ca, c),
 		}
 		if rc.Username == "" && rc.Password == "" {

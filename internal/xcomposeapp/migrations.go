@@ -29,8 +29,8 @@ type Data struct {
 // data in shape ID. Exactly one of Image (a container), Script (a hook-like shell
 // script) or Blocked (a refusal) is set.
 type Migration struct {
-	ID   int    `yaml:"id"`
-	Name string `yaml:"name,omitempty"`
+	ID   int       `yaml:"id"`
+	Name Localized `yaml:"name,omitempty"`
 
 	// The container form: the `docker run` surface of an init step.
 	Image      string   `yaml:"image,omitempty"`
@@ -48,7 +48,7 @@ type Migration struct {
 
 	// Blocked is the refusal form: Markdown shown to the operator, and an update
 	// that would cross this step is refused before anything is pulled.
-	Blocked string `yaml:"blocked,omitempty"`
+	Blocked Localized `yaml:"blocked,omitempty"`
 
 	// Timeout is a Go duration, DefaultMigrationTimeout when empty.
 	Timeout string `yaml:"timeout,omitempty"`
@@ -64,8 +64,8 @@ const DefaultMigrationTimeout = 2 * time.Hour
 
 // Label is how the step is named to the operator: its name, else its id.
 func (m Migration) Label() string {
-	if m.Name != "" {
-		return m.Name
+	if n := m.Name.Value(); n != "" {
+		return n
 	}
 	return fmt.Sprintf("step %d", m.ID)
 }
@@ -81,6 +81,9 @@ func ParseData(ext map[string]any) (Data, error) {
 	d := Data{Version: 1}
 	if ext == nil {
 		return d, nil
+	}
+	if err := checkMigrationsLocalized(ext); err != nil {
+		return d, err
 	}
 	b, err := yaml.Marshal(ext)
 	if err != nil {
@@ -98,6 +101,26 @@ func ParseData(ext map[string]any) (Data, error) {
 	}
 	d.Migrations = raw.Migrations
 	return d, d.Validate()
+}
+
+// checkMigrationsLocalized refuses a step whose name or blocked text is not a locale
+// map with en_us. Unlike the rest of the block (localized.go) this is an error, not
+// a drop: ParseData's error refuses the update, which is right here — dropping
+// `blocked` would turn a refusal into a step with no body.
+func checkMigrationsLocalized(ext map[string]any) error {
+	steps, _ := ext["migrations"].([]any)
+	for i, e := range steps {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, k := range []string{"name", "blocked"} {
+			if v := m[k]; v != nil && !validLocalized(v) {
+				return fmt.Errorf("x-compose-app %s", localizedProblem(fmt.Sprintf("migrations[%d].%s", i, k)))
+			}
+		}
+	}
+	return nil
 }
 
 // Validate checks the store author's half of the contract: a data_version of at
@@ -129,7 +152,7 @@ func (d Data) Validate() error {
 
 func (m Migration) validate() error {
 	forms := 0
-	for _, set := range []bool{m.Image != "", m.Script != "", strings.TrimSpace(m.Blocked) != ""} {
+	for _, set := range []bool{m.Image != "", m.Script != "", strings.TrimSpace(m.Blocked.Value()) != ""} {
 		if set {
 			forms++
 		}

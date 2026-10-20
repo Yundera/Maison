@@ -13,7 +13,7 @@
     type AppCredential,
   } from '../stores/apps'
   import { ApiError } from '../api/client'
-  import { t } from '../i18n'
+  import { loc, t } from '../i18n'
 
   let { id, name }: { id: string; name: string } = $props()
 
@@ -117,7 +117,7 @@
       <section class="cred">
         <div class="head">
           <div>
-            <h3>{c.label || $t('password')}</h3>
+            <h3>{$loc(c.label) || $t('password')}</h3>
             {#if c.username}<p class="who">{$t('username')}: <code>{c.username}</code></p>{/if}
           </div>
           {#if c.change?.changeable && editing !== c.index}

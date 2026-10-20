@@ -2,10 +2,15 @@ import { get, writable } from 'svelte/store'
 import { live } from '../live/ws'
 import { api } from '../api/client'
 import { settings } from './settings'
+import { locale, pick, type Localized } from '../i18n'
 
 export interface App {
   id: string
+  /** Display title in the current locale: localizeApp() picks it from `title`,
+   *  falling back to the server's en_us (or the project name). */
   name: string
+  /** The declared title in every locale (x-compose-app `title`). */
+  title?: Localized
   icon: string
   status: 'running' | 'stopped' | 'partial'
   managed: boolean
@@ -169,13 +174,23 @@ function persistApps(list: App[]): void {
   }
 }
 
+/** Set `name` to the title in the current locale. Idempotent: it reads `title`,
+ *  never the previous `name`, so a locale switch can re-run it over the grid. */
+function localizeApp(a: App): App {
+  return a.title ? { ...a, name: pick(a.title, get(locale), a.name) } : a
+}
+
 /** Apply an authoritative snapshot: replace the grid and refresh the cache. */
 function applySnapshot(list: App[]): void {
+  list = list.map(localizeApp)
   apps.set(list)
   persistApps(list)
 }
 
 export const apps = writable<App[]>(cachedApps())
+
+// Every name everywhere (tile, menus, dialogs, search) follows a language switch.
+locale.subscribe(() => apps.update((list) => list.map(localizeApp)))
 
 /** One-shot REST load (used on mount for an immediate render). The REST endpoint
  *  is authoritative — including a genuine empty list — so its result always wins;
@@ -376,7 +391,8 @@ export interface AppConfig {
   override: string
   webui: WebUI
   /** App guidance — seeded from the store, editable; saved into the override. */
-  tips: string
+  /** The app's tips in every locale; the editor shows the current one. */
+  tips: Localized
 }
 
 export function getConfig(id: string): Promise<AppConfig> {
@@ -388,10 +404,11 @@ export async function setTips(id: string, tips: string): Promise<void> {
   await api.put(`/api/apps/${encodeURIComponent(id)}/tips`, { tips })
 }
 
-/** Fetch the app's tips with ${VAR} references resolved (env-replaced preview). */
-export async function renderTips(id: string): Promise<string> {
-  const r = await api.get<{ tips: string }>(`/api/apps/${encodeURIComponent(id)}/tips`)
-  return r.tips
+/** Fetch the app's tips with ${VAR} references resolved (env-replaced preview),
+ *  every locale of them. */
+export async function renderTips(id: string): Promise<Localized> {
+  const r = await api.get<{ tips: Localized | null }>(`/api/apps/${encodeURIComponent(id)}/tips`)
+  return r.tips ?? {}
 }
 
 /** The rules a new credential value must meet (normalized by the server). */
@@ -417,10 +434,10 @@ export interface CredentialChange {
 export interface AppCredential {
   /** Position in the declared list — what a change names. */
   index: number
-  label?: string
+  label?: Localized
   username?: string
   password?: string
-  note?: string
+  note?: Localized
   change?: CredentialChange
 }
 
@@ -648,10 +665,12 @@ export interface UpdateStatus {
    *  when the update leaves the data alone — every ordinary update. */
   data_from?: number
   data_to?: number
-  migrations?: { id: number; name: string }[]
+  migrations?: { id: number; name: string; title?: Localized }[]
   /** Set when a step on the way is marked as manual by the app's maintainer: the
-   *  update is refused, and this is their message. */
+   *  update is refused, and this is their message (en_us, in Maison's words). */
   blocked?: string
+  /** The maintainer's own text for that step, every locale of it. */
+  blocked_message?: Localized
 }
 
 /** Check whether the app's reference store has a newer compose than installed. */

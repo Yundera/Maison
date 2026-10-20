@@ -42,3 +42,20 @@ export const t = derived(
       return raw.replace(PLACEHOLDER, (m, k) => params?.[k] ?? globals[k] ?? m)
     },
 )
+
+/** A user-facing string an app declares in x-compose-app: a locale map that
+ *  always carries en_us (docs/x-compose-app.md). */
+export type Localized = Record<string, string>
+
+/** The entry of `m` for locale `l`, else its en_us, else `fallback`. */
+export function pick(m: Localized | null | undefined, l: string, fallback = ''): string {
+  return m?.[l] || m?.en_us || fallback
+}
+
+/** Reactive pick in the current locale: `$loc(app.tagline)`, `$loc(app.title, app.name)`. */
+export const loc = derived(
+  locale,
+  ($l) =>
+    (m: Localized | null | undefined, fallback = ''): string =>
+      pick(m, $l, fallback),
+)

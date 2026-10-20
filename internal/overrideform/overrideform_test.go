@@ -32,7 +32,7 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8096"]
 x-compose-app:
-  tips: read me
+  tips: {en_us: read me}
 `
 	form, err := Build([]byte(base), []byte(override))
 	if err != nil {
@@ -44,7 +44,7 @@ x-compose-app:
 	}
 	got := string(out)
 	// Keys the form doesn't model — and the comment above them — survive a save.
-	for _, want := range []string{"# my notes", "healthcheck", "x-compose-app", "tips: read me"} {
+	for _, want := range []string{"# my notes", "healthcheck", "x-compose-app", "tips: {en_us: read me}"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("a save dropped %q from the override:\n%s", want, got)
 		}
@@ -272,7 +272,7 @@ func TestWebUIRoundTrip(t *testing.T) {
 `
 	override := `# my notes
 x-compose-app:
-  tips: read me
+  tips: {en_us: read me}
 `
 	form, err := Build([]byte(b), []byte(override))
 	if err != nil {
@@ -288,7 +288,7 @@ x-compose-app:
 		t.Fatal(err)
 	}
 	got := string(out)
-	for _, want := range []string{"# my notes", "tips: read me", "webui-host: media-${APP_DOMAIN}"} {
+	for _, want := range []string{"# my notes", "tips: {en_us: read me}", "webui-host: media-${APP_DOMAIN}"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q after a webui save:\n%s", want, got)
 		}

@@ -39,6 +39,7 @@ const cliUsage = `usage: maison <command>
   backup status                        print the backup status (as GET /api/backup/status)
   backup init <engine>                 create the engine's repository; the password on stdin
   backup recover <engine>              reattach to the existing repository; its key on stdin
+  lint <docker-compose.yml>…           check store compose files as Maison reads them (no server needed)
 
 Manageable settings: domains, feedback, onboarding, smtp.
 A setting refers to a secret as the whole string "${secret:<name>}".
@@ -64,6 +65,9 @@ func runCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help") {
 		fmt.Fprint(stdout, cliUsage)
 		return 0
+	}
+	if len(args) > 0 && args[0] == "lint" {
+		return runLint(args[1:], stdout, stderr) // local: reads files, needs no server
 	}
 	method, path, body, err := parseCLI(args, stdin)
 	if err != nil {

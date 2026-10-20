@@ -24,11 +24,11 @@ x-compose-app:
   secrets:
     SMB_PASSWORD: password:24
   credentials:
-    - label: SMB
+    - label: {en_us: SMB}
       username: admin
       password: ${SMB_PASSWORD}
       change: {apply: env, policy: {min_length: 10}}
-    - label: Initial
+    - label: {en_us: Initial}
       username: admin
       password: ${SMB_PASSWORD}
 `

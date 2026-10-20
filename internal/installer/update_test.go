@@ -217,7 +217,7 @@ func dataPlanFixture(t *testing.T, installed string, marker int) (*Installer, st
 
 const (
 	plainCompose   = "services: {app: {image: odoo:18.0}}\n"
-	migrateCompose = "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, name: openupgrade, image: openupgrade:19}]}\n"
+	migrateCompose = "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, name: {en_us: openupgrade}, image: openupgrade:19}]}\n"
 )
 
 func TestPlanLetsAnOrdinaryUpdateThrough(t *testing.T) {
@@ -253,7 +253,7 @@ func TestPlanRefusals(t *testing.T) {
 		reason    string
 	}{
 		{name: "blocked step", installed: plainCompose,
-			next:   "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: Needs OpenUpgrade.}]}\n",
+			next:   "services: {app: {image: odoo:19.0}}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: {en_us: Needs OpenUpgrade.}}]}\n",
 			reason: DataRefusedBlocked},
 		{name: "data newer than the store", installed: plainCompose, marker: 3, next: plainCompose, reason: DataRefusedNewer},
 		{name: "malformed manifest", installed: plainCompose,
@@ -296,7 +296,7 @@ func TestDescribeDataStates(t *testing.T) {
 	cases := map[string]struct{ next, state string }{
 		"ordinary": {"services: {app: {image: odoo:18.1}}\n", StateAvailable},
 		"steps":    {migrateCompose, StateAvailable},
-		"blocked":  {"services: {}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: by hand}]}\n", StateBlocked},
+		"blocked":  {"services: {}\nx-compose-app: {data_version: 2, migrations: [{id: 2, blocked: {en_us: by hand}}]}\n", StateBlocked},
 		"broken":   {"services: {}\nx-compose-app: {data_version: 0}\n", StateError},
 	}
 	for name, c := range cases {

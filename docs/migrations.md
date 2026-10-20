@@ -119,7 +119,7 @@ x-compose-app:
   migrations:
     # 1. A container — preferred, like `init`.
     - id: 2
-      name: pg-14-to-16
+      name: { en_us: pg-14-to-16 }
       image: pgautoupgrade/pgautoupgrade:16-alpine
       environment:
         PGAUTO_ONESHOT: "yes"
@@ -128,25 +128,28 @@ x-compose-app:
 
     # 2. A script — the escape hatch, run like a hook.
     - id: 3
-      name: move-config
+      name: { en_us: move-config }
       script: migrations/0003-move-config.sh
       images: [nextcloud:28.0.14-apache, nextcloud:29.0.16-apache]   # pre-pulled
 
     # 3. A refusal — "this cannot be automated".
     - id: 4
-      blocked: |
-        Odoo 18 → 19 changes the database schema and needs OpenUpgrade.
-        Follow https://… on a copy, then reinstall from that copy.
+      blocked:
+        en_us: |
+          Odoo 18 → 19 changes the database schema and needs OpenUpgrade.
+          Follow https://… on a copy, then reinstall from that copy.
+        fr_fr: |
+          Odoo 18 → 19 change le schéma de la base et nécessite OpenUpgrade.
 ```
 
 | Key | Form | Meaning |
 |---|---|---|
 | `id` | all | **Required.** The `data_version` this step produces. Steps are `2 … data_version`, each present exactly once. |
-| `name` | all | Shown in the update progress and the logs. |
+| `name` | all | [Localized](./x-compose-app.md#localized-strings). Shown in the update progress (operator's locale) and the logs (`en_us`). |
 | `image`, `command`, `entrypoint`, `user`, `environment`, `volumes`, `network` | container | The `docker run` surface, with the same semantics, interpolation and path spelling as an [`init`](./x-compose-app.md#init) step. |
 | `script` | script | Path under the store app's `migrations/` folder (e.g. `migrations/0003-move-config.sh`) — nothing else travels with an update. Copied to `.migrate/migrations/` and run from there. |
 | `images` | script | Images the script will `docker run`, pulled with the app's own images while the old version still serves. Optional; an unlisted image is pulled when the script runs. |
-| `blocked` | refusal | Markdown shown to the operator. An update that would cross this step is **refused before anything is pulled.** |
+| `blocked` | refusal | [Localized](./x-compose-app.md#localized-strings) Markdown shown to the operator in their locale. An update that would cross this step is **refused before anything is pulled.** |
 | `timeout` | container, script | Go duration. Default `2h` — a dump/restore of a large database is legitimately long, a hang is not. |
 
 **Prefer the container form**, for the reason [hooks](./x-compose-app.md#hooks) are a

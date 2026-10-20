@@ -247,7 +247,7 @@ func TestOrdinaryAppIsNotGuarded(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedApp(t, dir)
-	writeCompose(t, dir, "services: {}\nx-compose-app:\n  title: Nextcloud\n")
+	writeCompose(t, dir, "services: {}\nx-compose-app:\n  title: {en_us: Nextcloud}\n")
 	r := New(config.Config{DataRoot: root}, nil)
 	if !r.Stoppable("nextcloud") || !r.Uninstallable("nextcloud") {
 		t.Fatal("an app with no lifecycle declaration was guarded")

@@ -194,6 +194,11 @@ type App struct {
 	// Display-only, so it does not raise SchemaVersion: an older build ignores the
 	// block and the app still installs and runs; only the popup is missing.
 	Credentials []Credential `yaml:"credentials,omitempty"`
+
+	// Problems are the declarations Parse refused and dropped — today, user-facing
+	// strings that are not a locale map with an en_us entry (see localized.go).
+	// Never read from or written to YAML.
+	Problems []string `yaml:"-"`
 }
 
 // Credential is one login an app declares. Without Change, Maison only displays
@@ -771,9 +776,9 @@ type Hooks struct {
 
 // Link is an extra button on the app detail view (absolute URL only).
 type Link struct {
-	Name string `yaml:"name,omitempty"`
-	URL  string `yaml:"url,omitempty"`
-	Icon string `yaml:"icon,omitempty"`
+	Name Localized `yaml:"name,omitempty"`
+	URL  string    `yaml:"url,omitempty"`
+	Icon string    `yaml:"icon,omitempty"`
 }
 
 // Route is one web endpoint of an app, stated without reference to a reverse
@@ -854,13 +859,16 @@ func (r *Route) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-// Localized is a value that may be written as a bare string or a locale map.
+// Localized is a user-facing string: a locale map ({en_us: Jellyfin, fr_fr: …})
+// that must carry en_us. Parse refuses any other spelling before it gets here (see
+// localized.go); a bare string reaching this decoder anyway reads as absent.
 type Localized map[string]string
 
-// UnmarshalYAML accepts either a scalar ("Jellyfin") or a map ({en_us: Jellyfin}).
+// UnmarshalYAML accepts a locale map only. A scalar decodes as nil rather than an
+// error, because an error here would cost the app its whole x-compose-app block.
 func (l *Localized) UnmarshalYAML(n *yaml.Node) error {
-	if n.Kind == yaml.ScalarNode {
-		*l = Localized{"en_us": n.Value}
+	if n.Kind != yaml.MappingNode {
+		*l = nil
 		return nil
 	}
 	var m map[string]string
@@ -871,18 +879,31 @@ func (l *Localized) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-// Value returns the en_us entry if present, else any entry, else "".
-func (l Localized) Value() string {
+// Value returns the en_us entry — the text for server-side readers (logs, mail,
+// incidents), which have no viewer locale. The UI picks its own locale from the map.
+func (l Localized) Value() string { return l.In("en_us") }
+
+// In returns the entry for locale, falling back to en_us, else "".
+func (l Localized) In(locale string) string {
+	if v := l[locale]; v != "" {
+		return v
+	}
+	return l["en_us"]
+}
+
+// Map applies f to every entry — rendering ${VAR} references, say — and drops the
+// entries it empties.
+func (l Localized) Map(f func(string) string) Localized {
 	if l == nil {
-		return ""
+		return nil
 	}
-	if v, ok := l["en_us"]; ok {
-		return v
+	out := make(Localized, len(l))
+	for k, v := range l {
+		if v = f(v); v != "" {
+			out[k] = v
+		}
 	}
-	for _, v := range l {
-		return v
-	}
-	return ""
+	return out
 }
 
 // Parse decodes an x-compose-app extension map into an App. It returns
@@ -893,6 +914,7 @@ func Parse(ext map[string]any) (*App, error) {
 	if ext == nil {
 		return nil, ErrNoExtension
 	}
+	ext, problems := checkLocalized(ext)
 	b, err := yaml.Marshal(ext)
 	if err != nil {
 		return nil, err
@@ -904,6 +926,7 @@ func Parse(ext map[string]any) (*App, error) {
 	if a.Schema != 0 && a.Schema > SchemaVersion {
 		return nil, ErrUnsupportedVersion
 	}
+	a.Problems = problems
 	return &a, nil
 }
 

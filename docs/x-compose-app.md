@@ -56,12 +56,16 @@ services:
 x-compose-app:
   schema_version: 1
   id: jellyfin
-  title: Jellyfin
+  title:
+    en_us: Jellyfin
   icon: icon.png
   category: Media
-  tagline: Free software media system
-  description: |
-    Jellyfin is a media server for organizing and streaming your collection.
+  tagline:
+    en_us: Free software media system
+    fr_fr: Système multimédia libre
+  description:
+    en_us: |
+      Jellyfin is a media server for organizing and streaming your collection.
   developer: Jellyfin
   screenshots:
     - screenshot-1.png
@@ -80,14 +84,14 @@ with **every** field below set once, to show what a fully loaded block looks lik
 |---|---|---|---|---|
 | `schema_version` | int | no (default `1`) | Spec version (currently **2**). `secrets`, `variables`, `files`, `init` and the seed tree are **additive** and do not raise it — an older build ignores what it does not know instead of dropping the whole block (which would cost the app its folders and routes too). A build that predates the declared version treats the whole block as absent and reads the app as a CasaOS app (its `x-casaos`, if any) — note that it **does not refuse to install the app**, so raising the version degrades an app rather than gating it. v1 files keep working. A block that is merely malformed is *not* absent — Maison does not fall back to its `x-casaos` — but see [A malformed block](#a-malformed-block) for what it costs. | — |
 | `id` | string | no | Stable app identifier (should equal the Compose project `name`). Defaults to the project name. | `store_app_id` |
-| `title` | string \| localized | no | Tile + store display name. | `title` |
+| `title` | localized | no | Tile + store display name. | `title` |
 | `icon` | path \| url | no | Tile icon. See [Assets](#assets). | `icon` |
 | `category` | string | no | Store grouping. | `category` |
 | `version` | string | no | The app's release as people read it (`2.4.0`, `2024.10.1-ls45`). Parsed but not yet displayed, and never compared: which data an install holds is `data_version`'s job. | — |
 | **`view`** | `apps` \| `service` \| `system` | no (default: `apps`, or `service` for an app with no web UI) | Which dashboard grid the app's tile lands in — **not** a store category, and not a behaviour. See [Views](#views). | — |
 | **`parent`** | string | no | Compose project name of the app this one **extends**. Its tile nests under that app's instead of standing alone. Unresolvable — absent, misspelled, itself an extension — falls back to an ordinary tile. See [`parent` makes the app an extension of another](#parent-makes-the-app-an-extension-of-another). | — |
-| `tagline` | string \| localized | no | One-line store summary. | `tagline` |
-| `description` | string \| localized | no | Store long description (Markdown). | `description` |
+| `tagline` | localized | no | One-line store summary. | `tagline` |
+| `description` | localized | no | Store long description (Markdown). | `description` |
 | `developer` | string | no | Store attribution. | `developer`, else `author` |
 | `screenshots` | path[] \| url[] | no | Store gallery. See [Assets](#assets). | `screenshot_link` |
 | `thumbnail` | path \| url | no | Store card image. See [Assets](#assets). | `thumbnail` |
@@ -99,8 +103,8 @@ with **every** field below set once, to show what a fully loaded block looks lik
 | `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` (CasaOS default `http`) |
 | `webui-path` | string | no (default `/`) | Path appended to the host; a missing leading `/` is added. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
 | **`routes`** | object[] | no | The app's web endpoints, stated without a domain or a proxy: `{ service?, name?, upstream-port, upstream-scheme?, insecure-upstream?, max-body? }`. Maison writes the Caddy labels and publishes each route on every domain the deployment carries. Counts as a web UI for [`view`](#an-app-with-no-web-ui-is-a-service). See [`domains.md`](./domains.md) and [Routes](#routes). | — |
-| `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url`. Parsed, but **not rendered by any current build**. | — |
-| `tips` | string \| localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. Clearing an edit falls back to the store's tips. | `tips.before_install` + `tips.custom`, joined |
+| `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url` and a localized `name`. Parsed, but **not rendered by any current build**. | — |
+| `tips` | localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. An edit is stored as `{en_us: …}`, replacing the store's map, so the operator's note shows in every locale; clearing it falls back to the store's tips. | `tips.before_install` per locale, `tips.custom` appended (and `custom` alone as `en_us`) |
 | **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). |
 | **`secrets`** | map | no | Values **generated once** and ensured in the app's `.env`. See [Secrets and variables](#secrets-and-variables). |
 | **`variables`** | map | no | Templates ensured in the app's `.env` on **every** up. See [Secrets and variables](#secrets-and-variables). |
@@ -111,7 +115,7 @@ with **every** field below set once, to show what a fully loaded block looks lik
 | **`lifecycle`** | object | no | `{ stoppable, uninstallable, updatable }`, all default `true` — whether Maison may stop, uninstall or update the app. See [Lifecycle](#lifecycle-what-the-operator-may-do-to-the-app). | — |
 | **`backup`** | object | no | `{ exclude, skip }` — directories of **derived** data to leave out of backups, or the whole app. See [Backup exclusions](#backup-exclusions) and [Skipping an app entirely](#skipping-an-app-entirely). | — |
 | **`data_version`** | int | no (default `1`) | The shape of data this compose expects. An install's data is marked with it; a start refuses data in another shape, and an update converts it with `migrations`. Read from the **base** compose only. See [`migrations.md`](./migrations.md). | — |
-| **`migrations`** | object[] | no | One step per data version `2 … data_version`: `{ id, name?, timeout? }` plus exactly one of a container (`image`, `command`, … as in [`init`](#init)), a `script` under the store app's `migrations/` folder (with the `images` it runs), or `blocked` (Markdown; the update is refused). Read from the base compose only. See [`migrations.md`](./migrations.md). | — |
+| **`migrations`** | object[] | no | One step per data version `2 … data_version`: `{ id, name?, timeout? }` (`name` localized) plus exactly one of a container (`image`, `command`, … as in [`init`](#init)), a `script` under the store app's `migrations/` folder (with the `images` it runs), or `blocked` (localized Markdown; the update is refused). Read from the base compose only. See [`migrations.md`](./migrations.md). | — |
 
 \* `webui-host` is required only to have a **clickable app**. An app with no
 `webui-host` is headless — its tile has no "open" action — unless it publishes a
@@ -124,9 +128,46 @@ published host port opens a CasaOS app; a native app says the same with the
 `x-casaos` — the per-service `apps` descriptions (`envs`, `ports`, `volumes`,
 `devices`) and the localized `image` map — is not read.
 
-**Localized** means either a plain string (`title: Jellyfin`) or a locale map
-(`title: { en_us: Jellyfin, fr_fr: Jellyfin }`). Maison prefers `en_us`, else any
-entry.
+### Localized strings
+
+Every string Maison shows to a person is **localized**: a locale map that must
+carry a non-empty `en_us`.
+
+```yaml
+title:
+  en_us: Jellyfin
+  fr_fr: Jellyfin
+tagline: { en_us: Free software media system, fr_fr: Système multimédia libre }
+```
+
+That covers `title`, `tagline`, `description`, `tips`, `credentials[].label`,
+`credentials[].note`, `links[].name`, `migrations[].name` and
+`migrations[].blocked`. `category` and `developer` are plain strings: one is the
+store's grouping key, the other a proper noun.
+
+The dashboard shows the operator's UI language, falling back to `en_us`.
+Server-side text (logs, mail, incidents) always uses `en_us`. Locale codes are the
+dashboard's own: `en_us`, `fr_fr`, `de_de`, `zh_cn`, … (any other key is kept and
+simply never chosen).
+
+**A plain string is refused**, and so is a map with no `en_us` or with a non-string
+value. A plain string would leave the maintainer unsure whether the field is
+translated at all, and a map with no `en_us` leaves some readers with nothing to show.
+The refused field is **dropped**: the tile falls back to the folder name, the card
+loses its tagline, and so on. The rest of the block is kept (contrast
+[a malformed block](#a-malformed-block)). The refusal is logged once per store
+refresh and reported by `maison lint`. In `migrations` the same refusal is an error
+that refuses the update instead, because dropping `blocked` would turn a refusal into
+a step with no body.
+
+Check a store before publishing it:
+
+```bash
+docker run --rm -v "$PWD:/s" -w /s ghcr.io/yundera/maison:<tag> \
+  maison lint Apps/*/docker-compose.yml
+```
+
+It prints every dropped field and every `migrations` error, and exits 1 if there is any.
 
 ### A malformed block
 
@@ -258,7 +299,7 @@ x-compose-app:
 x-compose-app:
   webui-host: photoprism-${domain}
   links:
-    - name: Docs
+    - name: { en_us: Docs, fr_fr: Documentation }
       url: https://docs.photoprism.app
 ```
 
@@ -492,10 +533,10 @@ x-compose-app:
   secrets:
     ADMIN_PASSWORD: password:20               # generated once, per app
   credentials:
-    - label: Administrator                    # string or locale map
+    - label: { en_us: Administrator }         # localized
       username: admin                         # template
       password: ${ADMIN_PASSWORD}             # template
-      note: Change it under Settings → Security.   # optional, string or locale map
+      note: { en_us: Change it under Settings → Security. }   # optional, localized
 ```
 
 - `username` and `password` are **templates**, rendered exactly like `tips`: against
@@ -552,7 +593,7 @@ x-compose-app:
   secrets:
     SAMBA_ADMIN_PASSWORD: ${APP_DEFAULT_PASSWORD}|password:24
   credentials:
-    - label: SMB share
+    - label: { en_us: SMB share }
       username: admin
       password: ${SAMBA_ADMIN_PASSWORD}
       change:

@@ -12,6 +12,7 @@ import (
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/overrideform"
 	"github.com/yundera/maison/internal/stackup"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // Config carries a managed app's base compose, its user override, and the
@@ -23,8 +24,9 @@ type Config struct {
 	// Tips is the app's guidance, seeded from the store (x-compose-app tips; on an
 	// x-casaos app, its before_install + custom) but editable: edits are persisted
 	// into the override's x-compose-app.tips key (see SetTips). It doubles as the
-	// operator's per-app note.
-	Tips string `json:"tips"`
+	// operator's per-app note. A locale map: the UI shows the operator's locale,
+	// falling back to en_us.
+	Tips xcomposeapp.Localized `json:"tips"`
 }
 
 // WebUI is the effective x-compose-app webui-* configuration (base + override
@@ -59,7 +61,7 @@ func (r *Registry) GetConfig(id string) (*Config, error) {
 				Path:   ca.WebUIPath,
 				URL:    ca.WebURL(r.cfg.AppDomain()),
 			}
-			cfg.Tips = strings.TrimSpace(ca.Tips.Value())
+			cfg.Tips = ca.Tips.Map(strings.TrimSpace)
 		}
 	}
 	return cfg, nil
@@ -68,14 +70,14 @@ func (r *Registry) GetConfig(id string) (*Config, error) {
 // RenderedTips returns the app's tips with ${VAR} references resolved from its
 // base interpolation vars and .env — the operator-facing preview shown from the
 // tile menu (the settings editor shows the raw, still-templated text).
-func (r *Registry) RenderedTips(id string) (string, error) {
+func (r *Registry) RenderedTips(id string) (xcomposeapp.Localized, error) {
 	cfg, err := r.GetConfig(id)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	dir := filepath.Join(r.cfg.AppsDir(), id)
 	env, _ := os.ReadFile(filepath.Join(dir, ".env"))
-	return envinject.Render(cfg.Tips, r.cfg, id, env), nil
+	return cfg.Tips.Map(func(s string) string { return envinject.Render(s, r.cfg, id, env) }), nil
 }
 
 // SetTips persists (or clears) the app's editable tips into the override's
@@ -83,6 +85,10 @@ func (r *Registry) RenderedTips(id string) (string, error) {
 // touches only the override file — no Docker recreate. The base compose (the
 // store's shipped tips) is never mutated; the override's tips take precedence over
 // it (see mergedTips), and clearing them falls back to the store's.
+//
+// The edit is stored as the en_us entry of a fresh locale map, replacing the
+// store's whole map: an operator's note is one text for every reader of this box,
+// and en_us is what every locale falls back to.
 func (r *Registry) SetTips(id, tips string) error {
 	dir := filepath.Join(r.cfg.AppsDir(), id)
 	basePath := filepath.Join(dir, "docker-compose.yml")
@@ -103,7 +109,11 @@ func (r *Registry) SetTips(id, tips string) error {
 	if xca == nil {
 		xca = map[string]any{}
 	}
-	setOrDelete(xca, "tips", tips)
+	if strings.TrimSpace(tips) == "" {
+		delete(xca, "tips")
+	} else {
+		xca["tips"] = map[string]any{"en_us": tips}
+	}
 	if len(xca) == 0 {
 		delete(doc, "x-compose-app")
 	} else {
@@ -242,13 +252,4 @@ func (r *Registry) SaveSettings(ctx context.Context, id string, c SettingsChange
 		return err
 	}
 	return stackup.Up(ctx, r.cfg, id, dir, r.composeFiles(dir))
-}
-
-// setOrDelete sets m[k]=v, or removes the key when v is blank.
-func setOrDelete(m map[string]any, k, v string) {
-	if strings.TrimSpace(v) == "" {
-		delete(m, k)
-		return
-	}
-	m[k] = v
 }

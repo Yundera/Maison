@@ -156,7 +156,9 @@ func (s *StoreInfo) ComposeApp() map[string]any {
 		m["min_memory"] = s.MinMemory
 	}
 	set("main", s.Main)
-	set("tips", s.tips())
+	if t := s.tips(); len(t) > 0 {
+		m["tips"] = t
+	}
 
 	scheme := strings.TrimSpace(s.Scheme)
 	if scheme == "" {
@@ -182,15 +184,27 @@ func (s *StoreInfo) ComposeApp() map[string]any {
 	return m
 }
 
-// tips flattens the localized before_install guidance and the free-form custom
-// note into the single Markdown note x-compose-app `tips` is.
-func (s *StoreInfo) tips() string {
-	var parts []string
-	if b := strings.TrimSpace(Localized(s.Tips.BeforeInstall)); b != "" {
-		parts = append(parts, b)
+// tips merges the localized before_install guidance and the free-form custom note
+// into the locale map x-compose-app `tips` is: one entry per before_install locale,
+// with custom appended to each. custom on its own — or beside guidance with no
+// en_us — becomes the en_us entry, so the map always has the fallback it needs.
+func (s *StoreInfo) tips() map[string]string {
+	custom := strings.TrimSpace(s.Tips.Custom)
+	out := map[string]string{}
+	for loc, text := range s.Tips.BeforeInstall {
+		var parts []string
+		if t := strings.TrimSpace(text); t != "" {
+			parts = append(parts, t)
+		}
+		if custom != "" {
+			parts = append(parts, custom)
+		}
+		if len(parts) > 0 {
+			out[loc] = strings.Join(parts, "\n\n")
+		}
 	}
-	if c := strings.TrimSpace(s.Tips.Custom); c != "" {
-		parts = append(parts, c)
+	if _, ok := out["en_us"]; !ok && custom != "" {
+		out["en_us"] = custom
 	}
-	return strings.Join(parts, "\n\n")
+	return out
 }

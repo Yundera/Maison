@@ -7,7 +7,7 @@
     type App,
     type AppCredential,
   } from '../stores/apps'
-  import { t } from '../i18n'
+  import { loc, t } from '../i18n'
 
   let { target }: { target: { app: App; launch: boolean } } = $props()
 
@@ -110,7 +110,7 @@
       <div class="list">
         {#each creds as c, i (c.index)}
           <section class="cred">
-            {#if c.label}<h3>{c.label}</h3>{/if}
+            {#if $loc(c.label)}<h3>{$loc(c.label)}</h3>{/if}
             {#if c.username}
               <div class="row">
                 <span class="key">{$t('username')}</span>
@@ -141,7 +141,7 @@
                 </button>
               </div>
             {/if}
-            {#if c.note}<p class="note">{c.note}</p>{/if}
+            {#if $loc(c.note)}<p class="note">{$loc(c.note)}</p>{/if}
           </section>
         {/each}
       </div>

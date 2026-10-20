@@ -6,7 +6,7 @@
   import { fetchStore, type StoreApp, type StoreData } from '../../stores/store'
   import { apps } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
-  import { t } from '../../i18n'
+  import { loc, t } from '../../i18n'
   import AppDetail from './AppDetail.svelte'
   import InstallButton from './InstallButton.svelte'
 
@@ -107,7 +107,7 @@
       if (!q && isExtension(a)) return false
       if (category !== 'All' && a.category !== category) return false
       if (developer !== 'All' && a.developer !== developer) return false
-      if (q && !`${a.name} ${a.tagline} ${a.category}`.toLowerCase().includes(q)) return false
+      if (q && !`${$loc(a.title, a.name)} ${a.name} ${$loc(a.tagline)} ${a.category}`.toLowerCase().includes(q)) return false
       return true
     })
   })
@@ -241,8 +241,8 @@
     <div class="hero-body">
       <img class="plate" src={app.icon} alt="" loading="lazy" />
       <div class="hero-meta">
-        <span class="name one-line">{app.name}</span>
-        <span class="tag one-line">{app.tagline}</span>
+        <span class="name one-line">{$loc(app.title, app.name)}</span>
+        <span class="tag one-line">{$loc(app.tagline)}</span>
       </div>
       <InstallButton ref={refOf(app)} installed={isInstalled(app)} />
     </div>
@@ -254,8 +254,8 @@
     <div class="row1">
       <img class="plate" src={app.icon} alt="" loading="lazy" />
       <div class="meta">
-        <span class="name one-line">{app.name}</span>
-        <span class="tag two-line">{app.tagline}</span>
+        <span class="name one-line">{$loc(app.title, app.name)}</span>
+        <span class="tag two-line">{$loc(app.tagline)}</span>
       </div>
     </div>
     <div class="row2">

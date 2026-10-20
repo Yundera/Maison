@@ -36,14 +36,17 @@ import (
 
 // CatalogApp is one installable app from a store.
 type CatalogApp struct {
-	ID          string   `json:"id"`   // catalog id: the app's directory name
-	Name        string   `json:"name"` // display title
-	Tagline     string   `json:"tagline"`
-	Description string   `json:"description"`
-	Icon        string   `json:"icon"`
-	Thumbnail   string   `json:"thumbnail"`
-	Screenshots []string `json:"screenshots"`
-	Category    string   `json:"category"`
+	ID   string `json:"id"`   // catalog id: the app's directory name
+	Name string `json:"name"` // display title: en_us, else the catalog id
+	// Title, Tagline and Description are locale maps; the UI shows the operator's
+	// locale, falling back to en_us (and Title to Name).
+	Title       xcomposeapp.Localized `json:"title,omitempty"`
+	Tagline     xcomposeapp.Localized `json:"tagline"`
+	Description xcomposeapp.Localized `json:"description"`
+	Icon        string                `json:"icon"`
+	Thumbnail   string                `json:"thumbnail"`
+	Screenshots []string              `json:"screenshots"`
+	Category    string                `json:"category"`
 	// Parent is the catalog id of the app this one extends, read from the app's
 	// x-compose-app `parent`. The catalog shows an app carrying one under that
 	// app's detail page instead of loose in the browse grid. Unverified here: the
@@ -67,7 +70,8 @@ type CatalogApp struct {
 	// leave them out and show each app once.
 	Primary bool `json:"primary"`
 
-	composePath string // absolute path to the app's compose file
+	composePath string   // absolute path to the app's compose file
+	problems    []string // x-compose-app declarations Maison refused (xcomposeapp.App.Problems)
 	// iconRel is the icon as the compose declared it when that was a file beside
 	// the compose, kept because Icon above has by then been rewritten into the URL
 	// the browser fetches. The installer copies the file, not the URL — it is
@@ -463,6 +467,10 @@ func (m *Manager) Refresh(ctx context.Context) error {
 			names[u] = n
 		}
 		for _, a := range apps {
+			// Once per refresh: what the maintainer declared that Maison dropped.
+			for _, p := range a.problems {
+				log.Printf("store %s: app %s: %s", u, a.ID, p)
+			}
 			all = append(all, a)
 			if won, exists := catalog[a.ID]; exists {
 				// First store wins on id collision. The loser stays in `all` — it is
@@ -963,8 +971,9 @@ func catalogApp(id string, ca *xcomposeapp.App, composePath, storeURL, appsPath,
 	app := &CatalogApp{
 		ID:          id,
 		Name:        name,
-		Tagline:     ca.Tagline.Value(),
-		Description: ca.Description.Value(),
+		Title:       ca.Title,
+		Tagline:     ca.Tagline,
+		Description: ca.Description,
 		Icon:        ca.Icon,
 		Thumbnail:   ca.Thumbnail,
 		Screenshots: ca.Screenshots,
@@ -976,6 +985,7 @@ func catalogApp(id string, ca *xcomposeapp.App, composePath, storeURL, appsPath,
 		AppsPath:    appsPath,
 		StoreName:   storeName,
 		composePath: composePath,
+		problems:    ca.Problems,
 	}
 	app.resolveAssets(NewRef(storeURL, appsPath, id))
 	return app

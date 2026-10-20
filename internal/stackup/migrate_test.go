@@ -35,7 +35,7 @@ func withFailingRunner(t *testing.T, f *failingRunner) {
 
 func threeSteps() MigratePlan {
 	return MigratePlan{From: 1, To: 4, Steps: []xcomposeapp.Migration{
-		{ID: 2, Name: "pg-14-to-16", Image: "pgautoupgrade:16",
+		{ID: 2, Name: xcomposeapp.Localized{"en_us": "pg-14-to-16"}, Image: "pgautoupgrade:16",
 			Volumes: []string{"/DATA/AppData/${AppID}/db:/var/lib/postgresql/data"}},
 		{ID: 3, Image: "convert:3"},
 		{ID: 4, Image: "convert:4"},
@@ -87,7 +87,7 @@ func TestRunMigrationsStopsAtTheFailingStep(t *testing.T) {
 
 func TestRunMigrationsRefusesABlockedStep(t *testing.T) {
 	cfg, dir := dataRootApp(t, "odoo", "")
-	plan := MigratePlan{From: 1, To: 2, Steps: []xcomposeapp.Migration{{ID: 2, Blocked: "by hand"}}}
+	plan := MigratePlan{From: 1, To: 2, Steps: []xcomposeapp.Migration{{ID: 2, Blocked: xcomposeapp.Localized{"en_us": "by hand"}}}}
 	if err := RunMigrations(context.Background(), cfg, "odoo", dir, plan, nil, nil); err == nil {
 		t.Fatal("a blocked step ran")
 	}

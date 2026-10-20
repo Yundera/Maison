@@ -35,16 +35,19 @@ const (
 
 // App is one dashboard tile.
 type App struct {
-	ID       string `json:"id"`      // compose project name
-	Name     string `json:"name"`    // display title
-	Icon     string `json:"icon"`    // icon URL
-	Status   string `json:"status"`  // running|stopped|partial
-	Managed  bool   `json:"managed"` // installed by Maison
-	Store    string `json:"store,omitempty"`
-	Scheme   string `json:"scheme,omitempty"`
-	Port     string `json:"port,omitempty"`
-	Index    string `json:"index,omitempty"`
-	Category string `json:"category,omitempty"`
+	ID   string `json:"id"`   // compose project name
+	Name string `json:"name"` // display title: en_us, else the project name
+	// Title is the declared title in every locale; the UI shows the operator's,
+	// falling back to Name.
+	Title    xcomposeapp.Localized `json:"title,omitempty"`
+	Icon     string                `json:"icon"`    // icon URL
+	Status   string                `json:"status"`  // running|stopped|partial
+	Managed  bool                  `json:"managed"` // installed by Maison
+	Store    string                `json:"store,omitempty"`
+	Scheme   string                `json:"scheme,omitempty"`
+	Port     string                `json:"port,omitempty"`
+	Index    string                `json:"index,omitempty"`
+	Category string                `json:"category,omitempty"`
 	// URL is the fully-resolved click URL, set when the app's webui-host resolves.
 	// When empty, the frontend opens the box's own host on Port (with Scheme and
 	// Index) — a webui-port with no host, or the published host port.
@@ -586,6 +589,7 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 		if t := ca.Title.Value(); t != "" {
 			app.Name = t
 		}
+		app.Title = ca.Title
 		app.Icon = ca.Icon
 		app.Category = ca.Category
 		app.Store = ca.ID

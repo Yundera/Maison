@@ -111,7 +111,7 @@ func runMigration(ctx context.Context, cfg config.Config, project, dir string, p
 		})
 		return timedOut(ctx, err, timeout)
 
-	case strings.TrimSpace(m.Blocked) != "":
+	case strings.TrimSpace(m.Blocked.Value()) != "":
 		// Refused by the update's plan before anything was pulled; reaching here is a
 		// caller that skipped the plan.
 		return errors.New("this step is marked as manual and cannot be run")

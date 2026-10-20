@@ -633,6 +633,9 @@ type DataRefusedError struct {
 	Reason string // one of DataRefused*
 	Title  string // what the owner is told happened, in a few words
 	Detail string // why, in the maintainer's or Maison's words
+	// Message is the maintainer's own text for a blocked step, every locale of it,
+	// so the UI can show the operator's language; Detail carries its en_us.
+	Message xcomposeapp.Localized
 }
 
 func (e *DataRefusedError) Error() string { return e.Title + ": " + e.Detail }
@@ -669,11 +672,11 @@ func PlanData(dir string, newBase []byte) (stackup.MigratePlan, error) {
 			Title: "its data is newer than the store's version", Detail: err.Error()}
 	}
 	for _, m := range plan.Steps {
-		if m.Blocked != "" {
-			return plan, &DataRefusedError{Reason: DataRefusedBlocked,
+		if strings.TrimSpace(m.Blocked.Value()) != "" {
+			return plan, &DataRefusedError{Reason: DataRefusedBlocked, Message: m.Blocked,
 				Title: "this update cannot be applied automatically",
 				Detail: fmt.Sprintf("Moving the data from version %d to %d crosses %q, which the app's maintainer marked as manual:\n\n%s",
-					from, data.Version, m.Label(), strings.TrimSpace(m.Blocked))}
+					from, data.Version, m.Label(), strings.TrimSpace(m.Blocked.Value()))}
 		}
 	}
 	return plan, nil

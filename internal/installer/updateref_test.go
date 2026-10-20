@@ -32,7 +32,12 @@ func refStoreZip(t *testing.T, appName, tag string) []byte {
 		"  main: app\n" +
 		"  title:\n" +
 		"    en_us: " + appName + "\n"
+	return storeZipOf(t, appName, compose)
+}
 
+// storeZipOf builds a one-app store archive shipping the compose given.
+func storeZipOf(t *testing.T, appName, compose string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	w, err := zw.Create("store-main/Apps/" + appName + "/docker-compose.yml")

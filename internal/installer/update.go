@@ -298,7 +298,13 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	// No measured track: converging and `compose up` report no progress, so the bar
 	// sits full while the label says what is happening (as a backup's start does).
 	step(UpdatePhaseStart, "Starting the new version", 100)
-	up := stackup.UpOptions{}
+	// The .env as it stands before UpWith syncs it is what a seeded secret reads
+	// (stackup.EnsureSecrets): an update that introduces `${APP_DEFAULT_PASSWORD}|alnum:32`
+	// must keep the password the app's database was initialised with. Without it
+	// every such update generated a fresh one and locked the app out of its own data
+	// (ghost and docmost on yunderalabs, 2026-10-17).
+	prior, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	up := stackup.UpOptions{Prior: prior}
 	if len(plan.Steps) > 0 {
 		up.Migrate = &plan
 		up.Progress = func(i, n int, m xcomposeapp.Migration) {

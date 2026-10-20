@@ -328,3 +328,41 @@ func TestWriteMigrationsReplacesTheCopy(t *testing.T) {
 		t.Error("a script the store no longer ships survived the update")
 	}
 }
+
+// An update that moves an app off the shared password onto a seeded secret must
+// carry the old value over: the app's database was initialised with it. The update
+// path once handed EnsureSecrets no prior .env, so the secret was generated afresh
+// and ghost and docmost lost their databases (yunderalabs, 2026-10-17).
+func TestApplyUpdateSeedsSecretsFromTheInstalledEnv(t *testing.T) {
+	compose := "name: ghost\n" +
+		"services:\n" +
+		"  app:\n" +
+		"    image: example/ghost:2\n" +
+		"    environment:\n" +
+		"      DB_PASSWORD: ${GHOST_DB_PASSWORD}\n" +
+		"x-compose-app:\n" +
+		"  schema_version: 2\n" +
+		"  title:\n" +
+		"    en_us: ghost\n" +
+		"  secrets:\n" +
+		"    GHOST_DB_PASSWORD: ${APP_DEFAULT_PASSWORD}|alnum:32\n"
+	srv := refStoreServer(t, storeZipOf(t, "ghost", compose))
+	in, dir := refInstaller(t, "ghost", "name: ghost\nservices:\n  app:\n    image: example/ghost:1\n")
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("APP_DEFAULT_PASSWORD=the-old-one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.SetUpdateRef(context.Background(), "ghost", srv.URL+"/store.zip/-/Apps/ghost"); err != nil {
+		t.Fatalf("SetUpdateRef: %v", err)
+	}
+	in.RollBack = func(context.Context, string, string) error { return nil }
+
+	_, _ = in.ApplyUpdate(context.Background(), "ghost", UpdateOptions{NoBackup: true}) // no Docker: start fails after the secrets
+
+	env, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "GHOST_DB_PASSWORD=the-old-one\n") {
+		t.Errorf("seeded secret not carried over from the installed .env:\n%s", env)
+	}
+}

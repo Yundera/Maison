@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/docker/docker/api/types/container"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/appstats"
+	"github.com/yundera/maison/internal/cgroupstat"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/overrideform"
 )
@@ -354,6 +356,13 @@ func (s *Server) handleAppStats(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	ctx := conn.CloseRead(r.Context())
 
+	if s.cgroups != nil {
+		if tg, ok := s.cgroups.Lookup(ctx, cid); ok {
+			s.streamCgroupStats(ctx, conn, cid, tg.Dir)
+			return
+		}
+	}
+
 	body, err := s.dx.ContainerStatsStream(ctx, cid)
 	if err != nil {
 		return
@@ -379,9 +388,61 @@ func (s *Server) handleAppStats(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// cgroupStatsEvery is the cgroup stream's cadence. Docker's stream sends a frame a
+// second; reading the files is cheap enough for that too, but a bar chart redrawn
+// every two seconds reads the same and halves the frames.
+const cgroupStatsEvery = 2 * time.Second
+
+// streamCgroupStats is handleAppStats from the container's cgroup files: the first
+// frame is out in a quarter-second rather than after Docker's double sample.
+//
+// CPU here is the container's share of the WHOLE host, as on the per-app monitor
+// and the history graph below it on the same tab — not Docker's per-core figure,
+// where 100% is one core. The fallback Docker path keeps the per-core figure.
+func (s *Server) streamCgroupStats(ctx context.Context, conn *websocket.Conn, cid, dir string) {
+	rd := cgroupstat.NewReader()
+	cpus := float64(appstats.HostCPUs())
+	memTotal := s.appstats.MemTotal()
+
+	prev, err := rd.Read(dir)
+	if err != nil {
+		return
+	}
+	prevAt := time.Now()
+	wait := 250 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = cgroupStatsEvery
+		cur, err := rd.Read(dir)
+		if err != nil {
+			return // the container went away: the client reconnects to its successor
+		}
+		now := time.Now()
+		out := statsFrame{MemUsage: cur.MemUsage(), MemLimit: cur.MemMax, Health: s.dx.ContainerHealth(ctx, cid), CPUOfHost: true}
+		if out.MemLimit == 0 || out.MemLimit > memTotal {
+			out.MemLimit = memTotal
+		}
+		if dt := now.Sub(prevAt).Seconds(); dt > 0 && cur.CPUUsec >= prev.CPUUsec {
+			out.CPUPercent = float64(int64(float64(cur.CPUUsec-prev.CPUUsec)/(dt*1e6*cpus)*1000+0.5)) / 10
+		}
+		prev, prevAt = cur, now
+		raw, _ := json.Marshal(out)
+		if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+			return
+		}
+	}
+}
+
 type statsFrame struct {
 	CPUPercent float64 `json:"cpu_percent"`
 	MemUsage   uint64  `json:"mem_usage"`
 	MemLimit   uint64  `json:"mem_limit"`
 	Health     string  `json:"health"` // "", starting, healthy, unhealthy
+	// CPUOfHost says CPUPercent is a share of the whole box (the cgroup path)
+	// rather than Docker's per-core figure (the fallback), so the tab can label it.
+	CPUOfHost bool `json:"cpu_of_host,omitempty"`
 }

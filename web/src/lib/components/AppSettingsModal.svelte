@@ -29,6 +29,7 @@
   import TipsView from './TipsView.svelte'
   import BackupsTab from './BackupsTab.svelte'
   import SecurityTab from './SecurityTab.svelte'
+  import AppStatsHistory from './AppStatsHistory.svelte'
 
   let {
     id,
@@ -846,6 +847,9 @@
               <p class="hint">Waiting for stats…</p>
             {/if}
           </div>
+        {/if}
+        {#if servicesLoaded}
+          <AppStatsHistory {id} {stat} service={selected} multiService={services.length > 1} />
         {/if}
       {/if}
     </div>

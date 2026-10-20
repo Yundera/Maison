@@ -12,10 +12,13 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
 
+	"github.com/yundera/maison/internal/cgroupstat"
 	"github.com/yundera/maison/internal/dockerx"
 )
 
@@ -65,22 +68,63 @@ type Sampler struct {
 	// Maison is running, and re-reading it every tick would be a syscall per
 	// sample for a constant.
 	memTotal uint64
+	cpus     int
+
+	// cg, when set, is the cgroup source: counters read straight from the kernel,
+	// which answers at once instead of after Docker's one-second double sample.
+	// Docker stats remain the path when the cgroup tree is not mounted.
+	cg *cgroupSource
 }
 
-// New returns a Sampler reading from dx.
-func New(dx docker) *Sampler {
-	s := &Sampler{dx: dx}
+// cgroupSource is the live view's own reader and baseline. It must not share
+// either with the history recorder: the two run on different cadences, and one
+// baseline differentiated by both would corrupt both (see internal/cgroupstat).
+type cgroupSource struct {
+	tracker *cgroupstat.Tracker
+
+	mu   sync.Mutex
+	rd   *cgroupstat.Reader
+	prev map[string]reading
+}
+
+type reading struct {
+	at time.Time
+	c  cgroupstat.Counters
+}
+
+// New returns a Sampler reading from dx, and from tracker's cgroups when tracker
+// is non-nil.
+func New(dx docker, tracker *cgroupstat.Tracker) *Sampler {
+	s := &Sampler{dx: dx, cpus: HostCPUs()}
 	if vm, err := mem.VirtualMemory(); err == nil {
 		s.memTotal = vm.Total
 	}
+	if tracker != nil {
+		s.cg = &cgroupSource{tracker: tracker, rd: cgroupstat.NewReader(), prev: map[string]reading{}}
+	}
 	return s
 }
+
+// HostCPUs is the host's logical core count — /proc/cpuinfo is not namespaced, so
+// this is the box's, not a cpuset's.
+func HostCPUs() int {
+	if n, err := cpu.Counts(true); err == nil && n > 0 {
+		return n
+	}
+	return 1
+}
+
+// MemTotal is the host's RAM.
+func (s *Sampler) MemTotal() uint64 { return s.memTotal }
 
 // Sample returns current per-app usage, busiest first. Containers that fail to
 // report (stopping as we read them, say) are skipped rather than failing the
 // round: a monitor that blanks because one container went away is worse than one
 // that is briefly a row short.
 func (s *Sampler) Sample(ctx context.Context) Snapshot {
+	if s.cg != nil {
+		return s.sampleCgroups(ctx)
+	}
 	snap := Snapshot{Apps: []Stat{}, MemTotal: s.memTotal}
 
 	list, err := s.dx.ListProjectContainers(ctx)
@@ -128,6 +172,73 @@ func (s *Sampler) Sample(ctx context.Context) Snapshot {
 	}
 	snap.Apps = aggregate(samples, s.memTotal)
 	return snap
+}
+
+// baselineGap is how long the live baseline stays usable. The dashboard asks every
+// few seconds while open; a baseline older than this is from a previous visit, and a
+// rate over it would be an average of the whole time the page was closed.
+const baselineGap = 30 * time.Second
+
+// sampleCgroups is Sample from the cgroup tree. A first call with no fresh baseline
+// takes two readings a quarter-second apart, so the first frame of a newly opened
+// monitor already shows CPU rather than a row of zeroes.
+func (s *Sampler) sampleCgroups(ctx context.Context) Snapshot {
+	snap := Snapshot{Apps: []Stat{}, MemTotal: s.memTotal, CPUCount: s.cpus}
+	targets := s.cg.tracker.Targets(ctx)
+
+	s.cg.mu.Lock()
+	defer s.cg.mu.Unlock()
+	now := time.Now()
+	stale := false
+	for _, tg := range targets {
+		if p, ok := s.cg.prev[tg.ID]; !ok || now.Sub(p.at) > baselineGap {
+			stale = true
+			break
+		}
+	}
+	if stale {
+		s.cg.readAll(targets, now)
+		select {
+		case <-ctx.Done():
+			return snap
+		case <-time.After(250 * time.Millisecond):
+		}
+		now = time.Now()
+	}
+
+	prev := s.cg.prev
+	cur := s.cg.readAll(targets, now)
+	samples := make([]sample, 0, len(targets))
+	for _, tg := range targets {
+		c, ok := cur[tg.ID]
+		if !ok {
+			continue
+		}
+		sm := sample{project: tg.Project, ok: true, mem: c.c.MemUsage(), cpus: s.cpus}
+		if p, ok := prev[tg.ID]; ok {
+			if dt := c.at.Sub(p.at).Seconds(); dt > 0 && c.c.CPUUsec >= p.c.CPUUsec {
+				sm.cpuShare = float64(c.c.CPUUsec-p.c.CPUUsec) / (dt * 1e6 * float64(s.cpus)) * 100
+			}
+		}
+		samples = append(samples, sm)
+	}
+	snap.Apps = aggregate(samples, s.memTotal)
+	return snap
+}
+
+// readAll reads every target and makes the result the new baseline.
+func (c *cgroupSource) readAll(targets []cgroupstat.Target, now time.Time) map[string]reading {
+	next := make(map[string]reading, len(targets))
+	for _, tg := range targets {
+		v, err := c.rd.Read(tg.Dir)
+		if err != nil {
+			c.tracker.MarkDirty()
+			continue
+		}
+		next[tg.ID] = reading{at: now, c: v}
+	}
+	c.prev = next
+	return next
 }
 
 // sample is one container's contribution, before aggregation.

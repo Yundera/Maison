@@ -35,7 +35,9 @@ grow over seven minutes of recording (7.96 MiB → 7.19 MiB), CPU 0.00–0.08 %.
 
 - `sensors.SensorsTemperatures()` — walks `/sys/class/hwmon`.
 - The process table — a `/proc/<pid>` read per process on the box.
-- `appstats.Sample()` — a Docker stats round-trip per running container.
+- `appstats.Sample()` **through Docker** — a stats round-trip per running container.
+  (With `CGROUP_ROOT` it reads cgroup files instead; that reader *is* allowed on the
+  path, and is what the per-app history uses — see [App history](#app-history).)
 
 All three are page-open only. The first two additionally run on a 6 s sub-cadence rather
 than the page's 2 s (`slowEvery` in `internal/system/detailed.go`).
@@ -87,6 +89,90 @@ days fit in 1.32 MiB with no database. The cost is that a variable number of int
 devices cannot live in one. History therefore stores **summed** net and disk rates; the
 per-interface and per-device breakdown exists in the live view only, and the page says so
 rather than showing one interface's line labelled as the box's.
+
+---
+
+## App history
+
+An app's **Stats** tab shows the same Live / 1 h / 24 h / 7 d / 30 d picker for that
+one app: CPU, memory, disk read/write, and the size of its data folder.
+
+| | Live | Recorded |
+|---|---|---|
+| Source | the tab's per-service stats stream | `${STATE_DIR}/metrics/apps/<id>.ring` |
+| Cadence | 2 s | 1 min (folder size: 1 day) |
+| Detail | the selected service | the whole app, every container summed |
+| Retention | ~20 min, in the browser | 30 days (folder size: 90 days) |
+
+### The source: cgroup files, not Docker stats
+
+A Docker stats call blocks for about a second per container while the daemon takes
+two samples, so it cannot run every minute on a box with thirty containers. The
+kernel keeps the same counters as files in each container's cgroup, and reading
+them takes microseconds:
+
+| | File |
+|---|---|
+| CPU | `cpu.stat` → `usage_usec`, divided by elapsed time × host cores: a share of the **whole box**, like the per-app monitor |
+| Memory | `memory.current` − `memory.stat:inactive_file` (the same deduction as `docker stats`) |
+| Disk IO | `io.stat` → `rbytes` / `wbytes`, summed over devices, with loop / ram / zram / dm devices skipped as on the host disk tab |
+
+The stack mounts the host's `/sys/fs/cgroup` read-only at `/host/sys/fs/cgroup` and
+sets `CGROUP_ROOT` to that path. **This is optional.** If `CGROUP_ROOT` is unset, or
+does not point at a cgroup v2 tree, Maison records folder sizes only, the tab says
+why, and the live per-app views fall back to Docker stats. The same reader serves
+the live per-app monitor and the Stats tab's stream when it is available, so both
+show their first frame immediately.
+
+**Finding a container's cgroup.** Maison walks the tree and matches each 64-hex
+container ID against directory names: `docker-<id>.scope` (systemd driver),
+`docker/<id>` (cgroupfs), and `libpod-<id>.scope` (Podman, rootful or rootless). It
+skips Podman's `conmon` scopes and does not descend into a container's own child
+cgroups. The obvious alternative, reading `/proc/<pid>/cgroup`, does not work here.
+Maison runs in a private cgroup namespace, so that file returns paths relative to
+Maison's own cgroup (`/../docker-….scope`), which cannot be joined onto the host
+tree.
+
+The walk runs only when the container set changes. The Docker event watcher marks
+the map dirty, and a reader that finds a cgroup gone marks it dirty too. Each
+rebuild costs one container *list* and no inspect calls.
+
+**Every consumer keeps its own baseline.** The reader returns cumulative counters
+only. The history (1 min) and the live views (2–3 s) must not share one baseline,
+for the same reason as the gopsutil trap below.
+
+### Storage
+
+The ring format is the same one the host uses (`RingOf[T]` with a per-layout
+`Codec`), one file per app:
+
+```
+<id>.ring        MSNAPPR1, 32 B: ts, cpu (u16 hundredths), containers, mem (f32 bytes),
+                 read B/s, write B/s — 1 min × 43,200 slots = 1.32 MiB, sparse
+<id>.disk.ring   MSNAPPD1, 16 B: ts, bytes (f64) — 1 day × 90 slots
+```
+
+In memory there are only the previous reading per container and up to five staged
+records per app. The files are **opened, written and closed at each flush** rather
+than held open, so thirty apps do not mean thirty file descriptors.
+
+Gap rules match the host ring:
+- A container seen for the first time has no baseline yet, and neither does one an
+  update recreated under a new ID. Its first reading is only a baseline.
+- A gap longer than three steps is dropped.
+- A stopped app writes nothing, so it shows as a gap.
+
+**Folder size** comes from a walk of `AppData` only, once a day. When it last ran is
+recorded in `metrics/app-sizes.at`, so a restart does not walk again. The first walk
+after boot waits ten minutes. The same daily pass also deletes the history of apps
+that are no longer installed. Uninstalling an app deletes its history immediately,
+and "Delete history" and the Recording switch apply to the app history too.
+
+```
+GET /api/apps/{id}/history?from=&to=&points=500
+→ {from, to, step_ms, spans:[{at, cpu:{min,avg,max}, mem:{min,avg,max}, disk_read,
+   disk_write, containers, points}], disk:[{at, bytes}], enabled, recording, reason}
+```
 
 ---
 

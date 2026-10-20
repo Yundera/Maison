@@ -268,6 +268,14 @@ func (r *Registry) Uninstall(ctx context.Context, id string, zip bool, emit func
 // app without a backup on its own (nothing receives uninstalls), so the caller can say
 // the data was deleted rather than archived.
 func (r *Registry) uninstall(ctx context.Context, id string, uo *UninstallOpts, emit func(UninstallEvent)) (string, error) {
+	archive, err := r.uninstallApp(ctx, id, uo, emit)
+	if err == nil && r.OnUninstalled != nil {
+		r.OnUninstalled(id)
+	}
+	return archive, err
+}
+
+func (r *Registry) uninstallApp(ctx context.Context, id string, uo *UninstallOpts, emit func(UninstallEvent)) (string, error) {
 	zip := uo.Zip
 	if emit == nil {
 		emit = func(UninstallEvent) {}

@@ -25,6 +25,7 @@ import (
 	"github.com/yundera/maison/internal/backupconfig"
 	"github.com/yundera/maison/internal/bench"
 	"github.com/yundera/maison/internal/brand"
+	"github.com/yundera/maison/internal/cgroupstat"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/feedback"
@@ -47,14 +48,20 @@ type Server struct {
 	collector *system.Collector
 	detailer  *system.Detailer
 	history   *metrics.Sampler
-	bench     *bench.Runner
-	hub       *live.Hub
-	dx        *dockerx.Client
-	apps      *apps.Registry
-	appstats  *appstats.Sampler
-	store     *appstore.Manager
-	installer *installer.Installer
-	settings  *usersettings.Store
+	// appHistory records per-app usage and folder sizes; cgroups is the map from
+	// running containers to their cgroup directories that it and the live per-app
+	// views read through. cgroups is nil when CGROUP_ROOT is not mounted, and both
+	// views then fall back (live) or record sizes only (history).
+	appHistory *metrics.AppSampler
+	cgroups    *cgroupstat.Tracker
+	bench      *bench.Runner
+	hub        *live.Hub
+	dx         *dockerx.Client
+	apps       *apps.Registry
+	appstats   *appstats.Sampler
+	store      *appstore.Manager
+	installer  *installer.Installer
+	settings   *usersettings.Store
 
 	// incidents is the box's register of what is currently wrong. Unlike the backup
 	// group below it is never nil: a box with no Docker can still fill its disk, and
@@ -159,7 +166,25 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		}
 		s.dx = dx
 		s.apps = apps.New(cfg, dx)
-		s.appstats = appstats.New(dx)
+		if cgroupstat.Available() {
+			s.cgroups = cgroupstat.NewTracker(cgroupstat.Root(), dx)
+		} else {
+			log.Printf("cgroupstat: CGROUP_ROOT not set or not a cgroup v2 tree (app usage history off, live app stats via Docker)")
+		}
+		s.appstats = appstats.New(dx, s.cgroups)
+		// Per-app history, held to the same idle budget and the same off switch as
+		// the host recorder above. See internal/metrics/apps.go.
+		s.appHistory = metrics.NewAppSampler(
+			filepath.Join(cfg.StateDir(), "metrics", "apps"),
+			metrics.DefaultStep,
+			metrics.DefaultSlots,
+			appstats.HostCPUs(),
+			settings.HistoryEnabled,
+			s.cgroups,
+		)
+		go s.appHistory.Run(context.Background())
+		go s.recordAppSizes(context.Background())
+		s.apps.OnUninstalled = s.appHistory.Remove
 		s.hub.AppStatsSnapshot = s.appStatsSnapshot
 		// Rebroadcast the app list whenever a lifecycle op enters/leaves its busy
 		// state, so tiles show/hide the "…" overlay live (docs/app-model.md).
@@ -467,6 +492,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/apps/{id}/icon", s.handleAppIcon)
 		r.Get("/apps/{id}/logs", s.handleAppLogs)
 		r.Get("/apps/{id}/stats", s.handleAppStats)
+		r.Get("/apps/{id}/history", s.handleAppHistory)
 		r.Post("/apps/{id}/dismiss", s.handleDismissApp)
 		// Registered before the {action} catch-all below. chi resolves a static
 		// segment ahead of a parameter at the same depth, so these win — see
@@ -885,6 +911,9 @@ func (s *Server) watchDocker() {
 			// box as it was before the container started or stopped. The listing is
 			// still served while its replacement is fetched; it is stale, not wrong.
 			s.apps.InvalidateContainers()
+			if s.cgroups != nil {
+				s.cgroups.MarkDirty()
+			}
 			s.broadcastApps()
 			// An app that brings a backup engine writes its descriptor when its
 			// container starts, and takes it away when it is removed: either is a

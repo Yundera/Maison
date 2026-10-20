@@ -126,6 +126,24 @@ func (s *Scanner) Start() Result {
 	return r
 }
 
+// Scan runs a scan in the calling goroutine and returns its result — for a caller
+// that has nothing to show while it runs, like the daily per-app size recording. If
+// a scan is already running it returns that one's state instead of starting a
+// second walk.
+func (s *Scanner) Scan() Result {
+	s.mu.Lock()
+	if s.last.Status == StatusRunning {
+		r := s.last
+		s.mu.Unlock()
+		return r
+	}
+	prev := s.last
+	s.last.Status, s.last.StartedAt, s.last.Error, s.last.ProgressBytes = StatusRunning, time.Now(), "", 0
+	s.mu.Unlock()
+	s.run(prev)
+	return s.State()
+}
+
 // progressEvery is how many entries pass between two publications of the running
 // total. The lock is the page's, too, so it is not taken per file.
 const progressEvery = 2000

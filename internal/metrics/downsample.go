@@ -130,3 +130,62 @@ func finish(s Span) Span {
 	s.DskWr /= n
 	return s
 }
+
+// AppSpan is one bucket of an app's downsampled usage, with the same envelope rule
+// as Span: CPU and memory carry min/avg/max, the IO rates their mean.
+type AppSpan struct {
+	At         time.Time `json:"at"`
+	CPU        MinAvgMax `json:"cpu"`
+	Mem        MinAvgMax `json:"mem"`
+	DskRd      float64   `json:"disk_read"`
+	DskWr      float64   `json:"disk_write"`
+	Containers int       `json:"containers"` // the most seen in the bucket
+	Points     int       `json:"points"`
+}
+
+// DownsampleApp is Downsample for an app's records.
+func DownsampleApp(recs []AppRecord, from, to time.Time, n int) []AppSpan {
+	if len(recs) == 0 || n <= 0 {
+		return []AppSpan{}
+	}
+	if to.Before(from) {
+		from, to = to, from
+	}
+	width := max(to.Sub(from)/time.Duration(n), time.Second)
+
+	out := make([]AppSpan, 0, min(n, len(recs)))
+	var cur *AppSpan
+	curIx := -1
+	done := func() {
+		if cur != nil && cur.Points > 0 {
+			k := float64(cur.Points)
+			cur.CPU.Avg /= k
+			cur.Mem.Avg /= k
+			cur.DskRd /= k
+			cur.DskWr /= k
+			out = append(out, *cur)
+		}
+	}
+	for _, r := range recs {
+		ix := min(max(int(r.At.Sub(from)/width), 0), n-1)
+		if ix != curIx {
+			done()
+			curIx = ix
+			cur = &AppSpan{
+				At:  from.Add(time.Duration(ix) * width),
+				CPU: MinAvgMax{Min: r.CPU, Max: r.CPU},
+				Mem: MinAvgMax{Min: r.Mem, Max: r.Mem},
+			}
+		}
+		cur.CPU.Avg += r.CPU
+		cur.CPU.Min, cur.CPU.Max = min(cur.CPU.Min, r.CPU), max(cur.CPU.Max, r.CPU)
+		cur.Mem.Avg += r.Mem
+		cur.Mem.Min, cur.Mem.Max = min(cur.Mem.Min, r.Mem), max(cur.Mem.Max, r.Mem)
+		cur.DskRd += r.DiskRead
+		cur.DskWr += r.DiskWrite
+		cur.Containers = max(cur.Containers, r.Containers)
+		cur.Points++
+	}
+	done()
+	return out
+}

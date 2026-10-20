@@ -172,6 +172,12 @@ type Registry struct {
 	// copied chunk), so the server is expected to throttle it. Optional.
 	OnProgress func()
 
+	// OnUninstalled, if set, is invoked after an app has been uninstalled
+	// successfully, by either the tracked or the synchronous path — so whatever the
+	// server keeps about the app outside its folder (its usage history) goes with it.
+	// Optional.
+	OnUninstalled func(id string)
+
 	// Engines is the set of backup engines. Nil means the built-in local one alone —
 	// archives on the data disk — which needs no configuration and is always
 	// available, so a Registry built without it behaves exactly as Maison always has.

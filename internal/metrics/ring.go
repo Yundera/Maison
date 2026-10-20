@@ -69,7 +69,38 @@ type Record struct {
 	DiskWrite float64
 }
 
-// Ring is a round-robin file of Records.
+// Codec is the byte layout of one record type. The ring itself only knows slots
+// and timestamps; everything about what a record holds lives here, so the host
+// history and the per-app history share one implementation of the slot arithmetic,
+// the staging and the sparse file, and differ only in what they encode.
+//
+// Size must be at least 4: every layout starts with the record's own u32 Unix
+// timestamp, and a zero timestamp is an unwritten slot.
+type Codec[T any] struct {
+	// Magic identifies the layout and is exactly eight bytes. Change it (or Size)
+	// rather than adding a compatibility path — see the package comment.
+	Magic  string
+	Size   int
+	Encode func(b []byte, v T)
+	Decode func(b []byte) (T, bool)
+	At     func(v T) time.Time
+	SetAt  func(v *T, t time.Time)
+}
+
+// hostCodec is the host history's 32-byte layout.
+var hostCodec = Codec[Record]{
+	Magic:  magic,
+	Size:   recordSize,
+	Encode: func(b []byte, r Record) { encode((*[recordSize]byte)(b), r) },
+	Decode: decode,
+	At:     func(r Record) time.Time { return r.At },
+	SetAt:  func(r *Record, t time.Time) { r.At = t },
+}
+
+// Ring is the host history: a RingOf Records.
+type Ring = RingOf[Record]
+
+// RingOf is a round-robin file of records of one Codec.
 //
 // A record's slot is derived from its timestamp (slot = bucket % slots), so a
 // write never has to read anything first, and a lap of the ring overwrites the
@@ -78,14 +109,15 @@ type Record struct {
 // a timestamp outside the requested window, and Read drops it. Nothing has to be
 // loaded at startup or flushed at shutdown, and a gap in the data renders as a gap
 // in the graph rather than as a lie.
-type Ring struct {
+type RingOf[T any] struct {
+	codec Codec[T]
 	path  string
 	step  time.Duration
 	slots int
 
 	mu      sync.Mutex
 	f       *os.File
-	pending []Record
+	pending []T
 }
 
 // Open opens (or creates) the ring at path. A file whose header does not match
@@ -93,13 +125,22 @@ type Ring struct {
 // them costs history rather than data, and that is much safer than trying to
 // reinterpret bytes written under a different layout.
 func Open(path string, step time.Duration, slots int) (*Ring, error) {
+	return OpenOf(path, step, slots, hostCodec)
+}
+
+// OpenOf opens (or creates) a ring of codec's records at path, with the same
+// reset-on-mismatch rule as Open.
+func OpenOf[T any](path string, step time.Duration, slots int, codec Codec[T]) (*RingOf[T], error) {
+	if len(codec.Magic) != 8 || codec.Size < 4 {
+		return nil, fmt.Errorf("metrics: bad codec magic=%q size=%d", codec.Magic, codec.Size)
+	}
 	if step <= 0 || slots <= 0 {
 		return nil, fmt.Errorf("metrics: bad geometry step=%v slots=%d", step, slots)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	r := &Ring{path: path, step: step, slots: slots}
+	r := &RingOf[T]{codec: codec, path: path, step: step, slots: slots}
 
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
@@ -124,16 +165,16 @@ func Open(path string, step time.Duration, slots int) (*Ring, error) {
 // headerMatches reports whether the open file already carries this geometry. A
 // short file (including a freshly created empty one) is not an error, just a
 // mismatch.
-func (r *Ring) headerMatches() (bool, error) {
+func (r *RingOf[T]) headerMatches() (bool, error) {
 	buf := make([]byte, headerSize)
 	n, err := r.f.ReadAt(buf, 0)
 	if err != nil && n < headerSize {
 		return false, nil // too short: treat as uninitialised
 	}
-	if string(buf[:len(magic)]) != magic {
+	if string(buf[:len(r.codec.Magic)]) != r.codec.Magic {
 		return false, nil
 	}
-	return binary.LittleEndian.Uint16(buf[8:10]) == recordSize &&
+	return binary.LittleEndian.Uint16(buf[8:10]) == uint16(r.codec.Size) &&
 		binary.LittleEndian.Uint32(buf[10:14]) == uint32(r.step/time.Second) &&
 		binary.LittleEndian.Uint32(buf[14:18]) == uint32(r.slots), nil
 }
@@ -141,10 +182,10 @@ func (r *Ring) headerMatches() (bool, error) {
 // reset rewrites the header and truncates the file to its full length. The body is
 // left as a hole — the file is sparse until the slots are actually written, so a
 // fresh install pays for a header, not for 1.32 MiB.
-func (r *Ring) reset() error {
+func (r *RingOf[T]) reset() error {
 	buf := make([]byte, headerSize)
-	copy(buf, magic)
-	binary.LittleEndian.PutUint16(buf[8:10], recordSize)
+	copy(buf, r.codec.Magic)
+	binary.LittleEndian.PutUint16(buf[8:10], uint16(r.codec.Size))
 	binary.LittleEndian.PutUint32(buf[10:14], uint32(r.step/time.Second))
 	binary.LittleEndian.PutUint32(buf[14:18], uint32(r.slots))
 
@@ -154,17 +195,17 @@ func (r *Ring) reset() error {
 	if _, err := r.f.WriteAt(buf, 0); err != nil {
 		return err
 	}
-	return r.f.Truncate(int64(headerSize + r.slots*recordSize))
+	return r.f.Truncate(int64(headerSize + r.slots*r.codec.Size))
 }
 
 // bucket is the step-aligned start of the interval t falls in.
-func (r *Ring) bucket(t time.Time) int64 {
+func (r *RingOf[T]) bucket(t time.Time) int64 {
 	s := int64(r.step / time.Second)
 	return t.Unix() / s * s
 }
 
 // slotOf maps a bucket start to its offset in the ring.
-func (r *Ring) slotOf(bucketStart int64) int {
+func (r *RingOf[T]) slotOf(bucketStart int64) int {
 	s := int64(r.step / time.Second)
 	n := bucketStart / s % int64(r.slots)
 	if n < 0 {
@@ -176,11 +217,11 @@ func (r *Ring) slotOf(bucketStart int64) int {
 // Append stages a record, writing the staged batch once it is full. The record's
 // timestamp is snapped to its bucket so that the slot it lands in and the
 // timestamp it carries always agree.
-func (r *Ring) Append(rec Record) error {
+func (r *RingOf[T]) Append(rec T) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	rec.At = time.Unix(r.bucket(rec.At), 0)
+	r.codec.SetAt(&rec, time.Unix(r.bucket(r.codec.At(rec)), 0))
 	r.pending = append(r.pending, rec)
 	if len(r.pending) < flushEvery {
 		return nil
@@ -189,7 +230,7 @@ func (r *Ring) Append(rec Record) error {
 }
 
 // Flush writes any staged records immediately.
-func (r *Ring) Flush() error {
+func (r *RingOf[T]) Flush() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.flushLocked()
@@ -198,32 +239,33 @@ func (r *Ring) Flush() error {
 // flushLocked writes the staged records, coalescing runs of adjacent slots into a
 // single WriteAt. Samples arrive in time order, so in the steady state the whole
 // batch is one run and one syscall; a wrap of the ring splits it in two.
-func (r *Ring) flushLocked() error {
+func (r *RingOf[T]) flushLocked() error {
 	if len(r.pending) == 0 || r.f == nil {
 		return nil
 	}
-	type placed struct {
-		slot int
-		buf  []byte
+	size := r.codec.Size
+	slots := make([]int, len(r.pending))
+	for i, rec := range r.pending {
+		slots[i] = r.slotOf(r.codec.At(rec).Unix())
 	}
-	out := make([]placed, 0, len(r.pending))
-	for _, rec := range r.pending {
-		var b [recordSize]byte
-		encode(&b, rec)
-		out = append(out, placed{slot: r.slotOf(rec.At.Unix()), buf: b[:]})
+	order := make([]int, len(r.pending))
+	for i := range order {
+		order[i] = i
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].slot < out[j].slot })
+	sort.Slice(order, func(a, b int) bool { return slots[order[a]] < slots[order[b]] })
+	// One buffer for the batch, in slot order, so a run of adjacent slots is a
+	// subslice of it rather than a copy.
+	buf := make([]byte, len(order)*size)
+	for k, i := range order {
+		r.codec.Encode(buf[k*size:(k+1)*size], r.pending[i])
+	}
 
-	for i := 0; i < len(out); {
+	for i := 0; i < len(order); {
 		j := i + 1
-		for j < len(out) && out[j].slot == out[j-1].slot+1 {
+		for j < len(order) && slots[order[j]] == slots[order[j-1]]+1 {
 			j++
 		}
-		run := make([]byte, 0, (j-i)*recordSize)
-		for _, p := range out[i:j] {
-			run = append(run, p.buf...)
-		}
-		if _, err := r.f.WriteAt(run, int64(headerSize+out[i].slot*recordSize)); err != nil {
+		if _, err := r.f.WriteAt(buf[i*size:j*size], int64(headerSize+slots[order[i]]*size)); err != nil {
 			r.pending = nil // drop rather than retry forever on a broken file
 			return err
 		}
@@ -237,7 +279,7 @@ func (r *Ring) flushLocked() error {
 // including any still staged. Slots left over from an earlier lap carry a
 // timestamp outside the window and are skipped, which is how downtime becomes a
 // gap instead of stale data.
-func (r *Ring) Read(from, to time.Time) ([]Record, error) {
+func (r *RingOf[T]) Read(from, to time.Time) ([]T, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f == nil {
@@ -260,31 +302,35 @@ func (r *Ring) Read(from, to time.Time) ([]Record, error) {
 		start, count = r.slotOf(r.bucket(from)), int(buckets)
 	}
 
-	recs := make([]Record, 0, count+len(r.pending))
+	size := r.codec.Size
+	recs := make([]T, 0, count+len(r.pending))
 	// Two reads at most: the span, and its wrapped remainder.
-	for _, seg := range [][2]int{{start, min(count, r.slots - start)}, {0, count - min(count, r.slots-start)}} {
+	for _, seg := range [][2]int{{start, min(count, r.slots-start)}, {0, count - min(count, r.slots-start)}} {
 		if seg[1] <= 0 {
 			continue
 		}
-		buf := make([]byte, seg[1]*recordSize)
-		if _, err := r.f.ReadAt(buf, int64(headerSize+seg[0]*recordSize)); err != nil {
+		buf := make([]byte, seg[1]*size)
+		if _, err := r.f.ReadAt(buf, int64(headerSize+seg[0]*size)); err != nil {
 			return nil, err
 		}
-		for off := 0; off+recordSize <= len(buf); off += recordSize {
-			rec, ok := decode(buf[off : off+recordSize])
-			if !ok || rec.At.Before(from) || rec.At.After(to) {
+		for off := 0; off+size <= len(buf); off += size {
+			rec, ok := r.codec.Decode(buf[off : off+size])
+			if !ok {
+				continue
+			}
+			if at := r.codec.At(rec); at.Before(from) || at.After(to) {
 				continue
 			}
 			recs = append(recs, rec)
 		}
 	}
 	for _, rec := range r.pending {
-		if !rec.At.Before(from) && !rec.At.After(to) {
+		if at := r.codec.At(rec); !at.Before(from) && !at.After(to) {
 			recs = append(recs, rec)
 		}
 	}
 
-	sort.Slice(recs, func(i, j int) bool { return recs[i].At.Before(recs[j].At) })
+	sort.Slice(recs, func(i, j int) bool { return r.codec.At(recs[i]).Before(r.codec.At(recs[j])) })
 	return recs, nil
 }
 
@@ -292,7 +338,7 @@ func (r *Ring) Read(from, to time.Time) ([]Record, error) {
 // slots have been written, so this reports allocated blocks rather than the
 // nominal length — the settings page shows this number, and a fresh install
 // claiming 1.32 MiB it has not used would be a lie.
-func (r *Ring) Bytes() int64 {
+func (r *RingOf[T]) Bytes() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f == nil {
@@ -309,7 +355,7 @@ func (r *Ring) Bytes() int64 {
 }
 
 // Close flushes and closes the file.
-func (r *Ring) Close() error {
+func (r *RingOf[T]) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f == nil {
@@ -326,7 +372,7 @@ func (r *Ring) Close() error {
 // Delete closes the ring and removes the file — the settings page's "delete
 // history" action. The ring is unusable afterwards; the caller reopens it if the
 // user turns history back on.
-func (r *Ring) Delete() error {
+func (r *RingOf[T]) Delete() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pending = nil

@@ -1,10 +1,17 @@
 package server
 
 import (
+	"context"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/yundera/maison/internal/diskuse"
 	"github.com/yundera/maison/internal/metrics"
 )
 
@@ -63,7 +70,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		Spans:       []metrics.Span{},
 		Enabled:     s.settings.HistoryEnabled(),
 		RetentionMs: s.history.Retention().Milliseconds(),
-		Bytes:       s.history.Bytes(),
+		Bytes:       s.history.Bytes() + s.appHistoryBytes(),
 	}
 
 	recs, err := s.history.Read(from, to)
@@ -93,7 +100,157 @@ func (s *Server) handleDeleteHistory(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if s.appHistory != nil {
+		if err := s.appHistory.DeleteAll(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) appHistoryBytes() int64 {
+	if s.appHistory == nil {
+		return 0
+	}
+	return s.appHistory.Bytes()
+}
+
+// appHistoryResponse is what an app's Stats tab graphs read: the same window and
+// gap contract as historyResponse, plus the app's daily folder sizes.
+type appHistoryResponse struct {
+	From   int64             `json:"from"`
+	To     int64             `json:"to"`
+	StepMs int64             `json:"step_ms"`
+	Spans  []metrics.AppSpan `json:"spans"`
+	Disk   []diskPoint       `json:"disk"`
+
+	// Enabled is the history switch; Recording is whether usage (not just folder
+	// size) can be recorded on this box at all. Reason says why not, in words the
+	// tab can show as they are.
+	Enabled   bool   `json:"enabled"`
+	Recording bool   `json:"recording"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type diskPoint struct {
+	At    time.Time `json:"at"`
+	Bytes int64     `json:"bytes"`
+}
+
+// handleAppHistory serves one app's recorded usage for a window, downsampled
+// server-side like the host history.
+func (s *Server) handleAppHistory(w http.ResponseWriter, r *http.Request) {
+	if s.appHistory == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "history unavailable"})
+		return
+	}
+	q := r.URL.Query()
+	to := parseMillis(q.Get("to"), time.Now())
+	from := parseMillis(q.Get("from"), to.Add(-time.Hour))
+	if !from.Before(to) {
+		from = to.Add(-time.Hour)
+	}
+	points := defaultHistoryPoints
+	if n, err := strconv.Atoi(q.Get("points")); err == nil && n > 0 {
+		points = min(n, maxHistoryPoints)
+	}
+
+	resp := appHistoryResponse{
+		From:      from.UnixMilli(),
+		To:        to.UnixMilli(),
+		StepMs:    max(metrics.Step(from, to, points), s.appHistory.Step()).Milliseconds(),
+		Spans:     []metrics.AppSpan{},
+		Disk:      []diskPoint{},
+		Enabled:   s.settings.HistoryEnabled(),
+		Recording: s.appHistory.Recording(),
+	}
+	switch {
+	case !resp.Enabled:
+		resp.Reason = "History recording is switched off (Settings › Resources)."
+	case !resp.Recording:
+		resp.Reason = "This box does not expose container cgroups to Maison, so only the daily folder size is recorded."
+	}
+
+	usage, disk, err := s.appHistory.Read(chi.URLParam(r, "id"), from, to)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	resp.Spans = metrics.DownsampleApp(usage, from, to, points)
+	for _, d := range disk {
+		resp.Disk = append(resp.Disk, diskPoint{At: d.At, Bytes: int64(d.Bytes)})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// appSizesEvery is how often each app's data folder is measured for its history.
+const appSizesEvery = 24 * time.Hour
+
+// recordAppSizes measures every app's data folder once a day and records it into
+// the app's history, then drops the history of apps that are no longer installed.
+//
+// Measuring a folder is a walk — the only way to know what it holds — so it runs
+// once a day over the apps' folder only, not over the whole data root, and never on
+// the minute tick. When it last ran is kept on disk, so a restart does not re-walk;
+// the first walk after boot waits ten minutes so it does not compete with the stack
+// coming up.
+func (s *Server) recordAppSizes(ctx context.Context) {
+	scanner := diskuse.New(s.cfg.AppsDir(), "", "")
+	marker := filepath.Join(s.cfg.StateDir(), "metrics", "app-sizes.at")
+
+	run := func() {
+		if !s.settings.HistoryEnabled() {
+			return
+		}
+		if fi, err := os.Stat(marker); err == nil && time.Since(fi.ModTime()) < appSizesEvery {
+			return
+		}
+		res := scanner.Scan()
+		if res.Status != diskuse.StatusDone {
+			log.Printf("metrics: app sizes: %s %s", res.Status, res.Error)
+			return
+		}
+		lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		list, err := s.apps.List(lctx)
+		cancel()
+		if err != nil {
+			log.Printf("metrics: app sizes: %v", err)
+			return
+		}
+		installed := make(map[string]bool, len(list))
+		for _, a := range list {
+			installed[a.ID] = true
+		}
+		sizes := map[string]int64{}
+		for _, e := range res.Top {
+			if installed[e.Name] {
+				sizes[e.Name] = e.Bytes
+			}
+		}
+		s.appHistory.RecordDisk(sizes, time.Now())
+		s.appHistory.Prune(installed)
+		if err := os.MkdirAll(filepath.Dir(marker), 0o755); err == nil {
+			_ = os.WriteFile(marker, nil, 0o644) // its mtime is the record
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(10 * time.Minute):
+	}
+	run()
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			run()
+		}
+	}
 }
 
 // handleResources answers the same payload the "resources" live channel pushes, as

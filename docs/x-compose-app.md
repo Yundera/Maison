@@ -702,6 +702,9 @@ published port into a click URL — that port is the non-HTTP listener the app
 exists for (Samba's `445`), not a web page. A service that *does* resolve a URL
 (an explicit `view: service` with a `webui-host`) opens it like any app.
 
+A `system` tile with no URL is treated the same way: a platform piece with no UI of
+its own (Maison's own tile) opens its settings on click instead of greying out.
+
 ### Lifecycle: what the operator may do to the app
 
 ```yaml

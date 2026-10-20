@@ -88,8 +88,11 @@
   // fault: its tile is not greyed, and a click opens its settings instead — the
   // logs, status and override are the only things there are to look at. A service
   // that does resolve a URL (an explicit `view: service` with a webui-host) just
-  // opens it like any app.
-  const settingsOnly = $derived(tile.kind === 'app' && tile.app.view === 'service' && !openable)
+  // opens it like any app. A system tile with no URL is the same case — a platform
+  // piece with no UI of its own (Maison's own tile), not a broken app.
+  const settingsOnly = $derived(
+    tile.kind === 'app' && (tile.app.view === 'service' || tile.app.view === 'system') && !openable,
+  )
 
   // `ev` is the click that asked for it, when there is one: openApp/openTarget read
   // its modifiers so a ctrl/cmd/middle click still opens a new tab even when the

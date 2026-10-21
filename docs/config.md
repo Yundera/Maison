@@ -33,7 +33,7 @@ Both Maison-owned files are written atomically (temp file + rename).
 | Setting | Value | Notes |
 |---|---|---|
 | `smtp` | `{host, port, user, pass, from, to, security}` | `pass` may be a secret reference. Empty `from`/`to` fall back to `noreply@APP_DOMAIN` / `APP_EMAIL`. |
-| `domains` | `[{name, domain, labels}]` | Same validation as the dashboard's editor. A change republishes every app. |
+| `routing` | `{renderer, bind, url-host, port-range, dialect, domains, url-template}` | How apps are reached: see [`routing.md`](./routing.md). Same validation as the dashboard's editor. A change republishes every app. |
 | `feedback` | `{url, token}` | `token` should be a secret reference. Never user-editable. |
 | `onboarding` | `{check_url, token}` | While set, every browser navigation asks `check_url` whether setup is owed, and is redirected to the deployment's setup page when it is. `token` is optional and may be a secret reference. Never user-editable. See [The onboarding check](#the-onboarding-check). |
 
@@ -44,14 +44,16 @@ On disk each of these is wrapped:
 ```
 
 Only a managed value is wrapped. An unmanaged one keeps its plain shape (a plain `smtp`
-object, a bare `domains` array), which is what Maison before 1.1.50 reads, so a box rolled
+object, a plain `routing` object), which is what Maison before 1.1.50 reads, so a box rolled
 back to an older image keeps the user's settings. (1.1.50 also wrapped unmanaged values,
 with `"managed": false`; those still read, and are written back plain.)
 
 Over the HTTP API settings stay flat, plus `"managed": {"<setting>": "<owner>"}`.
 `PUT /api/settings` silently drops a managed field (the dashboard sends its whole settings
 object on every change), and never sets `feedback` or `onboarding` at all.
-`PUT /api/settings/domains` answers 409 while the list is managed.
+`PUT /api/settings/routing` answers 409 while routing is managed. (Before the routing
+setting, `domains` was the managed name for its list of additional domains; a stored one
+is migrated into `routing` on the first start, keeping its owner.)
 
 A value of the shape before 1.1.64 (`"onboarding": {"url": …}`) still reads from disk, with
 an empty `check_url`, and that means off. `settings set onboarding` refuses it.

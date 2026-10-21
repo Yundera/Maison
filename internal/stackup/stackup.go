@@ -24,6 +24,7 @@ import (
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/incident"
+	"github.com/yundera/maison/internal/routing"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
@@ -124,26 +125,56 @@ func UpWith(ctx context.Context, cfg config.Config, project, dir string, files [
 	}
 	cfg.ResolveIncident(dataIncidentID(project))
 
-	files = SyncRoutes(cfg, project, dir, files)
-	// After SyncRoutes: the vars Maison owns win over its seeds.
-	if err := appenv.Sync(cfg, project, dir); err != nil {
-		log.Printf("%s: sync .env: %v", project, err)
-		cfg.ReportIncident(hookIncident(project, ".env could not be written", err))
-	}
-	spec := Load(files)
-
 	var migrate func(context.Context, map[string]string) error
 	if opts.Migrate != nil {
 		migrate = func(ctx context.Context, captures map[string]string) error {
 			return RunMigrations(ctx, cfg, project, dir, *opts.Migrate, captures, opts.Progress)
 		}
 	}
-	outputs, err := converge(ctx, cfg, project, dir, spec, envinject.EnvFileVars(prior), migrate)
+	// Everything before `compose up`, as one pass: it runs again whole when the up
+	// has to move a route off a port, since the app's address is in what it renders.
+	prepare := func(avoid map[int]bool, migrate func(context.Context, map[string]string) error) (Spec, map[string]string, []string, map[string]string, error) {
+		upFiles, routeVars := syncRoutes(cfg, project, dir, files, avoid)
+		// After the routes: the vars Maison owns win over its seeds.
+		if err := appenv.Sync(cfg, project, dir); err != nil {
+			log.Printf("%s: sync .env: %v", project, err)
+			cfg.ReportIncident(hookIncident(project, ".env could not be written", err))
+		}
+		// The app's own address, before converge: `files` and steps render with the
+		// .env, and a config file that names the app's URL (Dex's issuer) must see it.
+		writeRouteVars(cfg, project, dir, routeVars)
+		spec := Load(upFiles)
+		outputs, err := converge(ctx, cfg, project, dir, spec, envinject.EnvFileVars(prior), migrate)
+		return spec, outputs, upFiles, routeVars, err
+	}
+
+	spec, outputs, upFiles, routeVars, err := prepare(nil, migrate)
 	if err != nil {
 		return err
 	}
-	if err := composecmd.Up(ctx, dir, project, files, envinject.Env(cfg, project)); err != nil {
-		return err
+	if err := composecmd.Up(ctx, dir, project, upFiles, envinject.Env(cfg, project)); err != nil {
+		// A host port Maison handed out that something outside Docker holds: Maison
+		// cannot see host processes, so compose is the real check. Pick another port
+		// and go through the whole pass once more — migrations excepted, they have
+		// run — saying so.
+		port, ok := portInUse(err)
+		if !ok || cfg.Routing == nil || cfg.Routing().Renderer != routing.Ports {
+			return err
+		}
+		var retryVars map[string]string
+		var perr error
+		spec, outputs, upFiles, retryVars, perr = prepare(map[int]bool{port: true}, nil)
+		if perr != nil {
+			return perr
+		}
+		key, now, moved := movedOff(routeVars, retryVars, port)
+		if !moved {
+			return err
+		}
+		if err := composecmd.Up(ctx, dir, project, upFiles, envinject.Env(cfg, project)); err != nil {
+			return err
+		}
+		cfg.ReportIncident(portIncident(project, port, key, now))
 	}
 	// After the stack is up: work that needs the app's own network, or a service
 	// of it to answer. Logged and swallowed — the app is already running, and

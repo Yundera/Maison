@@ -101,7 +101,7 @@ with **every** field below set once, to show what a fully loaded block looks lik
 | `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). Without a `webui-host` it names a port on the box's own address (the host the dashboard was opened on), which is how a CasaOS app with no `hostname` opens. | `port_map` (dropped when it is the scheme's default port) |
 | `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` (CasaOS default `http`) |
 | `webui-path` | string | no (default `/`) | Path appended to the host; a missing leading `/` is added. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
-| **`routes`** | object[] | no | The app's web endpoints, stated without a domain or a proxy: `{ service?, name?, upstream-port, upstream-scheme?, insecure-upstream?, max-body? }`. Maison writes the Caddy labels and publishes each route on every domain the deployment carries. Counts as a web UI for [`view`](#an-app-with-no-web-ui-is-a-service). See [`domains.md`](./domains.md) and [Routes](#routes). | — |
+| **`routes`** | object[] | no | The app's web endpoints, stated without a domain or a proxy: `{ service?, name?, upstream-port, path?, upstream-scheme?, insecure-upstream? }`. The box's routing setting decides how each is reached — proxy labels on its domains, a published port, or an external router — and Maison writes it. The first route is the web UI. Counts as a web UI for [`view`](#an-app-with-no-web-ui-is-a-service). See [Routes](#routes) and [`routing.md`](./routing.md). | — |
 | `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url` and a localized `name`. Parsed, but **not rendered by any current build**. | — |
 | `tips` | localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. An edit is stored as `{en_us: …}`, replacing the store's map, so the operator's note shows in every locale; clearing it falls back to the store's tips. | `tips.before_install` per locale, `tips.custom` appended (and `custom` alone as `en_us`) |
 | **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). |
@@ -123,7 +123,7 @@ published, opens it.
 The one `x-casaos` field with no `x-compose-app` key, `webui_port` (the web UI's
 port *inside* the container), survives the translation only to pick which
 published host port opens a CasaOS app; a native app says the same with the
-`upstream-port` of its first [`routes`](./domains.md) entry. Everything else in
+`upstream-port` of its first [`routes`](#routes) entry. Everything else in
 `x-casaos` — `main` (which CasaOS reads), the per-service `apps` descriptions
 (`envs`, `ports`, `volumes`, `devices`) and the localized `image` map — is not read.
 
@@ -234,6 +234,12 @@ Rules:
 
 ## The web-UI URL
 
+**An app that declares [`routes`](#routes) is opened from its first route**, under the
+box's routing setting: `https://<name>-<primary domain><path>` behind a proxy, the
+external template's address, or — in ports mode — its published port, from the host
+the dashboard is open at. Its `webui-*` fields, if it still carries them, are not
+read. What follows is how an app *without* routes is opened.
+
 Maison builds the click URL by **direct string construction** — no container
 ports, no reading routes back, no baked-in state:
 
@@ -255,7 +261,7 @@ own configuration (so the value can be shared verbatim with the Caddy label):
 
 | Placeholder | Resolves to | Source |
 |---|---|---|
-| `${domain}` / `${DOMAIN}` / `${APP_DOMAIN}` | the deployment's base domain | Maison `REF_DOMAIN` |
+| `${domain}` / `${APP_DOMAIN}` | the deployment's base domain | `.env.app`'s `APP_DOMAIN` |
 
 `${APP_DOMAIN}` is the spelling the rest of an app's compose (Caddy labels) uses, so
 a `webui-host` copied from a `caddy_N` label resolves as-is. Any other `${…}` left in
@@ -265,7 +271,7 @@ the host makes the URL unresolvable.
   works for **unmanaged/discovered** apps Maison never installed — nothing is
   stored.
 - If `webui-host` references `${domain}` but the deployment has no domain
-  configured (`REF_DOMAIN` empty), the URL is treated as **unresolvable**: the tile
+  configured (`APP_DOMAIN` empty), the URL is treated as **unresolvable**: the tile
   shows the "no reachable address" hint rather than a broken link.
 - A literal `webui-host` (no placeholder, e.g. `nas.example.com`) is used verbatim.
 
@@ -277,7 +283,7 @@ the host makes the URL unresolvable.
 x-compose-app:
   webui-host: jellyfin-${domain}
   webui-path: /web/
-# REF_DOMAIN=app.localhost  →  https://jellyfin-app.localhost/web/
+# APP_DOMAIN=app.localhost  →  https://jellyfin-app.localhost/web/
 ```
 
 **Direct port access** (no gateway) — set a literal host and a URL port:
@@ -304,28 +310,46 @@ x-compose-app:
 
 ### Routes
 
-`routes` declares the app's web endpoints instead of hand-written Caddy labels.
-Maison generates the labels and publishes each route on every domain the
-deployment answers on; [`domains.md`](./domains.md) is authoritative.
+`routes` declares how the app is reached without naming a domain, a proxy or TLS:
+which service answers, on which port, under which name. The box's routing setting
+turns each route into proxy labels on every one of its domains, a published host
+port, or an entry in the route table an external router reads;
+[`routing.md`](./routing.md) is authoritative.
 
 ```yaml
 x-compose-app:
-  webui-host: outline-${APP_DOMAIN}
   routes:
-    - upstream-port: 3000
+    - service: outline         # first route = the web UI: the tile and APP_URL
+      name: outline
+      upstream-port: 80
+    - service: outline-dex
+      name: outline-auth       # → ROUTE_OUTLINE_AUTH_URL / _HOST
+      upstream-port: 5556
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `service` | the app's only service (required when it has several) | The service the labels go on — the one serving the port. |
-| `name` | the app's id | The host's leading label: `outline` in `outline-${APP_DOMAIN}`. |
+| `service` | the app's only service (required when it has several) | The service serving the port — the one the labels or the `ports:` entry go on. |
+| `name` | the app's id | The host's leading label (`outline` in `outline-<domain>`), and the `<NAME>` in `ROUTE_<NAME>_URL`. A lowercase DNS label; required on every route but the first. |
 | `upstream-port` | — | The port **inside** the container. Not `webui-port`, which is the click URL's port. |
+| `path` | `/` | Where the web UI opens (`/webui/`): the click URL's path, never a dispatch rule. |
 | `upstream-scheme` | `http` | `https` for an app that terminates TLS itself. |
-| `insecure-upstream` | `false` | Skip verifying the upstream's certificate (self-signed). |
-| `max-body` | proxy default | Raise the request-body cap, e.g. `10G`. |
+| `insecure-upstream` | `false` | Skip verifying the upstream's certificate (self-signed). Only with `https`. |
 
-The first route's `upstream-port` is also what picks the published
-host port that opens the app when no URL resolves. `routes` does not raise
+**One route is one name, one service and one port.** Dispatch by path across
+services, an auth check in front of a UI, a header rewrite: the app ships its own
+router (an nginx service) and declares that router's port as its route — see
+`in-app-router` in the store's `CONTRIBUTING.md`. A field is added here only when an
+official app needs it and at least two unrelated proxies have the concept.
+
+**An app is told its own address.** Maison seeds `APP_URL`, `APP_HOST` and
+`ROUTE_<NAME>_URL` / `_HOST` into the app's `.env` before `files` and steps render, so
+a listing writes `URL: ${APP_URL}` rather than `https://outline-${APP_DOMAIN}`. See
+[`routing.md`](./routing.md#the-apps-own-address).
+
+Non-HTTP listeners (BitTorrent, SMB, WireGuard) are not routes: they stay as
+`ports:` in the compose. `maison lint` checks routes, including that the first
+route's port is in its service's `expose:`. `routes` does not raise
 `schema_version`: a build that predates it generates nothing, so a label-free app is
 unreachable there but otherwise intact.
 
@@ -340,13 +364,13 @@ and so an operator reading the file knows what they are:
 | Key | Written by |
 |---|---|
 | `store-ref` | The install, recording where the app came from — `<store>/-/<folder>/<app id>` — so it can be updated later; rewritten when the Update tab points the app at another store. (`store` / `store-app-id` / `store-apps-path` are the superseded three-field spelling, still read, never written.) |
-| `generated-routes` | Route generation: the Caddy label keys Maison added to publish the app on the deployment's **additional domains**, and will delete before rewriting them. See [`domains.md`](./domains.md). |
+| `generated-routes` | Routing: what Maison wrote into the override for the box's routing setting — label keys, `ports:<entry>` values, `networks:<key>` attachments — and will delete before rewriting. See [`routing.md`](./routing.md). |
 
-Route generation is the other reason to keep `webui-host` and the app's `caddy_N`
-label the same string. Maison clones the app's **Caddy route group** onto every
-additional domain the deployment answers on (`sslip.io`, `nip.io`, …), so an app
-that declares its route in labels is reachable at all of them with no extra field
-here — and its click URL keeps mirroring the route it was cloned from.
+An app **without** `routes` that carries its own `caddy_N` labels is still routed on
+the box's further domains: Maison copies its **Caddy route group** from the primary
+domain onto each of them (clone mode), so it is reachable at all of them with no
+extra field here. That is the other reason such an app keeps `webui-host` and its
+`caddy_0` label the same string.
 
 ---
 
@@ -357,7 +381,7 @@ Maison runs goes through — install, start from the tile, store update, and sav
 the app's config all take the same path:
 
 ```
-data_version check → sync generated routes → sync .env
+data_version check → sync routing (override) → sync .env → seed the app's address
   → folders → secrets → variables → [migrations] → setup steps → seed → files
   → docker compose up -d --remove-orphans → started steps
 ```

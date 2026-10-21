@@ -60,6 +60,9 @@ func lintFile(path string) []string {
 		for _, e := range xcomposeapp.ValidateSteps(a.Steps) {
 			out = append(out, e.Error())
 		}
+		for _, e := range xcomposeapp.ValidateRoutes(a.Routes, f.Exposed()) {
+			out = append(out, e.Error())
+		}
 		for _, s := range a.Steps {
 			out = append(out, missingFile(dir, "step "+s.Name, s.Script)...)
 		}

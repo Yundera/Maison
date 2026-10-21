@@ -98,11 +98,16 @@ func (s *Server) handleAdminManage(w http.ResponseWriter, r *http.Request) {
 		adminError(w, http.StatusBadRequest, err)
 		return
 	}
+	before := s.managedValue(name)
 	if err := s.settings.Manage(name, r.URL.Query().Get("owner"), raw, s.secrets.Has); err != nil {
 		adminError(w, adminStatus(err), err)
 		return
 	}
-	s.afterManagedChange(name)
+	// A deployment re-asserts its settings on every self-check; only a value that
+	// actually changed has anything to apply.
+	if s.managedValue(name) != before {
+		s.afterManagedChange(name)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "managed", "setting": name})
 }
 
@@ -110,6 +115,7 @@ func (s *Server) handleAdminManage(w http.ResponseWriter, r *http.Request) {
 // managed value referenced.
 func (s *Server) handleAdminRelease(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	before := s.managedValue(name)
 	refs, err := s.settings.Release(name)
 	if err != nil {
 		adminError(w, adminStatus(err), err)
@@ -120,7 +126,11 @@ func (s *Server) handleAdminRelease(w http.ResponseWriter, r *http.Request) {
 			log.Printf("admin: releasing %s, deleting secret %s: %v", name, ref, err)
 		}
 	}
-	s.afterManagedChange(name)
+	// Releasing a setting that is not managed changes nothing — the deployment does it
+	// on every self-check while its feature is off.
+	if s.managedValue(name) != before {
+		s.afterManagedChange(name)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "released", "setting": name})
 }
 
@@ -194,12 +204,31 @@ func (s *Server) handleAdminEnsureStore(w http.ResponseWriter, r *http.Request) 
 }
 
 // afterManagedChange applies what a setting change means beyond the stored value.
-// Domains are the only one with a side effect: every running app is republished
-// onto the new list, as the dashboard's own editor does.
+// Routing is the only one with a side effect: every running app is republished
+// under the new setting, as the dashboard's own editor does.
 func (s *Server) afterManagedChange(name string) {
-	if name == "domains" && s.apps != nil {
+	if name == "routing" && s.apps != nil {
 		go s.apps.Republish(context.Background())
 	}
+}
+
+// managedValue is a setting's current value as JSON, for telling a re-assertion
+// from a change.
+func (s *Server) managedValue(name string) string {
+	st := s.settings.Get()
+	var v any
+	switch name {
+	case "routing":
+		v = st.Routing
+	case "smtp":
+		v = st.SMTP
+	case "feedback":
+		v = st.Feedback
+	case "onboarding":
+		v = st.Onboarding
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 func adminStatus(err error) int {

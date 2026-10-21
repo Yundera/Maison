@@ -9,10 +9,10 @@ import (
 	"strings"
 
 	"github.com/yundera/maison/internal/brand"
-	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/feedback"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/routing"
 )
 
 // Config is the process-wide runtime configuration.
@@ -54,19 +54,25 @@ type Config struct {
 
 	StoreURLs []string // app-store zip URLs (multi-store)
 
-	// Domains returns the additional domains every app is published on, beyond the
-	// primary one its compose already routes (see internal/routes). It is a
-	// function, not a slice, because the operator edits the list at runtime while
-	// Config is a value copied once at boot — reading it live is what lets a
-	// settings change reach the next `docker compose up` without a restart.
+	// Routing returns the routing setting the box runs on (routing.Effective): how
+	// an app's routes are reached — proxy labels, published ports, or an external
+	// router. It is a function, not a value, because the operator and the
+	// deployment change it at runtime while Config is a value copied once at boot —
+	// reading it live is what lets a change reach the next `docker compose up`
+	// without a restart.
 	//
 	// nil means the feature is unwired (a Config built outside the server), and no
 	// override is ever touched.
-	Domains func() []domains.Domain
+	Routing func() routing.Setting
+
+	// PortsInUse returns the host ports published by containers of every project
+	// but exclude — what the ports renderer must not hand out. nil means unknown
+	// (no Docker), and only the other apps' .env files are consulted.
+	PortsInUse func(exclude string) map[int]bool
 
 	// AppEnv returns the deployment's app-facing variables — the contents of
 	// .env.app (see internal/appenv), which Maison forwards into every app's .env.
-	// It is a function, not a map, for the same reason Domains is: the file belongs
+	// It is a function, not a map, for the same reason Routing is: the file belongs
 	// to the deployment and is edited while Maison runs, so reading it live is
 	// what lets a new domain or IP reach the next `docker compose up` without a
 	// restart.
@@ -77,7 +83,7 @@ type Config struct {
 
 	// Report raises an entry in the box's incident register (internal/incident).
 	//
-	// A closure on Config, like Domains and AppEnv above, and for a related reason:
+	// A closure on Config, like Routing and AppEnv above, and for a related reason:
 	// internal/stackup is package-level functions with no receiver to hang a hook on,
 	// but every one of them already takes a Config. The alternative was a package-level
 	// variable, which is the same coupling with none of the wiring visible.
@@ -101,7 +107,7 @@ type Config struct {
 	// usersettings.Settings.EffectiveSMTP — and reaches Maison already resolved
 	// through ProvisionedSMTP, which is what callers should use.
 	//
-	// Read once, unlike Domains and AppEnv, because these are process environment
+	// Read once, unlike Routing and AppEnv, because these are process environment
 	// rather than a file the deployment rewrites while Maison runs.
 	SMTP notify.SMTP
 

@@ -89,3 +89,37 @@ x-compose-app:
 		t.Errorf("a shipped file was reported:\n%s", out.String())
 	}
 }
+
+// A route Maison would skip on a box is reported in the store, and the first route
+// — the web UI — must be on a port its service exposes.
+func TestLintRoutes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "routes.yml")
+	body := `services:
+  web: {image: a:1, expose: ["8080"]}
+  db: {image: b:1}
+x-compose-app:
+  title: {en_us: App}
+  routes:
+    - {service: web, upstream-port: 80}
+    - {service: nope, name: Admin_UI, upstream-port: 99999, insecure-upstream: true}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := runCLI([]string{"lint", path}, nil, &out, &errOut); code != 1 {
+		t.Fatalf("code = %d, want 1:\n%s", code, out.String())
+	}
+	for _, want := range []string{
+		"must be a lowercase DNS label",
+		`service "nope" is not in the compose`,
+		"is not a port",
+		"insecure-upstream only applies",
+		`which service "web" does not expose`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+}

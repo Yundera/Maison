@@ -12,6 +12,7 @@ import (
 
 	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/routing"
 	"github.com/yundera/maison/internal/secrets"
 )
 
@@ -32,14 +33,14 @@ import (
 // who owns a setting.
 //
 // On disk a MANAGED field is wrapped: {"managed": true, "owner": "...", "value": ...}.
-// An unmanaged one keeps its plain shape — a bare domains array, a plain smtp object —
+// An unmanaged one keeps its plain shape — a plain routing or smtp object —
 // which is what every Maison before managed settings reads: a box rolled back to an
 // older image keeps the user's settings instead of failing to parse the file and
 // running on defaults. In memory and over the API it stays flat, with the owners in
 // Settings.Managed, so nothing that reads a setting's value had to change.
 
 // ManagedNames are the settings a deployment may own, in a stable order.
-var ManagedNames = []string{"domains", "feedback", "onboarding", "smtp"}
+var ManagedNames = []string{"feedback", "onboarding", "routing", "smtp"}
 
 // ErrUnknownSetting is a name that is not in ManagedNames.
 var ErrUnknownSetting = errors.New("unknown setting")
@@ -159,19 +160,16 @@ func decodeManaged(name string, raw json.RawMessage) (func(*Settings), error) {
 			return nil, fmt.Errorf("smtp: port %d is out of range", v.Port)
 		}
 		return func(st *Settings) { st.SMTP = &v }, nil
-	case "domains":
-		var v []domains.Domain
+	case "routing":
+		var v routing.Setting
 		if err := strictDecode(raw, &v); err != nil {
 			return nil, err
 		}
-		if v == nil {
-			v = []domains.Domain{}
-		}
-		v, err := domains.Normalize(v)
+		v, err := routing.Normalize(v)
 		if err != nil {
-			return nil, fmt.Errorf("domains: %w", err)
+			return nil, fmt.Errorf("routing: %w", err)
 		}
-		return func(st *Settings) { st.Domains = v }, nil
+		return func(st *Settings) { st.Routing = &v }, nil
 	case "feedback":
 		var v Feedback
 		if err := strictDecode(raw, &v); err != nil {
@@ -239,8 +237,8 @@ func clearField(st *Settings, name string) {
 	switch name {
 	case "smtp":
 		st.SMTP = nil
-	case "domains":
-		st.Domains = nil
+	case "routing":
+		st.Routing = nil
 	case "feedback":
 		st.Feedback = nil
 	case "onboarding":
@@ -295,13 +293,30 @@ type wrapped struct {
 }
 
 // decodeFile reads settings.json. Each manageable field may be in the wrapped shape
-// or in its plain shape — a plain smtp object, a bare domains array. Either way it
+// or in its plain shape — a plain smtp object, a bare routing object. Either way it
 // comes out flat, with the owners in Managed. (Maison 1.1.50 wrapped unmanaged values
 // too, with "managed": false; those still read, and are written back plain.)
-func decodeFile(b []byte) (Settings, error) {
+//
+// migrated reports a file from before the routing setting whose additional-domains
+// list was turned into one (routing.Migrate), for the caller to write back.
+func decodeFile(b []byte) (st Settings, migrated bool, err error) {
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(b, &doc); err != nil {
-		return Settings{}, err
+		return Settings{}, false, err
+	}
+	var legacy []domains.Domain
+	var legacyOwner string
+	var legacyManaged bool
+	if raw, ok := doc["domains"]; ok {
+		delete(doc, "domains")
+		migrated = true
+		value, owner, managed := unwrap(raw)
+		if len(value) > 0 && string(value) != "null" {
+			if err := json.Unmarshal(value, &legacy); err != nil {
+				return Settings{}, false, fmt.Errorf("domains: %w", err)
+			}
+		}
+		legacyOwner, legacyManaged = owner, managed
 	}
 	fields := map[string]json.RawMessage{}
 	for _, n := range ManagedNames {
@@ -313,16 +328,15 @@ func decodeFile(b []byte) (Settings, error) {
 	delete(doc, "managed") // the API's view, never trusted from disk
 	rest, err := json.Marshal(doc)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, false, err
 	}
-	var st Settings
 	if err := json.Unmarshal(rest, &st); err != nil {
-		return Settings{}, err
+		return Settings{}, false, err
 	}
 	for name, raw := range fields {
 		value, owner, managed := unwrap(raw)
 		if err := setRaw(&st, name, value); err != nil {
-			return Settings{}, fmt.Errorf("%s: %w", name, err)
+			return Settings{}, false, fmt.Errorf("%s: %w", name, err)
 		}
 		if managed {
 			if st.Managed == nil {
@@ -331,7 +345,18 @@ func decodeFile(b []byte) (Settings, error) {
 			st.Managed[name] = owner
 		}
 	}
-	return st, nil
+	if st.Routing == nil {
+		if r := routing.Migrate(legacy); r != nil {
+			st.Routing = r
+			if legacyManaged {
+				if st.Managed == nil {
+					st.Managed = map[string]string{}
+				}
+				st.Managed["routing"] = legacyOwner
+			}
+		}
+	}
+	return st, migrated, nil
 }
 
 // unwrap tells the wrapped shape from a legacy flat one: wrapped is an object with
@@ -358,8 +383,8 @@ func setRaw(st *Settings, name string, raw json.RawMessage) error {
 	switch name {
 	case "smtp":
 		return json.Unmarshal(raw, &st.SMTP)
-	case "domains":
-		return json.Unmarshal(raw, &st.Domains)
+	case "routing":
+		return json.Unmarshal(raw, &st.Routing)
 	case "feedback":
 		return json.Unmarshal(raw, &st.Feedback)
 	case "onboarding":
@@ -374,7 +399,7 @@ func encodeFile(st Settings) ([]byte, error) {
 	owners := st.Managed
 	flat := st
 	flat.Managed = nil
-	flat.SMTP, flat.Domains, flat.Feedback, flat.Onboarding = nil, nil, nil, nil
+	flat.SMTP, flat.Routing, flat.Feedback, flat.Onboarding = nil, nil, nil, nil
 	b, err := json.Marshal(flat)
 	if err != nil {
 		return nil, err
@@ -387,8 +412,8 @@ func encodeFile(st Settings) ([]byte, error) {
 	if st.SMTP != nil {
 		values["smtp"] = st.SMTP
 	}
-	if st.Domains != nil {
-		values["domains"] = st.Domains
+	if st.Routing != nil {
+		values["routing"] = st.Routing
 	}
 	if st.Feedback != nil {
 		values["feedback"] = st.Feedback

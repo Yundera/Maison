@@ -41,7 +41,7 @@ const cliUsage = `usage: maison <command>
   backup recover <engine>              reattach to the existing repository; its key on stdin
   lint <docker-compose.yml>…           check store compose files as Maison reads them (no server needed)
 
-Manageable settings: domains, feedback, onboarding, smtp.
+Manageable settings: feedback, onboarding, routing, smtp.
 A setting refers to a secret as the whole string "${secret:<name>}".
 A password on stdin is one line; the trailing newline is dropped.
 On failure the server's reason goes to stderr, with its code in brackets when it

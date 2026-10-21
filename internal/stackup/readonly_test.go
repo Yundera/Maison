@@ -9,6 +9,7 @@ import (
 	"github.com/yundera/maison/internal/appenv"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/routing"
 )
 
 // storeCompose is a store app in the shape the app stores ship: a shared external
@@ -45,8 +46,11 @@ networks:
 func appFolder(t *testing.T) (config.Config, string) {
 	t.Helper()
 	cfg := testConfig(t)
-	cfg.Domains = func() []domains.Domain {
-		return []domains.Domain{{Name: "sslip", Domain: "${APP_PUBLIC_IP_DASH}.sslip.io"}}
+	cfg.Routing = func() routing.Setting {
+		return routing.Effective(&routing.Setting{Renderer: routing.Labels, Domains: []domains.Domain{
+			{Name: "primary", Domain: routing.PrimaryTemplate},
+			{Name: "sslip", Domain: "{name}-${APP_PUBLIC_IP_DASH}.sslip.io"},
+		}}, nil, "")
 	}
 	// The deployment's .env.app, exactly as the orchestrator writes it on a PCS.
 	envApp := appenv.Path(cfg)

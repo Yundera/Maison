@@ -66,6 +66,11 @@ shared value anyway would serve nothing but to put it where every reader of
 the variable counts, so the worst a false positive costs is what every app paid
 before.
 
+Also written on every start are the app's **own address** — `APP_URL`, `APP_HOST`,
+`ROUTE_<NAME>_URL` / `_HOST`, and in ports mode `APP_BIND` / `APP_PORT_<NAME>` —
+computed from its routes and the box's routing setting; see
+[`routing.md`](./routing.md#the-apps-own-address).
+
 Merged in alongside are the few variables Maison computes per app and per install,
 which a deployment cannot state: `AppID`, `PUID`, `PGID`, `TZ`, `DATA_ROOT`,
 `DATA_HOST_PATH`. Setting those in `.env.app` has no effect.
@@ -147,9 +152,9 @@ Three things the page is careful about, all of them consequences of the above:
   line it cannot read); a save is not, because a typo that silently does nothing would
   surface days later as an app that will not start.
 - **It restarts nothing.** The variables land in each app's `.env` on that app's next
-  start, per the section above. Unlike the domains list — which rewrites Caddy labels
-  and so *must* recreate containers to mean anything — there is nothing here that
-  recreating every container on the box would buy.
+  start, per the section above. Unlike the routing setting — which rewrites every
+  app's override and so *must* recreate containers to mean anything — there is nothing
+  here that recreating every container on the box would buy.
 
 A key Maison computes per app (`AppID`, `PUID`, `PGID`, `TZ`, `DATA_ROOT`,
 `DATA_HOST_PATH`) is reported as having no effect rather than rejected: the file is the

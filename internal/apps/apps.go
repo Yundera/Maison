@@ -22,6 +22,7 @@ import (
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/routing"
 	"github.com/yundera/maison/internal/stackup"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
@@ -377,11 +378,13 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 		if ps != nil {
 			ca := r.metaFor(name, ps.workingDir)
 			app = buildApp(name, ca, r.cfg.AppDomain(), true, statusOf(ps.running, ps.total), ps.svcPorts)
+			r.applyRoutes(&app, name, ca, ps.svcPorts)
 			app.Health = ps.health()
 		} else {
 			// Installed but down (or Docker didn't answer): greyed, stopped tile.
 			ca := r.metaFor(name, "")
 			app = buildApp(name, ca, r.cfg.AppDomain(), true, StatusStopped, nil)
+			r.applyRoutes(&app, name, ca, nil)
 		}
 		// An installed app is rendered from the icon in its own folder, so the grid
 		// does not depend on the store's CDN (see internal/appicon). The compose's
@@ -406,6 +409,7 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 			continue // a non-Maison stack without any recognised metadata: not ours.
 		}
 		app := buildApp(name, ca, r.cfg.AppDomain(), false, statusOf(ps.running, ps.total), ps.svcPorts)
+		r.applyRoutes(&app, name, ca, ps.svcPorts)
 		app.Health = ps.health()
 		app.Busy = r.isBusy(name)
 		out = append(out, app)
@@ -503,6 +507,9 @@ func (r *Registry) isManaged(project string) bool {
 	_, err := os.Stat(filepath.Join(r.cfg.AppsDir(), project, "docker-compose.yml"))
 	return err == nil
 }
+
+// ManagedIDs lists the installed apps, by folder.
+func (r *Registry) ManagedIDs() []string { return r.managedDirs() }
 
 func (r *Registry) managedDirs() []string {
 	entries, err := os.ReadDir(r.cfg.AppsDir())
@@ -634,6 +641,34 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 	return app
 }
 
+// applyRoutes gives an app that declares routes its click URL from the routing
+// setting, which wins over any webui-host it still carries: https on the primary
+// domain, the external template, or — under the ports renderer — the published port
+// of its first route, opened from the browser's own host.
+func (r *Registry) applyRoutes(app *App, name string, ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) {
+	if ca == nil || len(ca.Routes) == 0 || r.cfg.Routing == nil {
+		return
+	}
+	rts := routing.Routes(ca, name, nil)
+	if len(rts) == 0 {
+		return
+	}
+	s := r.cfg.Routing()
+	var env map[string]string
+	if r.cfg.AppEnv != nil {
+		env = r.cfg.AppEnv()
+	}
+	app.URL, app.Port, app.Scheme, app.Index = "", "", "", ""
+	if s.Renderer != routing.Ports {
+		app.URL = routing.WebURL(rts, s, routing.EnvResolver(env))
+		return
+	}
+	app.Scheme, app.Index = rts[0].Scheme, rts[0].Path
+	if hp := reachableHostPort(svcPorts, rts[0].Port); hp > 0 {
+		app.Port = strconv.Itoa(hp)
+	}
+}
+
 // deriveView settles which grid an app's tile lands in.
 //
 // A declared view always wins — including `apps`, which is how a maintainer keeps
@@ -664,26 +699,28 @@ func deriveView(ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) string 
 }
 
 // reachableHostPort picks a published host port to open: the one bound to the
-// web-UI port if any service publishes it, otherwise the first published port.
+// web-UI port, whichever service publishes it, otherwise the first published port.
+// Services are visited in name order, so the fallback is the same on every call.
 func reachableHostPort(svcPorts map[string][]dockerx.Port, webui int) int {
-	try := func(ports []dockerx.Port) int {
-		if webui > 0 {
-			for _, p := range ports {
+	names := make([]string, 0, len(svcPorts))
+	for name := range svcPorts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if webui > 0 {
+		for _, name := range names {
+			for _, p := range svcPorts[name] {
 				if int(p.Private) == webui && p.Public > 0 {
 					return int(p.Public)
 				}
 			}
 		}
-		for _, p := range ports {
+	}
+	for _, name := range names {
+		for _, p := range svcPorts[name] {
 			if p.Public > 0 {
 				return int(p.Public)
 			}
-		}
-		return 0
-	}
-	for _, ports := range svcPorts {
-		if hp := try(ports); hp > 0 {
-			return hp
 		}
 	}
 	return 0
@@ -691,9 +728,9 @@ func reachableHostPort(svcPorts map[string][]dockerx.Port, webui int) int {
 
 // FindByHost resolves the app whose click URL is served at host (an app gateway
 // host such as `<app>-<domain>`), so the launch gate can identify which app it is
-// standing in for. It matches the app's resolved web URL host or the
-// `<id>-<refDomain>` convention. Returns false when no app maps
-// to host.
+// standing in for. It matches the app's resolved web URL host, the
+// `<id>-<refDomain>` convention, or the app's host on any domain of the routing
+// setting. Returns false when no app maps to host.
 func (r *Registry) FindByHost(ctx context.Context, host, refDomain string) (App, bool) {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	if host == "" {
@@ -703,12 +740,31 @@ func (r *Registry) FindByHost(ctx context.Context, host, refDomain string) (App,
 	if err != nil {
 		return App{}, false
 	}
+	var hosts func(string) []string
+	if r.cfg.Routing != nil {
+		s := r.cfg.Routing()
+		var env map[string]string
+		if r.cfg.AppEnv != nil {
+			env = r.cfg.AppEnv()
+		}
+		resolve := routing.EnvResolver(env)
+		hosts = func(id string) []string { return routing.Hosts(s, id, resolve) }
+	}
 	for _, a := range list {
 		if h := urlHost(a.URL); h != "" && strings.EqualFold(h, host) {
 			return a, true
 		}
 		if refDomain != "" && strings.EqualFold(a.ID+"-"+refDomain, host) {
 			return a, true
+		}
+		// Every domain the app is published on, not only the primary: a stopped
+		// app's nip.io and sslip.io hosts reach the wake page too.
+		if hosts != nil {
+			for _, h := range hosts(a.ID) {
+				if h == host {
+					return a, true
+				}
+			}
 		}
 	}
 	return App{}, false
@@ -781,10 +837,15 @@ func (r *Registry) Start(ctx context.Context, id string) error {
 // One app's failure doesn't stop the rest: a stack that was already broken must
 // not block every other app from being republished. The errors are logged and the
 // tiles will show it.
+//
+// A stack whose compose Maison does not own — one the deployment's template
+// deploys and updates (`lifecycle.updatable: false`: the auth stack, backup
+// engines, Maison's own stack) — is left alone. Its routing is the template's, and
+// bringing Maison's own stack up from here would stop the very process doing it.
 func (r *Registry) Republish(ctx context.Context) {
 	list, _ := r.List(ctx)
 	for _, app := range list {
-		if !app.Managed || app.Status == StatusStopped {
+		if !app.Managed || app.Status == StatusStopped || !app.Updatable {
 			continue
 		}
 		if err := r.EnsureStarted(ctx, app.ID); err != nil {

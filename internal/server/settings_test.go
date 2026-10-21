@@ -11,7 +11,7 @@ import (
 	"testing/fstest"
 
 	"github.com/yundera/maison/internal/config"
-	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/routing"
 )
 
 // newDomainsServer builds a server on a scratch data root whose .env.app is the
@@ -29,43 +29,49 @@ func newDomainsServer(t *testing.T) http.Handler {
 	return New(cfg, fstest.MapFS{})
 }
 
-func callDomains(t *testing.T, h http.Handler, method, body string) (int, string) {
+func callRouting(t *testing.T, h http.Handler, method, path, body string) (int, string) {
 	t.Helper()
-	req := httptest.NewRequest(method, "/api/settings/domains", strings.NewReader(body))
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
 }
 
-// TestDomainsViewCarriesThePrimaryDomain pins what the settings panel needs in
-// order to say that a domain is *added*: the token an app's own route is written
-// with, and what that token resolves to here. Without them the list reads as a
-// domain switcher.
+type routingBody struct {
+	Setting   *routing.Setting  `json:"setting"`
+	Effective routing.Setting   `json:"effective"`
+	Vars      map[string]string `json:"vars"`
+	Preview   struct {
+		Override string            `json:"override"`
+		Vars     map[string]string `json:"vars"`
+	} `json:"preview"`
+}
+
+// TestRoutingViewCarriesTheEffectiveSettingAndAPreview pins what the editor needs:
+// what the box runs on with nothing stored (labels on its own domain), and what
+// that generates for a sample app, rendered by the real generator.
 //
 // It also pins what must NOT travel. .env.app carries the seeded admin password;
-// the domains endpoint reports only the routing variables a host template can
-// interpolate.
-func TestDomainsViewCarriesThePrimaryDomain(t *testing.T) {
+// the endpoint reports only the routing variables a host template can interpolate.
+func TestRoutingViewCarriesTheEffectiveSettingAndAPreview(t *testing.T) {
 	h := newDomainsServer(t)
 
-	code, body := callDomains(t, h, http.MethodGet, "")
+	code, body := callRouting(t, h, http.MethodGet, "/api/settings/routing", "")
 	if code != http.StatusOK {
 		t.Fatalf("GET -> %d %s", code, body)
 	}
-
-	var got struct {
-		PrimaryToken string            `json:"primaryToken"`
-		PrimaryHost  string            `json:"primaryHost"`
-		Vars         map[string]string `json:"vars"`
-	}
+	var got routingBody
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.PrimaryToken != "${APP_DOMAIN}" {
-		t.Errorf("primaryToken = %q, want ${APP_DOMAIN}", got.PrimaryToken)
+	if got.Setting != nil || got.Effective.Renderer != routing.Labels {
+		t.Errorf("setting = %+v, effective = %+v; want none stored, labels in effect", got.Setting, got.Effective)
 	}
-	if got.PrimaryHost != "box.example.com" {
-		t.Errorf("primaryHost = %q, want box.example.com", got.PrimaryHost)
+	if !strings.Contains(got.Preview.Override, "caddy_0: myapp-${APP_DOMAIN}") {
+		t.Errorf("preview does not show the generated route:\n%s", got.Preview.Override)
+	}
+	if got.Preview.Vars["APP_URL"] != "https://myapp-box.example.com" {
+		t.Errorf("preview APP_URL = %q", got.Preview.Vars["APP_URL"])
 	}
 	if got.Vars["APP_PUBLIC_IP_DASH"] != "10-0-0-1" {
 		t.Errorf("vars missing the routing family: %v", got.Vars)
@@ -76,45 +82,52 @@ func TestDomainsViewCarriesThePrimaryDomain(t *testing.T) {
 		}
 	}
 	if strings.Contains(body, "hunter2") {
-		t.Errorf("the seeded password reached the domains endpoint: %s", body)
+		t.Errorf("the seeded password reached the routing endpoint: %s", body)
 	}
 }
 
-// TestPutDomainsCleansTheEditorsInput covers the two things the key/value
-// directives editor can hand back that must not reach an app's override: a blank
-// row someone opened and abandoned, and two entries fighting over one host.
-func TestPutDomainsCleansTheEditorsInput(t *testing.T) {
+// TestPutRoutingValidatesAndResets covers a save the editor cleaned up, one it must
+// refuse without replacing what is stored, and going back to the default.
+func TestPutRoutingValidatesAndResets(t *testing.T) {
 	h := newDomainsServer(t)
 
-	code, body := callDomains(t, h, http.MethodPut,
-		`[{"name":"lan","domain":"lan.example.com","directives":{"import":" gateway_tls ","  ":"  "}}]`)
+	code, body := callRouting(t, h, http.MethodPut, "/api/settings/routing",
+		`{"renderer":"labels","domains":[{"name":"lan","domain":"lan.example.com","labels":{"import":" gateway_tls ","  ":"  "}}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("PUT -> %d %s", code, body)
 	}
-	var got struct {
-		Domains []domains.Domain `json:"domains"`
-	}
+	var got routingBody
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Domains) != 1 {
-		t.Fatalf("domains = %v, want one entry", got.Domains)
+	if got.Setting == nil || len(got.Setting.Domains) != 1 {
+		t.Fatalf("setting = %+v", got.Setting)
 	}
-	if d := got.Domains[0].Labels; len(d) != 1 || d["import"] != "gateway_tls" {
-		t.Errorf("directives = %v, want the blank row dropped and the value trimmed", d)
-	}
-
-	// A second entry on a host that is already listed would generate twice onto
-	// the same route.
-	code, body = callDomains(t, h, http.MethodPut,
-		`[{"name":"a","domain":"x.example"},{"name":"b","domain":"x.example"}]`)
-	if code != http.StatusBadRequest || !strings.Contains(body, "already in the list") {
-		t.Errorf("duplicate host -> %d %s; want 400", code, body)
+	if d := got.Setting.Domains[0]; d.Domain != "{name}-lan.example.com" || len(d.Labels) != 1 || d.Labels["import"] != "gateway_tls" {
+		t.Errorf("domain = %+v, want the placeholder added, the blank row dropped and the value trimmed", d)
 	}
 
-	// The rejected save must not have replaced the accepted one.
-	_, body = callDomains(t, h, http.MethodGet, "")
+	code, body = callRouting(t, h, http.MethodPut, "/api/settings/routing", `{"renderer":"labels","domains":[]}`)
+	if code != http.StatusBadRequest {
+		t.Errorf("a labels setting with no domain -> %d %s; want 400", code, body)
+	}
+	_, body = callRouting(t, h, http.MethodGet, "/api/settings/routing", "")
 	if !strings.Contains(body, "lan.example.com") {
-		t.Errorf("a rejected PUT changed the stored list: %s", body)
+		t.Errorf("a rejected PUT changed the stored setting: %s", body)
+	}
+
+	code, body = callRouting(t, h, http.MethodPut, "/api/settings/routing", `null`)
+	if code != http.StatusOK || !strings.Contains(body, `"setting":null`) {
+		t.Errorf("reset -> %d %s", code, body)
+	}
+
+	// The preview of an unsaved draft does not store it.
+	code, body = callRouting(t, h, http.MethodPost, "/api/settings/routing/preview", `{"renderer":"ports","url-host":"192.168.1.10"}`)
+	if code != http.StatusOK || !strings.Contains(body, "APP_PORT_MYAPP") {
+		t.Errorf("preview -> %d %s", code, body)
+	}
+	_, body = callRouting(t, h, http.MethodGet, "/api/settings/routing", "")
+	if !strings.Contains(body, `"setting":null`) {
+		t.Errorf("a preview stored its draft: %s", body)
 	}
 }

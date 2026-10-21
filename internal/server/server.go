@@ -33,6 +33,7 @@ import (
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
 	"github.com/yundera/maison/internal/metrics"
+	"github.com/yundera/maison/internal/routing"
 	"github.com/yundera/maison/internal/secrets"
 	"github.com/yundera/maison/internal/system"
 	"github.com/yundera/maison/internal/usersettings"
@@ -114,10 +115,17 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	// Before everything else that could want to report into it.
 	incidents := incident.New(filepath.Join(cfg.StateDir(), "incidents.json"))
 
-	// Apps are published on the operator's additional domains, and they edit that
-	// list at runtime — so the Config every layer below copies reads it live rather
-	// than snapshotting it at boot. See internal/routes.
-	cfg.Domains = settings.Domains
+	// Apps are reached the way the routing setting says, and the operator or the
+	// deployment changes it at runtime — so the Config every layer below copies reads
+	// it live rather than snapshotting it at boot. See internal/routing.
+	cfg.Routing = func() routing.Setting {
+		st := settings.Get()
+		var env map[string]string
+		if cfg.AppEnv != nil {
+			env = cfg.AppEnv()
+		}
+		return routing.Effective(st.Routing, env, st.SeenHost)
+	}
 	// Reporting reaches internal/stackup — package-level functions with no receiver —
 	// the same way the two accessors above reach it: through the Config every one of
 	// them already takes.
@@ -167,6 +175,29 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 			log.Printf("docker: cannot reach daemon: %v", err)
 		}
 		s.dx = dx
+		// The ports renderer must not hand out a port another app's container
+		// already publishes.
+		cfg.PortsInUse = func(exclude string) map[int]bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			conts, err := dx.ListAllContainers(ctx)
+			if err != nil {
+				return nil
+			}
+			out := map[int]bool{}
+			for _, c := range conts {
+				if c.Project == exclude {
+					continue
+				}
+				for _, p := range c.Ports {
+					if p.Public > 0 {
+						out[int(p.Public)] = true
+					}
+				}
+			}
+			return out
+		}
+		s.cfg.PortsInUse = cfg.PortsInUse
 		s.apps = apps.New(cfg, dx)
 		if cgroupstat.Available() {
 			s.cgroups = cgroupstat.NewTracker(cgroupstat.Root(), dx)
@@ -575,8 +606,10 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 
 		r.Get("/settings", s.handleGetSettings)
 		r.Put("/settings", s.handlePutSettings)
-		r.Get("/settings/domains", s.handleGetDomains)
-		r.Put("/settings/domains", s.handlePutDomains)
+		r.Get("/settings/routing", s.handleGetRouting)
+		r.Put("/settings/routing", s.handlePutRouting)
+		r.Post("/settings/routing/preview", s.handlePreviewRouting)
+		r.Get("/routes", s.handleRoutes)
 		r.Get("/settings/appenv", s.handleGetAppEnv)
 		r.Put("/settings/appenv", s.handlePutAppEnv)
 	})
@@ -642,6 +675,7 @@ func (s *Server) rootHandler(dashboard http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(brand.Header, "1")
 		if s.apps == nil || s.isDashboardHost(r.Host) {
+			s.seeHost(r.Host)
 			dashboard.ServeHTTP(w, r)
 			return
 		}

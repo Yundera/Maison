@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/routing"
 )
 
 func hasAll(string) bool { return true }
@@ -23,7 +23,8 @@ func TestUnmanagedValuesStayInTheShapeOlderImagesRead(t *testing.T) {
 	}
 	s := New(path)
 	got := s.Get()
-	if got.SMTP == nil || got.SMTP.Host != "relay" || len(got.Domains) != 1 || got.Wallpaper != "/w.jpg" {
+	// The old domains list became the routing setting: the primary, then the entry.
+	if got.SMTP == nil || got.SMTP.Host != "relay" || got.Routing == nil || len(got.Routing.Domains) != 2 || got.Wallpaper != "/w.jpg" {
 		t.Fatalf("legacy file not read: %+v", got)
 	}
 	if len(got.Managed) != 0 {
@@ -43,9 +44,12 @@ func TestUnmanagedValuesStayInTheShapeOlderImagesRead(t *testing.T) {
 	if err := json.Unmarshal(doc["smtp"], &smtp); err != nil || smtp.Host != "relay" || strings.Contains(string(doc["smtp"]), `"managed"`) {
 		t.Fatalf("unmanaged smtp not written plain: %s", doc["smtp"])
 	}
-	var doms []domains.Domain
-	if err := json.Unmarshal(doc["domains"], &doms); err != nil || len(doms) != 1 {
-		t.Fatalf("unmanaged domains not written as a bare array: %s", doc["domains"])
+	var r routing.Setting
+	if err := json.Unmarshal(doc["routing"], &r); err != nil || len(r.Domains) != 2 || strings.Contains(string(doc["routing"]), `"managed"`) {
+		t.Fatalf("unmanaged routing not written plain: %s", doc["routing"])
+	}
+	if _, ok := doc["domains"]; ok {
+		t.Fatalf("the migrated domains list was written back: %s", b)
 	}
 	if _, ok := doc["managed"]; ok {
 		t.Fatalf("the API's managed map must not be written top-level: %s", b)
@@ -56,7 +60,7 @@ func TestUnmanagedValuesStayInTheShapeOlderImagesRead(t *testing.T) {
 
 	// And the rewritten file reads back to the same thing.
 	again := New(path).Get()
-	if again.SMTP == nil || again.SMTP.Host != "relay" || again.Language != "fr_fr" || len(again.Domains) != 1 {
+	if again.SMTP == nil || again.SMTP.Host != "relay" || again.Language != "fr_fr" || again.Routing == nil || len(again.Routing.Domains) != 2 {
 		t.Fatalf("round trip lost data: %+v", again)
 	}
 }
@@ -158,16 +162,36 @@ func TestManageRefusesBadInput(t *testing.T) {
 	}
 }
 
-func TestManagedDomainsAreNormalized(t *testing.T) {
+func TestManagedRoutingIsNormalized(t *testing.T) {
 	s := newStore(t)
-	raw := json.RawMessage(`[{"name":" lan ","domain":" {name}.lan ","labels":{" ":"x","k":" v "}}]`)
-	if err := s.Manage("domains", "yundera", raw, hasAll); err != nil {
+	raw := json.RawMessage(`{"renderer":" labels ","domains":[{"name":" lan ","domain":" {name}.lan ","labels":{" ":"x","k":" v "}}]}`)
+	if err := s.Manage("routing", "yundera", raw, hasAll); err != nil {
 		t.Fatal(err)
 	}
-	want := domains.Domain{Name: "lan", Domain: "{name}.lan", Labels: map[string]string{"k": "v"}}
-	got := s.Get().Domains
-	if len(got) != 1 || got[0].Name != want.Name || got[0].Domain != want.Domain || got[0].Labels["k"] != "v" || len(got[0].Labels) != 1 {
-		t.Fatalf("domains = %+v, want %+v", got, want)
+	got := s.Get().Routing
+	if got == nil || got.Renderer != routing.Labels || len(got.Domains) != 1 {
+		t.Fatalf("routing = %+v", got)
+	}
+	if d := got.Domains[0]; d.Name != "lan" || d.Domain != "{name}.lan" || d.Labels["k"] != "v" || len(d.Labels) != 1 {
+		t.Fatalf("domain = %+v", d)
+	}
+	// The editor cannot change a managed setting.
+	if err := s.SetRouting(nil); !errors.Is(err, ErrManaged) {
+		t.Fatalf("SetRouting on a managed setting = %v, want ErrManaged", err)
+	}
+	if err := s.Manage("routing", "yundera", json.RawMessage(`{"renderer":"labels"}`), hasAll); err == nil {
+		t.Fatal("a labels setting with no domain was accepted")
+	}
+}
+
+// A managed domains list from before the routing setting keeps its owner.
+func TestManagedLegacyDomainsMigrateWithTheirOwner(t *testing.T) {
+	st, migrated, err := decodeFile([]byte(`{"domains":{"managed":true,"owner":"Yundera","value":[{"name":"nip","domain":"${APP_PUBLIC_IP_DASH}.nip.io"}]}}`))
+	if err != nil || !migrated {
+		t.Fatalf("decode: migrated=%v err=%v", migrated, err)
+	}
+	if st.Routing == nil || st.Managed["routing"] != "Yundera" {
+		t.Fatalf("routing = %+v managed = %v", st.Routing, st.Managed)
 	}
 }
 
@@ -197,10 +221,10 @@ func TestWrappedUnmanagedFrom1150IsReadAndWrittenPlain(t *testing.T) {
 	}
 	s := New(path)
 	got := s.Get()
-	if len(got.Domains) != 1 || got.Managed["smtp"] != "Yundera" {
+	if got.Routing == nil || len(got.Routing.Domains) != 2 || got.Managed["smtp"] != "Yundera" {
 		t.Fatalf("1.1.50 file misread: %+v", got)
 	}
-	if _, ok := got.IsManaged("domains"); ok {
+	if _, ok := got.IsManaged("routing"); ok {
 		t.Fatal("managed:false read as managed")
 	}
 	if err := s.Set(Settings{Language: "de_de"}); err != nil {
@@ -211,8 +235,8 @@ func TestWrappedUnmanagedFrom1150IsReadAndWrittenPlain(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(string(doc["domains"])), "[") {
-		t.Fatalf("domains not rewritten plain: %s", doc["domains"])
+	if !strings.HasPrefix(strings.TrimSpace(string(doc["routing"])), "{") || strings.Contains(string(doc["routing"]), `"managed"`) {
+		t.Fatalf("routing not written plain: %s", doc["routing"])
 	}
 	if !strings.Contains(string(doc["smtp"]), `"managed":true`) && !strings.Contains(string(doc["smtp"]), `"managed": true`) {
 		t.Fatalf("managed smtp lost its wrapper: %s", doc["smtp"])
@@ -223,7 +247,7 @@ func TestWrappedUnmanagedFrom1150IsReadAndWrittenPlain(t *testing.T) {
 // still parse — a box rolled forward must not lose its whole settings file — and it
 // must read as the feature switched off, not as a check against nothing.
 func TestTheOldOnboardingShapeReadsAsOff(t *testing.T) {
-	st, err := decodeFile([]byte(`{"onboarding":{"managed":true,"owner":"yundera","value":{"url":"https://admin-box.example/"}}}`))
+	st, _, err := decodeFile([]byte(`{"onboarding":{"managed":true,"owner":"yundera","value":{"url":"https://admin-box.example/"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}

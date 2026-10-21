@@ -1,62 +1,37 @@
-// Package routes publishes an app on the deployment's domains (see
-// internal/domains) by generating the reverse-proxy labels for them.
+// Package routes writes what the deployment's routing setting needs into an app's
+// docker-compose.override.yml.
 //
-// Maison always speaks Compose. It does not always sit behind Caddy, so nothing
-// here knows Caddy's vocabulary: the label grammar is data, supplied by a Dialect
-// the deployment configures (see dialect.go), and Caddy is only its default value.
+// What is written depends on the renderer (internal/routing):
 //
-// # Two sources, one mechanism
+//   - labels: one proxy label group per route per domain, spelled by a dialect
+//     (internal/routes/dialect). An app whose listing still routes itself with
+//     hand-written labels and declares no routes has those groups copied onto the
+//     deployment's further domains instead (clone mode), as Maison always did.
+//   - ports: a `ports:` entry per route, `${APP_BIND}:${APP_PORT_<NAME>}:<port>`.
+//   - external: nothing but the network attachment below.
 //
-// An app states its web endpoints without naming a domain, a proxy or a TLS
-// setting — a service, a name, a port (xcomposeapp.Route). For each configured
-// domain, the dialect renders that into labels, which are written into the app's
-// docker-compose.override.yml:
+// Every routed service of a labels or external deployment is also attached to the
+// deployment's app network, so the proxy can reach it, unless the listing already
+// put it there.
 //
-//	caddy_1: outline-${APP_PUBLIC_IP_DASH}.sslip.io
-//	caddy_1.reverse_proxy: "{{upstreams 80}}"
-//
-// An app whose routing is genuinely proxy-specific — a handle_path tree, a
-// forward_auth block — cannot be said that way, and is not asked to be. It writes
-// its own labels, and those are *cloned* onto each further domain verbatim. Such
-// an app is bound to its proxy and its own file says so; Maison is not.
-//
-// Both sources feed one reconciliation, sharing one record of which hosts are
-// already routed, so an app can declare some routes and hand-write others.
-//
-// # What belongs to the domain
-//
-// The dialect names the keys a domain owns outright (Group.DomainKeys), and those
-// are stripped from a clone whether or not the domain supplies its own. That is
-// what keeps TLS with the domain rather than the app: the gateway and nip.io hosts
-// are served with the deployment's own CA, while sslip.io deliberately carries
-// nothing and falls through to Let's Encrypt — an absence the domain means, which
-// is why the strip cannot be conditional on the domain having something to say.
-// The app never states any of this, and Maison never learns what `import` means.
-//
-// Every other key follows the more specific source: an app's own label beats the
-// domain's, and the domain's beats a dialect default. So an app that still writes
-// its own routes keeps its own opinions on the domains it is cloned onto, and only
-// gives them up when it stops expressing one.
-//
-// The host is emitted still-templated, so it resolves through ordinary Compose
-// interpolation — and a bare `docker compose up -d` in the app's folder reproduces
-// what Maison runs.
+// Nothing here knows a proxy's vocabulary: label grammar is the dialect's.
 //
 // # Why the override, and how it stays safe
 //
 // The base compose is byte-compared against the store's on every update check
-// (internal/installer/update.go), so a label written there would read as a
+// (internal/installer/update.go), so anything written there would read as a
 // permanent "update available". The override is the only legal target — but it is
-// also the operator's file. So generation is exact rather than heuristic: the
-// keys Maison writes are recorded in a manifest, and the next run deletes
-// precisely those before writing the new set. Nothing else in the file is read or
-// touched, and it is patched through its node tree, so comments and key order
-// survive.
+// also the operator's file. So generation is exact rather than heuristic: what
+// Maison writes is recorded in a manifest, and the next run deletes precisely that
+// before writing the new set. Nothing else in the file is read or touched, and it is
+// patched through its node tree, so comments and key order survive.
+//
+// Hosts stay templated (`outline-${APP_DOMAIN}`), so a bare `docker compose up -d`
+// in the app's folder reproduces what Maison runs.
 package routes
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,35 +40,29 @@ import (
 
 	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/routes/dialect"
+	"github.com/yundera/maison/internal/routing"
 	"github.com/yundera/maison/internal/yamlnode"
 )
 
 // ManifestKey names the generated-key manifest inside the override's
 // x-compose-app block — the same block that already carries Maison's other
-// bookkeeping (store-ref, tips).
+// bookkeeping (store-ref).
 //
 // The name is deliberately brand-free. It is written into files that belong to
 // the operator and outlive any one release, so it is the one identifier a rename
 // of the product must not be able to reach — see internal/brand.
 const ManifestKey = "generated-routes"
 
-// PrimaryToken is the canonical placeholder for the deployment's primary domain
-// — the one a store app templates its single route with, and the one the settings
-// editor shows as the domain every additional domain is added *to*. It is exported
-// so the UI states the mechanism in the compose file's own vocabulary rather than
-// re-inventing a name for it.
-const PrimaryToken = "${APP_DOMAIN}"
+// AppNetKey is the key the deployment's app network is attached under in an
+// override, when the listing did not attach the service itself.
+const AppNetKey = "app-net"
 
-// primaryTokens are the placeholders a compose file uses for the deployment's
-// primary domain. A caddy label that references one of them is a route Maison
-// can republish; one that doesn't (a hardcoded host, an already-generated
-// sslip.io route) is left alone.
-var primaryTokens = []string{PrimaryToken, "${DOMAIN}", "${domain}"}
-
-var (
-	caddyKey = regexp.MustCompile(`^caddy(_\d+)?$`)
-	caddyIdx = regexp.MustCompile(`^caddy_(\d+)`)
-	varRef   = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+// Manifest entry forms beside plain label keys.
+const (
+	portsPrefix    = "ports:"    // a ports: entry, by value
+	networksPrefix = "networks:" // a service's network attachment, by key
+	topNetworks    = ".networks" // the manifest's pseudo-service for top-level networks (no service name starts with a dot)
 )
 
 // Resolver expands a host's ${VAR} references the way `docker compose` will when
@@ -103,26 +72,42 @@ var (
 // It exists because "is this host already routed?" cannot be answered on the
 // written text. A compose may reach the same host through different spellings of
 // the same variable: Maison's own stack writes `maison-${PUBLIC_IP_DASH}.nip.io`
-// while a configured domain is `${APP_PUBLIC_IP_DASH}.nip.io`, and both are
-// `maison-<ip>.nip.io` by the time Caddy sees them. Compared as text they look
-// like two hosts, and the app ends up published twice on one name with two
-// different TLS settings.
+// while a configured domain is `{name}-${APP_PUBLIC_IP_DASH}.nip.io`, and both are
+// `maison-<ip>.nip.io` by the time Caddy sees them.
 //
 // A reference it cannot resolve is left as written, so two genuinely unknown
 // hosts never collapse into each other.
-type Resolver func(string) string
+type Resolver = routing.Resolver
 
-// Sync reconciles the generated route groups in override against doms, using
-// base for the routes to clone. It returns the new override, or nil when nothing
-// is left in it and the file should be removed.
+// Plan is what to write for one app.
+type Plan struct {
+	Renderer string
+	// Dialect spells labels (labels renderer). Nil turns label generation off.
+	Dialect dialect.Dialect
+	// Domains are the labels renderer's domains; [0] is the primary. Clone mode
+	// copies an app's own groups from the primary onto the rest.
+	Domains []domains.Domain
+	// Entries are the app's routes under the setting (routing.Table). Empty means
+	// the app declares no routes.
+	Entries []routing.Entry
+	// Network is the deployment's app network as it resolves (`pcs`), and NetworkRef
+	// how it is written into the override (`${APP_NET:-pcs}`). An empty Network
+	// attaches nothing.
+	Network    string
+	NetworkRef string
+}
+
+// Sync reconciles the generated routing in override against p, using base for the
+// app's services and its own labels. It returns the new override, or nil when
+// nothing is left in it and the file should be removed.
 //
-// resolve decides host identity (see Resolver); nil compares hosts as written,
-// which is right for a caller that has no environment to resolve against.
+// resolve decides host and network identity (see Resolver); nil compares as
+// written.
 //
 // It is a pure function over the two files' bytes: everything that decides the
 // output is in its arguments, which is what lets the whole rule be tested without
 // Docker, a store, or a filesystem.
-func Sync(base, override []byte, doms []domains.Domain, resolve Resolver) ([]byte, error) {
+func Sync(base, override []byte, p Plan, resolve Resolver) ([]byte, error) {
 	if resolve == nil {
 		resolve = func(s string) string { return s }
 	}
@@ -135,12 +120,26 @@ func Sync(base, override []byte, doms []domains.Domain, resolve Resolver) ([]byt
 		return nil, fmt.Errorf("docker-compose.override.yml: %w", err)
 	}
 
-	dropped := dropGenerated(overRoot, doms, resolve)
-	manifest := generate(baseRoot, overRoot, doms, resolve)
+	dropped := dropGenerated(overRoot, p, resolve)
+	manifest := map[string][]string{}
+	switch p.Renderer {
+	case routing.Labels:
+		if p.Dialect != nil {
+			if len(p.Entries) > 0 {
+				renderLabels(baseRoot, overRoot, p, resolve, manifest)
+			} else {
+				cloneLabels(baseRoot, overRoot, p, resolve, manifest)
+			}
+		}
+	case routing.Ports:
+		renderPorts(baseRoot, overRoot, p, manifest)
+	}
+	if (p.Renderer == routing.Labels || p.Renderer == routing.External) && p.Network != "" {
+		attachNetwork(baseRoot, overRoot, p, resolve, manifest)
+	}
 
-	// Nothing was generated before and nothing is now — an app with no routes on the
-	// primary domain, or a deployment with no additional domains. Hand the override
-	// back exactly as it came in: re-emitting it would rewrite the operator's file
+	// Nothing was generated before and nothing is now. Hand the override back
+	// exactly as it came in: re-emitting it would rewrite the operator's file
 	// (quoting, indent, key style) to say the same thing, and a file Maison has no
 	// business in is a file it must not write.
 	if !dropped && len(manifest) == 0 {
@@ -159,247 +158,388 @@ func Sync(base, override []byte, doms []domains.Domain, resolve Resolver) ([]byt
 	return yamlnode.Encode(overRoot)
 }
 
-// Vars lists the interpolation variables the app's routes reference, once the
-// additional domains are in play (${APP_DOMAIN}, ${APP_PUBLIC_IP_DASH}, …).
-//
-// These come from the deployment's environment, not from Maison's own base
-// variables, so they are absent from an app's prefilled .env — which means a
-// route resolves under Maison and to an empty host under a hand-run
-// `docker compose up -d`. The caller seeds them into the .env so the app folder
-// stands on its own; see internal/stackup.
-func Vars(base []byte, doms []domains.Domain) []string {
-	seen := map[string]bool{}
-	add := func(s string) {
-		for _, m := range varRef.FindAllStringSubmatch(s, -1) {
-			seen[m[1]] = true
-		}
-	}
-	if root, err := yamlnode.Root(base); err == nil {
-		svcs := yamlnode.Get(root, "services")
-		for _, name := range yamlnode.Keys(svcs) {
-			for _, p := range labelPairs(yamlnode.Get(yamlnode.Get(svcs, name), "labels")) {
-				if strings.HasPrefix(p.key, "caddy") {
-					add(p.val)
-				}
-			}
-		}
-	}
-	for _, d := range doms {
-		add(d.Domain)
-	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
+// --- labels ---
 
-// --- generation ---
-
-type kv struct{ key, val string }
-
-// group is one caddy route group: the `caddy_N` label that names the host, plus
-// every `caddy_N.*` directive hanging off it, in file order.
-type group struct {
-	key  string // "caddy_0"
-	host string // "outline-${APP_DOMAIN}"
-	subs []kv   // {"import", "gateway_tls"}, {"reverse_proxy", "{{upstreams 80}}"}, …
-}
-
-// generate clones every base route group that sits on the primary domain onto
-// each additional domain, writing the clones into the override. It returns the
-// manifest of what it wrote, keyed by service.
-func generate(baseRoot, overRoot *yaml.Node, doms []domains.Domain, resolve Resolver) map[string][]string {
-	manifest := map[string][]string{}
-	if len(doms) == 0 {
-		return manifest
-	}
-
+// renderLabels writes one group per route per domain.
+func renderLabels(baseRoot, overRoot *yaml.Node, p Plan, resolve Resolver, manifest map[string][]string) {
 	baseSvcs := yamlnode.Get(baseRoot, "services")
-	for _, name := range yamlnode.Keys(baseSvcs) {
-		baseLabels := labelPairs(yamlnode.Get(yamlnode.Get(baseSvcs, name), "labels"))
-		groups := routeGroups(baseLabels)
+	for _, svc := range entryServices(p.Entries) {
+		if yamlnode.Get(baseSvcs, svc) == nil {
+			continue // a route on a service the compose does not have
+		}
+		baseLabels := labelPairs(yamlnode.Get(yamlnode.Get(baseSvcs, svc), "labels"))
+		overLabels := labelPairs(labelsNode(overRoot, svc))
+		routed := routedHosts(p.Dialect, resolve, baseLabels, overLabels)
+		next := dialect.NextIndex(p.Dialect, baseLabels, overLabels)
+
+		var written []string
+		for _, e := range p.Entries {
+			if e.Service != svc || routed[resolve(e.Host)] {
+				continue
+			}
+			routed[resolve(e.Host)] = true
+			group := p.Dialect.Render(next, e.Host, dialect.Upstream{Port: e.Port, Scheme: e.Scheme, Insecure: e.Insecure}, e.Labels)
+			next++
+			written = append(written, writeGroup(overRoot, svc, group, fmt.Sprintf("%s: route %s on %s", brand.Name, e.Name, e.Target))...)
+		}
+		if len(written) > 0 {
+			manifest[svc] = append(manifest[svc], written...)
+		}
+	}
+}
+
+// cloneLabels copies every group an app's own labels put on the primary domain onto
+// each further domain. A route group can be an entire handle_path tree or carry
+// transport settings, and it has to keep working on the second domain, so the whole
+// group is copied — except what the dialect says belongs to the domain (TLS).
+//
+// Every group on every service is copied, not just the web UI's: Outline's Dex
+// sidecar has its own `outline-auth-${APP_DOMAIN}` route, and OIDC breaks if it is
+// not reachable at the same names as the app.
+func cloneLabels(baseRoot, overRoot *yaml.Node, p Plan, resolve Resolver, manifest map[string][]string) {
+	if len(p.Domains) < 2 {
+		return
+	}
+	primary := p.Domains[0]
+	baseSvcs := yamlnode.Get(baseRoot, "services")
+	for _, svc := range yamlnode.Keys(baseSvcs) {
+		baseLabels := labelPairs(yamlnode.Get(yamlnode.Get(baseSvcs, svc), "labels"))
+		groups := dialect.Groups(p.Dialect, baseLabels)
 		if len(groups) == 0 {
 			continue
 		}
-		overLabels := labelPairs(labelsNode(overRoot, name))
-
-		// A host that is already routed — because the store still ships the sslip.io
-		// label itself, or because the operator wrote it by hand — is left to whoever
-		// declared it. This is what lets Maison run against a store that has not
-		// been trimmed yet without publishing every app twice.
-		//
-		// Keyed on the *resolved* host, because that is what decides whether two
-		// labels are the same route: `${PUBLIC_IP_DASH}` and `${APP_PUBLIC_IP_DASH}`
-		// are two names for one address (see Resolver).
-		routed := map[string]bool{}
-		for _, p := range append(append([]kv{}, baseLabels...), overLabels...) {
-			if caddyKey.MatchString(p.key) {
-				routed[resolve(p.val)] = true
-			}
-		}
-		next := nextIndex(baseLabels, overLabels)
+		overLabels := labelPairs(labelsNode(overRoot, svc))
+		routed := routedHosts(p.Dialect, resolve, baseLabels, overLabels)
+		next := dialect.NextIndex(p.Dialect, baseLabels, overLabels)
 
 		var written []string
 		for _, g := range groups {
-			token := primaryToken(g.host)
-			if token == "" {
+			name, ok := primary.NameOf(primaryHost(g.Host))
+			if !ok {
 				continue // not a route on the primary domain — nothing to republish
 			}
-			for _, d := range doms {
-				host := strings.ReplaceAll(g.host, token, d.Domain)
+			for _, d := range p.Domains[1:] {
+				host := d.Host(name)
 				if routed[resolve(host)] {
 					continue
 				}
 				routed[resolve(host)] = true
-
-				key := fmt.Sprintf("caddy_%d", next)
+				group := p.Dialect.Clone(next, g, host, d.Labels)
 				next++
-				labels := ensureLabels(overRoot, name)
-
-				setLabel(labels, key, host)
-				comment(labels, key, fmt.Sprintf("%s: %s — generated from %s (Settings › Domains)", brand.Name, d.Name, g.key))
-				written = append(written, key)
-
-				// The domain's own directives lead, as they do in a hand-written store
-				// route (`caddy_0.import` above `caddy_0.reverse_proxy`), then the app's.
-				for _, dk := range sortedKeys(d.Labels) {
-					written = append(written, setLabel(labels, key+"."+dk, d.Labels[dk]))
-				}
-				for _, s := range g.subs {
-					if domainOwned(s.key) {
-						continue // the domain decides its own TLS, not the app
-					}
-					written = append(written, setLabel(labels, key+"."+s.key, s.val))
-				}
+				written = append(written, writeGroup(overRoot, svc, group, fmt.Sprintf("%s: %s — generated from %s", brand.Name, d.Name, g.Key))...)
 			}
 		}
 		if len(written) > 0 {
-			manifest[name] = written
+			manifest[svc] = append(manifest[svc], written...)
 		}
 	}
-	return manifest
 }
 
-// dropGenerated removes the previous run's output: the keys named in the
-// manifest, plus — belt and braces, in case the manifest was edited away through
-// the raw YAML view — any override route whose host sits on a configured domain.
-// It reports whether it removed anything, so a run with nothing to do can leave
-// the file alone entirely.
-func dropGenerated(overRoot *yaml.Node, doms []domains.Domain, resolve Resolver) bool {
+// primaryHost reads the store's other spelling of the primary domain as the one
+// the default primary template uses: `${domain}` is what older listings' webui-host
+// was written with, and some labels copied it.
+func primaryHost(host string) string {
+	return strings.ReplaceAll(host, "${domain}", "${APP_DOMAIN}")
+}
+
+// routedHosts is every host either file already routes, resolved. A host that is
+// already routed is left to whoever declared it: that is what lets the generator
+// run against a listing that still carries its own labels without publishing the
+// app twice.
+func routedHosts(d dialect.Dialect, resolve Resolver, sets ...[]dialect.Label) map[string]bool {
+	out := map[string]bool{}
+	for _, labels := range sets {
+		for _, l := range labels {
+			if d.IsHost(l.Key) {
+				out[resolve(l.Value)] = true
+			}
+		}
+	}
+	return out
+}
+
+// writeGroup writes a label group onto svc in the override and returns its keys.
+func writeGroup(overRoot *yaml.Node, svc string, group []dialect.Label, note string) []string {
+	labels := ensureLabels(overRoot, svc)
+	keys := make([]string, 0, len(group))
+	for i, l := range group {
+		setLabel(labels, l.Key, l.Value)
+		if i == 0 {
+			comment(labels, l.Key, note)
+		}
+		keys = append(keys, l.Key)
+	}
+	return keys
+}
+
+// --- ports ---
+
+// renderPorts publishes each route's port. The entry stays templated — the host
+// port and the bind address are the app's .env values, so a hand-run compose
+// publishes the same port Maison picked.
+//
+// A port the listing already publishes itself is left alone (routing.Table then
+// reports that host port instead of allocating one).
+func renderPorts(baseRoot, overRoot *yaml.Node, p Plan, manifest map[string][]string) {
+	for _, e := range p.Entries {
+		if e.HostPort == 0 || publishedPort(baseRoot, e.Service, e.Port) > 0 {
+			continue
+		}
+		if yamlnode.Get(yamlnode.Get(baseRoot, "services"), e.Service) == nil {
+			continue
+		}
+		entry := PortEntry(e.Name, e.Port)
+		svcNode := yamlnode.EnsureMap(yamlnode.EnsureMap(overRoot, "services"), e.Service)
+		seq := yamlnode.Get(svcNode, "ports")
+		if seq == nil {
+			seq = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			yamlnode.Set(svcNode, "ports", seq)
+		}
+		if seqIndex(seq, entry) < 0 {
+			item := yamlnode.Scalar(entry)
+			item.Style = yaml.DoubleQuotedStyle
+			item.HeadComment = fmt.Sprintf("%s: route %s", brand.Name, e.Name)
+			seq.Content = append(seq.Content, item)
+		}
+		manifest[e.Service] = append(manifest[e.Service], portsPrefix+entry)
+	}
+}
+
+// PortEntry is the ports: entry a route is published with.
+func PortEntry(name string, port int) string {
+	return fmt.Sprintf("${APP_BIND}:${%s}:%d", routing.PortKey(name), port)
+}
+
+// PublishedPort is the host port svc publishes port on in a compose file, or 0.
+// The ports renderer uses it to leave alone a port a listing publishes itself.
+func PublishedPort(base []byte, svc string, port int) int {
+	root, err := yamlnode.Root(base)
+	if err != nil {
+		return 0
+	}
+	return publishedPort(root, svc, port)
+}
+
+func publishedPort(root *yaml.Node, svc string, port int) int {
+	seq := yamlnode.Get(yamlnode.Get(yamlnode.Get(root, "services"), svc), "ports")
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return 0
+	}
+	for _, item := range seq.Content {
+		switch item.Kind {
+		case yaml.ScalarNode:
+			// [ip:]published:target[/proto]
+			v, _, _ := strings.Cut(item.Value, "/")
+			parts := strings.Split(v, ":")
+			if len(parts) < 2 {
+				continue
+			}
+			target, err1 := strconv.Atoi(parts[len(parts)-1])
+			pub, err2 := strconv.Atoi(parts[len(parts)-2])
+			if err1 == nil && err2 == nil && target == port {
+				return pub
+			}
+		case yaml.MappingNode:
+			t := yamlnode.Get(item, "target")
+			pb := yamlnode.Get(item, "published")
+			if t == nil || pb == nil {
+				continue
+			}
+			target, err1 := strconv.Atoi(t.Value)
+			pub, err2 := strconv.Atoi(pb.Value)
+			if err1 == nil && err2 == nil && target == port {
+				return pub
+			}
+		}
+	}
+	return 0
+}
+
+// --- the app network ---
+
+// attachNetwork puts every routed service on the deployment's app network, so the
+// proxy (or the operator's router) can reach it. A service the listing already put
+// there — or one with its own network_mode — is left alone.
+//
+// A service with no networks of its own is on the project's default network, and
+// naming any network drops that: so the attachment then names `default` as well,
+// or the service would lose its siblings.
+func attachNetwork(baseRoot, overRoot *yaml.Node, p Plan, resolve Resolver, manifest map[string][]string) {
+	attached := false
+	for _, svc := range entryServices(p.Entries) {
+		baseSvc := yamlnode.Get(yamlnode.Get(baseRoot, "services"), svc)
+		if baseSvc == nil || yamlnode.Get(baseSvc, "network_mode") != nil {
+			continue
+		}
+		overSvc := yamlnode.Get(yamlnode.Get(overRoot, "services"), svc)
+		baseKeys := networkKeys(yamlnode.Get(baseSvc, "networks"))
+		overKeys := networkKeys(yamlnode.Get(overSvc, "networks"))
+		already := false
+		for _, k := range append(append([]string{}, baseKeys...), overKeys...) {
+			if networkName(baseRoot, overRoot, k, resolve) == p.Network {
+				already = true
+				break
+			}
+		}
+		if already {
+			continue
+		}
+		add := []string{AppNetKey}
+		if len(baseKeys) == 0 && len(overKeys) == 0 {
+			add = append([]string{"default"}, add...)
+		}
+		svcNode := yamlnode.EnsureMap(yamlnode.EnsureMap(overRoot, "services"), svc)
+		nets := yamlnode.Get(svcNode, "networks")
+		if nets == nil {
+			nets = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			yamlnode.Set(svcNode, "networks", nets)
+		}
+		for _, k := range add {
+			addNetworkRef(nets, k)
+			manifest[svc] = append(manifest[svc], networksPrefix+k)
+		}
+		attached = true
+	}
+	if !attached {
+		return
+	}
+	top := yamlnode.EnsureMap(overRoot, "networks")
+	if yamlnode.Get(top, AppNetKey) == nil {
+		def := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		yamlnode.Set(def, "name", yamlnode.Scalar(p.NetworkRef))
+		yamlnode.Set(def, "external", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
+		yamlnode.Set(top, AppNetKey, def)
+		comment(top, AppNetKey, brand.Name+": the deployment's app network, for routing")
+		manifest[topNetworks] = []string{AppNetKey}
+	}
+}
+
+func addNetworkRef(nets *yaml.Node, key string) {
+	switch nets.Kind {
+	case yaml.SequenceNode:
+		if seqIndex(nets, key) < 0 {
+			nets.Content = append(nets.Content, yamlnode.Scalar(key))
+		}
+	case yaml.MappingNode:
+		if yamlnode.Get(nets, key) == nil {
+			yamlnode.Set(nets, key, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle})
+		}
+	}
+}
+
+// networkKeys lists the networks a service names, in either compose form.
+func networkKeys(n *yaml.Node) []string {
+	if n == nil {
+		return nil
+	}
+	switch n.Kind {
+	case yaml.SequenceNode:
+		var out []string
+		for _, it := range n.Content {
+			out = append(out, it.Value)
+		}
+		return out
+	case yaml.MappingNode:
+		return yamlnode.Keys(n)
+	}
+	return nil
+}
+
+// networkName is the Docker network a network key stands for: its `name:` when the
+// definition gives one, the key itself for an external network without one. A
+// project-local network gets a project-prefixed name, which is never the
+// deployment's app network, so it reads as "".
+func networkName(baseRoot, overRoot *yaml.Node, key string, resolve Resolver) string {
+	for _, root := range []*yaml.Node{overRoot, baseRoot} {
+		def := yamlnode.Get(yamlnode.Get(root, "networks"), key)
+		if def == nil {
+			continue
+		}
+		if n := yamlnode.Get(def, "name"); n != nil {
+			return resolve(n.Value)
+		}
+		if ext := yamlnode.Get(def, "external"); ext != nil && ext.Value == "true" {
+			return key
+		}
+	}
+	return ""
+}
+
+// --- the manifest ---
+
+// dropGenerated removes the previous run's output: what the manifest names, plus —
+// belt and braces, in case the manifest was edited away through the raw YAML view —
+// any label group in the override whose host sits on one of the further domains.
+// It reports whether it removed anything, so a run with nothing to do can leave the
+// file alone entirely.
+func dropGenerated(overRoot *yaml.Node, p Plan, resolve Resolver) bool {
 	dropped := false
 	if prev := readManifest(overRoot); len(prev) > 0 {
 		dropped = true
 		for svc, keys := range prev {
-			labels := labelsNode(overRoot, svc)
+			if svc == topNetworks {
+				for _, k := range keys {
+					yamlnode.Delete(yamlnode.Get(overRoot, "networks"), k)
+				}
+				continue
+			}
+			svcNode := yamlnode.Get(yamlnode.Get(overRoot, "services"), svc)
 			for _, k := range keys {
-				delLabel(labels, k)
+				switch {
+				case strings.HasPrefix(k, portsPrefix):
+					removeSeqValue(yamlnode.Get(svcNode, "ports"), strings.TrimPrefix(k, portsPrefix))
+				case strings.HasPrefix(k, networksPrefix):
+					key := strings.TrimPrefix(k, networksPrefix)
+					nets := yamlnode.Get(svcNode, "networks")
+					if nets != nil && nets.Kind == yaml.SequenceNode {
+						removeSeqValue(nets, key)
+					} else {
+						yamlnode.Delete(nets, key)
+					}
+				default:
+					delLabel(labelsNode(overRoot, svc), k)
+				}
 			}
 		}
 		yamlnode.Delete(yamlnode.Get(overRoot, "x-compose-app"), ManifestKey)
 	}
 
+	if p.Dialect == nil || len(p.Domains) < 2 {
+		return dropped
+	}
 	svcs := yamlnode.Get(overRoot, "services")
 	for _, name := range yamlnode.Keys(svcs) {
 		labels := labelsNode(overRoot, name)
-		for _, g := range routeGroups(labelPairs(labels)) {
-			if !onAnyDomain(g.host, doms, resolve) {
+		for _, g := range dialect.Groups(p.Dialect, labelPairs(labels)) {
+			if !onFurtherDomain(g.Host, p.Domains[1:], resolve) {
 				continue
 			}
 			dropped = true
-			delLabel(labels, g.key)
-			for _, s := range g.subs {
-				delLabel(labels, g.key+"."+s.key)
+			delLabel(labels, g.Key)
+			for _, s := range g.Subs {
+				delLabel(labels, g.Key+"."+s.Key)
 			}
 		}
 	}
 	return dropped
 }
 
-// onAnyDomain reports whether host sits on one of the configured domains, on the
-// resolved host so that a route written with a different spelling of the same
-// variable is still recognised — otherwise a generated route from an older run
-// would never be cleaned up, which is the mirror image of the duplicate Resolver
-// exists to prevent.
-func onAnyDomain(host string, doms []domains.Domain, resolve Resolver) bool {
+// onFurtherDomain reports whether host sits on one of doms, on the resolved host so
+// that a route written with a different spelling of the same variable is still
+// recognised — otherwise a generated route from an older run would never be
+// cleaned up, which is the mirror image of the duplicate Resolver exists to prevent.
+func onFurtherDomain(host string, doms []domains.Domain, resolve Resolver) bool {
 	host = resolve(host)
 	for _, d := range doms {
-		// The resolved suffix is checked too: a domain that resolves to nothing
+		// The resolved suffix is checked too: a suffix that resolves to nothing
 		// would otherwise match every host and take the whole override with it.
-		if suffix := resolve(d.Domain); d.Domain != "" && suffix != "" && strings.HasSuffix(host, suffix) {
+		suf := resolve(d.Suffix())
+		if strings.Trim(suf, "-.") != "" && strings.HasSuffix(host, suf) {
 			return true
 		}
 	}
 	return false
 }
-
-// routeGroups collects the caddy route groups out of a service's labels, in file
-// order. A group is keyed by its label ("caddy", "caddy_0", …) rather than by its
-// index, so a file mixing the bare and numbered forms stays unambiguous.
-func routeGroups(pairs []kv) []group {
-	byKey := map[string]*group{}
-	var order []string
-	for _, p := range pairs {
-		if !caddyKey.MatchString(p.key) {
-			continue
-		}
-		byKey[p.key] = &group{key: p.key, host: p.val}
-		order = append(order, p.key)
-	}
-	for _, p := range pairs {
-		head, sub, ok := strings.Cut(p.key, ".")
-		if !ok {
-			continue
-		}
-		if g := byKey[head]; g != nil {
-			g.subs = append(g.subs, kv{sub, p.val})
-		}
-	}
-	out := make([]group, 0, len(order))
-	for _, k := range order {
-		out = append(out, *byKey[k])
-	}
-	return out
-}
-
-// nextIndex is the first caddy_N index free across both files — generated routes
-// must never land on an index either file already uses.
-func nextIndex(sets ...[]kv) int {
-	next := 0
-	for _, pairs := range sets {
-		for _, p := range pairs {
-			m := caddyIdx.FindStringSubmatch(p.key)
-			if m == nil {
-				continue
-			}
-			if n, err := strconv.Atoi(m[1]); err == nil && n >= next {
-				next = n + 1
-			}
-		}
-	}
-	return next
-}
-
-// primaryToken returns the primary-domain placeholder a host is templated with,
-// or "" when it is not on the primary domain.
-func primaryToken(host string) string {
-	for _, t := range primaryTokens {
-		if strings.Contains(host, t) {
-			return t
-		}
-	}
-	return ""
-}
-
-// domainOwned reports whether a directive belongs to the domain rather than to
-// the app, and so must not be carried over from the cloned group.
-func domainOwned(sub string) bool {
-	return sub == "import" || sub == "tls" ||
-		strings.HasPrefix(sub, "tls.") || strings.HasPrefix(sub, "tls_")
-}
-
-// --- the manifest ---
 
 func readManifest(overRoot *yaml.Node) map[string][]string {
 	node := yamlnode.Get(yamlnode.Get(overRoot, "x-compose-app"), ManifestKey)
@@ -437,10 +577,22 @@ func writeManifest(overRoot *yaml.Node, manifest map[string][]string) {
 	}
 	xca = yamlnode.EnsureMap(overRoot, "x-compose-app")
 	yamlnode.Set(xca, ManifestKey, node)
-	comment(xca, ManifestKey, "generated by Maison — the routes it owns in this file, and will rewrite")
+	comment(xca, ManifestKey, "generated by Maison — what it owns in this file, and will rewrite")
 }
 
-// --- label access (compose accepts labels in two shapes) ---
+// --- node helpers (compose accepts labels in two shapes) ---
+
+func entryServices(entries []routing.Entry) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range entries {
+		if !seen[e.Service] {
+			seen[e.Service] = true
+			out = append(out, e.Service)
+		}
+	}
+	return out
+}
 
 func labelsNode(overRoot *yaml.Node, svc string) *yaml.Node {
 	return yamlnode.Get(yamlnode.Get(yamlnode.Get(overRoot, "services"), svc), "labels")
@@ -459,28 +611,27 @@ func ensureLabels(overRoot *yaml.Node, svc string) *yaml.Node {
 
 // labelPairs normalizes a labels node to ordered key/value pairs, from either
 // compose form: the `k: v` mapping or the `- "k=v"` list.
-func labelPairs(n *yaml.Node) []kv {
+func labelPairs(n *yaml.Node) []dialect.Label {
 	if n == nil {
 		return nil
 	}
-	var out []kv
+	var out []dialect.Label
 	switch n.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			out = append(out, kv{n.Content[i].Value, n.Content[i+1].Value})
+			out = append(out, dialect.Label{Key: n.Content[i].Value, Value: n.Content[i+1].Value})
 		}
 	case yaml.SequenceNode:
 		for _, item := range n.Content {
 			k, v, _ := strings.Cut(item.Value, "=")
-			out = append(out, kv{k, v})
+			out = append(out, dialect.Label{Key: k, Value: v})
 		}
 	}
 	return out
 }
 
-// setLabel writes one label in whichever shape the node already uses, and returns
-// the key it wrote (so the caller can record it in the manifest).
-func setLabel(labels *yaml.Node, key, val string) string {
+// setLabel writes one label in whichever shape the node already uses.
+func setLabel(labels *yaml.Node, key, val string) {
 	switch {
 	case labels == nil:
 	case labels.Kind == yaml.SequenceNode:
@@ -488,14 +639,13 @@ func setLabel(labels *yaml.Node, key, val string) string {
 		for i, cur := range labels.Content {
 			if k, _, _ := strings.Cut(cur.Value, "="); k == key {
 				labels.Content[i] = item
-				return key
+				return
 			}
 		}
 		labels.Content = append(labels.Content, item)
 	default:
 		yamlnode.Set(labels, key, yamlnode.Scalar(val))
 	}
-	return key
 }
 
 func delLabel(labels *yaml.Node, key string) {
@@ -513,6 +663,24 @@ func delLabel(labels *yaml.Node, key string) {
 	}
 }
 
+func seqIndex(seq *yaml.Node, value string) int {
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return -1
+	}
+	for i, it := range seq.Content {
+		if it.Value == value {
+			return i
+		}
+	}
+	return -1
+}
+
+func removeSeqValue(seq *yaml.Node, value string) {
+	if i := seqIndex(seq, value); i >= 0 {
+		seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+	}
+}
+
 // comment attaches an explanatory line above a generated key, so the file says
 // what it is to whoever opens it. Mapping form only — there is nowhere to hang a
 // comment on a list item that survives a rewrite.
@@ -525,14 +693,16 @@ func comment(m *yaml.Node, key, text string) {
 	}
 }
 
-// prune drops the containers Maison emptied out, so removing the last domain
+// prune drops the containers Maison emptied out, so removing the last route
 // leaves an override no larger than it found it (and possibly no file at all).
 func prune(overRoot *yaml.Node) {
 	svcs := yamlnode.Get(overRoot, "services")
 	for _, name := range yamlnode.Keys(svcs) {
 		svc := yamlnode.Get(svcs, name)
-		if labels := yamlnode.Get(svc, "labels"); labels != nil && len(labels.Content) == 0 {
-			yamlnode.Delete(svc, "labels")
+		for _, k := range []string{"labels", "ports", "networks"} {
+			if n := yamlnode.Get(svc, k); n != nil && len(n.Content) == 0 && n.Kind != yaml.ScalarNode {
+				yamlnode.Delete(svc, k)
+			}
 		}
 		if len(svc.Content) == 0 {
 			yamlnode.Delete(svcs, name)
@@ -540,6 +710,9 @@ func prune(overRoot *yaml.Node) {
 	}
 	if svcs != nil && len(svcs.Content) == 0 {
 		yamlnode.Delete(overRoot, "services")
+	}
+	if nets := yamlnode.Get(overRoot, "networks"); nets != nil && len(nets.Content) == 0 {
+		yamlnode.Delete(overRoot, "networks")
 	}
 }
 

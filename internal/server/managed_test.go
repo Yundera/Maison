@@ -145,13 +145,13 @@ func TestTheHTTPAPICannotTouchDeploymentSettings(t *testing.T) {
 		t.Fatal("a password typed against a managed transport was stored")
 	}
 
-	if rec := do(t, admin, "PUT", "/settings/domains?owner=yundera", `[]`); rec.Code != 200 {
-		t.Fatalf("manage domains: %d %s", rec.Code, rec.Body)
+	if rec := do(t, admin, "PUT", "/settings/routing?owner=yundera", `{"renderer":"ports"}`); rec.Code != 200 {
+		t.Fatalf("manage routing: %d %s", rec.Code, rec.Body)
 	}
 	rec := httptest.NewRecorder()
-	s.handlePutDomains(rec, httptest.NewRequest("PUT", "/api/settings/domains", strings.NewReader(`[]`)))
+	s.handlePutRouting(rec, httptest.NewRequest("PUT", "/api/settings/routing", strings.NewReader(`{"renderer":"external"}`)))
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("PUT domains while managed = %d, want 409", rec.Code)
+		t.Fatalf("PUT routing while managed = %d, want 409", rec.Code)
 	}
 }
 
@@ -272,5 +272,27 @@ func TestAdminSocket(t *testing.T) {
 	}
 	if got := s.settings.Get(); got.Managed["smtp"] != "mesh" || got.SMTP.Port != 587 {
 		t.Fatalf("not applied: %+v", got)
+	}
+}
+
+// A deployment re-asserts its settings on every self-check: only a change may
+// republish the box's apps, or every app would be recreated every night.
+func TestManagedRoutingRepublishesOnlyOnAChange(t *testing.T) {
+	s := newManagedServer(t)
+	admin := s.adminRouter()
+	body := `{"renderer":"labels","domains":[{"name":"gateway","domain":"{name}-${APP_DOMAIN}"}]}`
+	before := s.managedValue("routing")
+	if rec := do(t, admin, "PUT", "/settings/routing?owner=Yundera", body); rec.Code != 200 {
+		t.Fatalf("manage: %d %s", rec.Code, rec.Body)
+	}
+	first := s.managedValue("routing")
+	if first == before {
+		t.Fatal("the first assertion did not register as a change")
+	}
+	if rec := do(t, admin, "PUT", "/settings/routing?owner=Yundera", body); rec.Code != 200 {
+		t.Fatalf("re-assert: %d %s", rec.Code, rec.Body)
+	}
+	if s.managedValue("routing") != first {
+		t.Fatal("re-asserting the same value changed it")
 	}
 }

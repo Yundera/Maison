@@ -3,15 +3,19 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/yundera/maison/internal/appenv"
-	"github.com/yundera/maison/internal/routes"
 	"github.com/yundera/maison/internal/config"
-	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/envinject"
+	"github.com/yundera/maison/internal/routes"
+	"github.com/yundera/maison/internal/routes/dialect"
+	"github.com/yundera/maison/internal/routing"
+	"github.com/yundera/maison/internal/stackup"
 	"github.com/yundera/maison/internal/usersettings"
 )
 
@@ -38,52 +42,70 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, publicSettings(s.settings.Get()))
 }
 
-// domainsView is the domains editor's payload.
+// routingView is the routing editor's payload.
 //
-// It carries more than the list it edits, because the list on its own does not say
-// what it is a list *of*: an operator looking at "sslip → ${APP_PUBLIC_IP_DASH}.sslip.io"
-// cannot tell whether it is an addition to the deployment's domain or a replacement
-// of it. So the primary domain travels with it — as the token a compose label is
-// actually written with, and as the host that token currently resolves to.
-type domainsView struct {
-	// PrimaryToken is the placeholder a store app's own route is templated with
-	// (`${APP_DOMAIN}`). Shown read-only: it comes from the app's compose, which
-	// Maison never edits.
-	PrimaryToken string `json:"primaryToken"`
-
-	// PrimaryHost is what that token resolves to on this box (.env.app's APP_DOMAIN),
-	// or "" on a deployment with no domain — in which case apps have no reachable
-	// web address at all and the editor says so.
-	PrimaryHost string `json:"primaryHost"`
-
-	// Domains is the operator's list of additional domains.
-	Domains []domains.Domain `json:"domains"`
-
-	// ManagedBy names the deployment that owns the list, when one does: the editor
-	// is then read-only (PUT answers 409).
+// It carries more than the setting it edits, because the setting on its own does
+// not say what it does: the effective setting (what the box runs on, defaults
+// filled in), the .env.app variables a domain template may interpolate, and a
+// preview — the override and the addresses Maison would generate for a sample app,
+// rendered by the same code that renders every real app, so the editor never
+// carries a copy of the generator.
+type routingView struct {
+	// Setting is the stored setting, nil when the box runs on its default.
+	Setting *routing.Setting `json:"setting"`
+	// Effective is what the box runs on (routing.Effective).
+	Effective routing.Setting `json:"effective"`
+	// ManagedBy names the deployment that owns the setting, when one does: the
+	// editor is then read-only (PUT answers 409).
 	ManagedBy string `json:"managedBy,omitempty"`
-
-	// Vars are the .env.app variables a domain template may interpolate, so the
-	// editor can preview the host a template resolves to before it is saved onto
-	// every app.
+	// Dialects are the label grammars this build carries.
+	Dialects []string `json:"dialects"`
+	// Vars are the .env.app variables a domain template may interpolate.
 	//
 	// Deliberately not all of .env.app: that file also carries the seeded admin
 	// password, which has no business in this endpoint. Only the routing family
 	// travels.
 	Vars map[string]string `json:"vars"`
+	// SeenHost is the address the dashboard was first opened at — what a ports
+	// setting without url-host uses.
+	SeenHost string `json:"seenHost,omitempty"`
+	// PublicWarning is a ports setting publishing on every address of a box that
+	// has a public IP: every app is then on the internet.
+	PublicWarning bool `json:"publicWarning"`
+	// Preview is what the effective setting generates for a sample app.
+	Preview routingPreview `json:"preview"`
 }
+
+// routingPreview is the generator's output for previewApp.
+type routingPreview struct {
+	App      string            `json:"app"`
+	Override string            `json:"override"`
+	Routes   []routing.Entry   `json:"routes"`
+	Vars     map[string]string `json:"vars"`
+	Error    string            `json:"error,omitempty"`
+}
+
+// previewApp is the sample the editor previews on: one service, one route, the
+// shape of most of the store.
+const previewApp = "myapp"
+
+const previewCompose = `name: myapp
+services:
+  myapp:
+    image: example/myapp:1.0
+    expose: ["80"]
+x-compose-app:
+  routes:
+    - upstream-port: 80
+`
 
 // routingVarPrefixes selects the .env.app keys that are about *where an app is
 // reached*, which are the only ones a domain template has any use for. See
 // internal/appenv's default file: they are one commented section of it.
-var routingVarPrefixes = []string{"APP_DOMAIN", "APP_PUBLIC_IP", "domain"}
+var routingVarPrefixes = []string{"APP_DOMAIN", "APP_PUBLIC_IP", "APP_NET", "domain"}
 
-// domainsView builds the editor's payload from the live settings and .env.app.
-//
-// Both halves come from one read of .env.app — the same source Config.AppDomain
-// reads, but taken here directly, like the .env.app editor beside it does. That
-// keeps the shown primary host and the shown variables from ever disagreeing.
-func (s *Server) domainsView() domainsView {
+// routingView builds the editor's payload for setting draft (nil = the stored one).
+func (s *Server) routingView(draft *routing.Setting) routingView {
 	env := appenv.Load(s.cfg)
 	vars := map[string]string{}
 	for k, v := range env {
@@ -95,56 +117,114 @@ func (s *Server) domainsView() domainsView {
 		}
 	}
 	cur := s.settings.Get()
-	owner, _ := cur.IsManaged("domains")
-	return domainsView{
-		PrimaryToken: routes.PrimaryToken,
-		PrimaryHost:  env["APP_DOMAIN"],
-		Domains:      cur.Domains,
-		ManagedBy:    owner,
-		Vars:         vars,
+	stored := cur.Routing
+	if draft != nil {
+		stored = draft
+	}
+	eff := routing.Effective(stored, env, cur.SeenHost)
+	owner, _ := cur.IsManaged("routing")
+	return routingView{
+		Setting:       cur.Routing,
+		Effective:     eff,
+		ManagedBy:     owner,
+		Dialects:      dialect.Names(),
+		Vars:          vars,
+		SeenHost:      cur.SeenHost,
+		PublicWarning: eff.Renderer == routing.Ports && eff.Bind == routing.DefaultBind && env["APP_PUBLIC_IP"] != "",
+		Preview:       preview(eff, env),
 	}
 }
 
-// handleGetDomains returns the domains editor's payload: the additional domains
-// plus the primary domain they are added to.
-func (s *Server) handleGetDomains(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.domainsView())
+// preview runs the generator on previewCompose under setting eff.
+func preview(eff routing.Setting, env map[string]string) routingPreview {
+	resolve := routing.EnvResolver(env)
+	rts := []routing.Route{{Name: previewApp, Service: previewApp, Port: 80, Scheme: "http", Path: "/"}}
+	entries := routing.Table(rts, eff, resolve, func(routing.Route) int { return eff.PortRange[0] })
+	d, _ := dialect.Get(eff.Dialect)
+	out, err := routes.Sync([]byte(previewCompose), nil, routes.Plan{
+		Renderer: eff.Renderer, Dialect: d, Domains: eff.Domains, Entries: entries,
+		Network: "pcs", NetworkRef: stackup.AppNetRef,
+	}, resolve)
+	p := routingPreview{App: previewApp, Override: string(out), Routes: entries, Vars: routing.Vars(entries, eff)}
+	if err != nil {
+		p.Error = err.Error()
+	}
+	return p
 }
 
-// handlePutDomains replaces the additional domains apps are published on, then
-// republishes the running ones onto the new list.
-//
-// Domains get their own endpoint instead of riding the generic settings PUT
-// because that one auto-saves on a keystroke debounce, and this one recreates
-// every container on the box. The republish runs in the background: it is a
-// compose up per app, the tiles carry their own busy state, and the operator
-// shouldn't be staring at a hung request while it happens.
-func (s *Server) handlePutDomains(w http.ResponseWriter, r *http.Request) {
-	if owner, managed := s.settings.Get().IsManaged("domains"); managed {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "the domain list is managed by " + owner})
-		return
-	}
-	var in []domains.Domain
+// handleGetRouting returns the routing editor's payload.
+func (s *Server) handleGetRouting(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.routingView(nil))
+}
+
+// handlePreviewRouting renders the preview for a setting being edited, without
+// saving it.
+func (s *Server) handlePreviewRouting(w http.ResponseWriter, r *http.Request) {
+	var in routing.Setting
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	in, err := domains.Normalize(in)
+	n, err := routing.Normalize(in)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	writeJSON(w, http.StatusOK, s.routingView(&n))
+}
 
-	cur := s.settings.Get()
-	cur.Domains = in
-	if err := s.settings.Set(cur); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+// handlePutRouting replaces the routing setting — `null` goes back to the
+// deployment's default — then republishes the running apps under it.
+//
+// Routing gets its own endpoint instead of riding the generic settings PUT
+// because that one auto-saves on a keystroke debounce, and this one recreates
+// every container on the box. The republish runs in the background: it is a
+// compose up per app, the tiles carry their own busy state, and the operator
+// shouldn't be staring at a hung request while it happens.
+func (s *Server) handlePutRouting(w http.ResponseWriter, r *http.Request) {
+	if owner, managed := s.settings.Get().IsManaged("routing"); managed {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "routing is managed by " + owner})
+		return
+	}
+	var in *routing.Setting
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	if in != nil {
+		n, err := routing.Normalize(*in)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		in = &n
+	}
+	if err := s.settings.SetRouting(in); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, usersettings.ErrManaged) {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 	if s.apps != nil {
 		go s.apps.Republish(context.Background())
 	}
-	writeJSON(w, http.StatusOK, s.domainsView())
+	writeJSON(w, http.StatusOK, s.routingView(nil))
+}
+
+// handleRoutes is every app's route table: what an operator's own router reads
+// when the box runs the external renderer (the same content as <state>/routes.json).
+func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
+	out := map[string][]routing.Entry{}
+	if s.apps != nil {
+		for _, id := range s.apps.ManagedIDs() {
+			if t := stackup.Table(s.cfg, id, filepath.Join(s.cfg.AppsDir(), id)); len(t) > 0 {
+				out[id] = t
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"renderer": s.cfg.Routing().Renderer, "apps": out})
 }
 
 // appEnvBody is the .env.app editor's payload.

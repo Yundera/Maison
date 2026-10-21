@@ -15,7 +15,7 @@
   import { SETTINGS_SECTIONS, openSettings, closeSettings, type SettingsSection } from '../../route'
   import { settingsSection } from '../../stores/ui'
   import { t } from '../../i18n'
-  import DomainSection from './DomainSection.svelte'
+  import RoutingSection from './RoutingSection.svelte'
   import AppEnvSection from './AppEnvSection.svelte'
   import StoreSection from './StoreSection.svelte'
   import UpdatesSection from './UpdatesSection.svelte'
@@ -39,7 +39,7 @@
   // here rather than a branch in the markup.
   const SECTIONS: Record<SettingsSection, { label: string; icon: string }> = {
     domain: {
-      label: 'domains',
+      label: 'routing',
       icon: 'M3 12h18M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18',
     },
     env: {
@@ -111,7 +111,7 @@
 
     <main class="panel">
       {#if current === 'domain'}
-        <DomainSection />
+        <RoutingSection />
       {:else if current === 'env'}
         <AppEnvSection />
       {:else if current === 'store'}

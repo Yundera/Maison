@@ -109,9 +109,11 @@ type App struct {
 	Links []Link `yaml:"links,omitempty"`
 
 	// Routes are the app's web endpoints, declared in the router's absence: a
-	// service, the name it answers on, and the port behind it. Maison publishes
-	// each one on every domain the deployment carries (see internal/routes), so an
-	// app never names a domain, a proxy, or a TLS setting.
+	// service, the name it answers on, and the port behind it. The deployment's
+	// routing setting decides how each one is reached — proxy labels on every
+	// domain, a published host port, or an external router (internal/routing) — so
+	// an app never names a domain, a proxy, or a TLS setting. The first route is the
+	// web UI: it gives the click URL and APP_URL.
 	//
 	// Deliberately NOT raising SchemaVersion, for the same reason View doesn't —
 	// but the trade is worth stating. A build that predates this field ignores
@@ -638,11 +640,13 @@ type Link struct {
 // (internal/routes), which is what lets the same app compose run behind this
 // deployment's gateway, behind someone else's, or behind nothing at all.
 //
-// The optional fields exist because three real store apps need them and every
-// reverse proxy has the concept — an upstream that speaks TLS, an upstream whose
-// certificate cannot be verified, a body larger than the proxy's default cap. That
-// is the bar for adding another one: if only one proxy has the concept, it belongs
-// in hand-written labels, not here.
+// The optional fields exist because official store apps need them and every
+// reverse proxy has the concept — an upstream that speaks TLS (Crafty, Hubs), an
+// upstream whose certificate cannot be verified. That is the bar for adding another
+// one: an official app that needs it, and at least two unrelated proxies that have
+// the concept. Anything else is the app's own router's job (an nginx service of the
+// app, carrying the route). A body-size field was considered and left out: no
+// official app needs it, and neither Caddy nor Traefik caps bodies.
 type Route struct {
 	// Service is the compose service the labels are written onto — which must be
 	// the service that serves the port, since a generated upstream is resolved in
@@ -673,13 +677,14 @@ type Route struct {
 	// by apps that serve HTTPS with a self-signed certificate of their own.
 	InsecureUpstream bool `yaml:"insecure-upstream,omitempty"`
 
-	// MaxBody raises the proxy's request-body cap for this route, as a size string
-	// the proxy understands ("10G"). Empty leaves the proxy's default.
-	MaxBody string `yaml:"max-body,omitempty"`
+	// Path is where the web UI opens (`/webui/`): the click URL's path, never a
+	// dispatch rule. Empty means `/`.
+	Path string `yaml:"path,omitempty"`
 }
 
 // UnmarshalYAML decodes a route through tolerant scalars, so a port or a size
-// written bare (`upstream-port: 80`, `max-body: 10G`) types as written.
+// written bare (`upstream-port: 80`) types as written. A `max-body` from an early
+// listing is read and ignored.
 //
 // Like Folder's, and for a sharper reason: Parse's error is discarded by every
 // caller (apps.mergedMeta, apps.GetConfig), so one mistyped scalar anywhere in
@@ -693,7 +698,7 @@ func (r *Route) UnmarshalYAML(n *yaml.Node) error {
 		UpstreamPort     text `yaml:"upstream-port"`
 		UpstreamScheme   text `yaml:"upstream-scheme"`
 		InsecureUpstream bool `yaml:"insecure-upstream"`
-		MaxBody          text `yaml:"max-body"`
+		Path             text `yaml:"path"`
 	}
 	if err := n.Decode(&raw); err != nil {
 		return err
@@ -704,7 +709,7 @@ func (r *Route) UnmarshalYAML(n *yaml.Node) error {
 		UpstreamPort:     string(raw.UpstreamPort),
 		UpstreamScheme:   string(raw.UpstreamScheme),
 		InsecureUpstream: raw.InsecureUpstream,
-		MaxBody:          string(raw.MaxBody),
+		Path:             string(raw.Path),
 	}
 	return nil
 }

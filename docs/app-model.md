@@ -39,7 +39,7 @@ what the dashboard shows.
 | File | Origin | Mutated by | Purpose |
 |------|--------|-----------|---------|
 | `docker-compose.yml` | **Strict copy from the store listing.** | Never — Maison treats it as read-only. | The pristine app definition. Keeping it byte-for-byte identical to the store is what lets updates stay clean (re-copy on update, overrides survive). |
-| `docker-compose.override.yml` | Generated from the **per-app config window** (ports, env, volumes, …). | Maison, on every config save — and on every up, for the routes it generates (see [`domains.md`](./domains.md)). | User customizations, layered on top via Compose override semantics. The running stack = `docker-compose.yml` + `docker-compose.override.yml`. |
+| `docker-compose.override.yml` | Generated from the **per-app config window** (ports, env, volumes, …). | Maison, on every config save — and on every up, for the routing it generates (see [`routing.md`](./routing.md)). | User customizations, layered on top via Compose override semantics. The running stack = `docker-compose.yml` + `docker-compose.override.yml`. |
 | `.env` | **Prefilled by Maison on create** (PUID/PGID, TZ, `REF_*`, domain, generated secrets, …), then hand-editable. | Maison on create; user thereafter. | Variable substitution for both compose files. |
 | `.seed/` | Copied from the store app's `seed/` folder at install, refreshed on update. | Maison, on install and update. | The app's initial data tree, mirroring this folder. Written out create-if-absent on every up, so a missing file is restored and an edited one is left alone. Nothing ever writes back into it. See [`x-compose-app.md`](./x-compose-app.md). |
 | `.icon.<ext>` | Copied from the store app's folder at install, refreshed on update — the file the compose's `icon:` names beside itself, or a plain `icon.<ext>`; downloaded only when the compose names an absolute URL instead (see [Assets](./x-compose-app.md#assets)). | Maison, on install and update. | The tile's icon, so the dashboard renders an installed app from disk rather than from anyone's server — it keeps its icon offline, and after the store repo moves or disappears. The app list points every managed tile at `/api/apps/<app>/icon`; an app with no copy falls back to the `icon:` value in its compose when that is a URL. Delete the file and it is taken again at the next boot from whatever the app itself still has — a URL to download, or an image file in its own folder — and otherwise at the app's next update, which is the next time the store's copy is at hand. A compose dropped into an app folder by hand beside an `icon.png` gets a tile the same way. |
@@ -87,10 +87,10 @@ them with `store-ref` and removes them, because two records of where an app upda
 — one of them stale after a retarget — is only ever noticed once it has sent an app back
 to the store it was moved off.
 
-The same block carries the manifest of the **Caddy routes Maison generates** to
-publish the app on the deployment's additional domains (`generated-routes`) — the
-record of which label keys are Maison's to rewrite, so regenerating them can
-never touch the operator's. See [`docs/domains.md`](./domains.md).
+The same block carries the manifest of the **routing Maison generates** for the
+box's routing setting (`generated-routes`) — the record of which labels, published
+ports and network attachments are Maison's to rewrite, so regenerating them can
+never touch the operator's. See [`docs/routing.md`](./routing.md).
 
 The per-app **Update** tab uses this to:
 

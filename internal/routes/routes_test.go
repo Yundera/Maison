@@ -1,18 +1,33 @@
 package routes
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/yundera/maison/internal/domains"
+	"github.com/yundera/maison/internal/routes/dialect"
+	"github.com/yundera/maison/internal/routing"
 )
 
-// The deployment's two additional domains, exactly as the Yundera Caddyfile
-// treats them: nip.io goes through the gateway's custom CA, sslip.io deliberately
-// does not (it falls through to Let's Encrypt).
+// primary is the deployment's own domain, the first entry of every labels setting.
+var primary = domains.Domain{Name: "primary", Domain: routing.PrimaryTemplate}
+
+// The deployment's two further domains, exactly as the Yundera Caddyfile treats
+// them: nip.io goes through the gateway's custom CA, sslip.io deliberately does not
+// (it falls through to Let's Encrypt). Written without {name}, as every entry from
+// before the placeholder was.
 var yundera = []domains.Domain{
 	{Name: "nip", Domain: "${APP_PUBLIC_IP_DASH}.nip.io", Labels: map[string]string{"import": "gateway_tls"}},
 	{Name: "sslip", Domain: "${APP_PUBLIC_IP_DASH}.sslip.io"},
+}
+
+var varRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// clonePlan is a labels setting with the given further domains, for an app that
+// declares no routes: clone mode.
+func clonePlan(doms []domains.Domain) Plan {
+	return Plan{Renderer: routing.Labels, Dialect: dialect.Caddy, Domains: append([]domains.Domain{primary}, doms...)}
 }
 
 // outlineBase is a trimmed store compose after the store drops its nip/sslip
@@ -55,7 +70,7 @@ func sync(t *testing.T, base, override string, doms []domains.Domain) string {
 
 func syncWith(t *testing.T, base, override string, doms []domains.Domain, resolve Resolver) string {
 	t.Helper()
-	out, err := Sync([]byte(base), []byte(override), doms, resolve)
+	out, err := Sync([]byte(base), []byte(override), clonePlan(doms), resolve)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -100,7 +115,7 @@ func TestSyncIsIdempotent(t *testing.T) {
 func TestSyncRemovesItsOwnRoutes(t *testing.T) {
 	generated := sync(t, outlineBase, "", yundera)
 
-	out, err := Sync([]byte(outlineBase), []byte(generated), nil, nil)
+	out, err := Sync([]byte(outlineBase), []byte(generated), clonePlan(nil), nil)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -140,7 +155,7 @@ x-compose-app:
 	}
 
 	// And removing the domains again leaves their file untouched.
-	out, err := Sync([]byte(outlineBase), []byte(got), nil, nil)
+	out, err := Sync([]byte(outlineBase), []byte(got), clonePlan(nil), nil)
 	if err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -257,29 +272,15 @@ func TestSyncDoesNotRewriteAnOverrideItHasNoBusinessIn(t *testing.T) {
 	}
 }
 
-func TestVarsCoversTheLabelsCompose(t *testing.T) {
-	got := Vars([]byte(outlineBase), yundera)
-	want := []string{"APP_DOMAIN", "APP_PUBLIC_IP_DASH"}
-
-	if len(got) != len(want) {
-		t.Fatalf("Vars() = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("Vars() = %v, want %v", got, want)
-		}
-	}
-}
-
 // maisonBase is Maison's own stack as a PCS writes it — the older, un-prefixed
-// spelling of the deployment's variables. It routes the same three hosts a store
+// spelling of the deployment's IP variable. It routes the same three hosts a store
 // app does, under different names for the same values.
 const maisonBase = `name: maison
 services:
   maison:
     image: rg.fr-par.scw.cloud/aptero/maison:1.0.0
     labels:
-      caddy_0: maison-${DOMAIN}
+      caddy_0: maison-${APP_DOMAIN}
       caddy_0.import: gateway_tls
       caddy_0.reverse_proxy: "{{upstreams 80}}"
       caddy_1: maison-${PUBLIC_IP_DASH}.nip.io

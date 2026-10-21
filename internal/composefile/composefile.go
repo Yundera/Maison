@@ -24,6 +24,18 @@ type File struct {
 // Service is a minimal view of one compose service.
 type Service struct {
 	Image string `yaml:"image,omitempty"`
+	// Expose is the service's `expose:` list, each entry as written (`80`, `"80/tcp"`).
+	Expose []string `yaml:"expose,omitempty"`
+}
+
+// Exposed maps every service to the ports it lists under `expose:` — what route
+// validation checks a route's upstream port against.
+func (f *File) Exposed() map[string][]string {
+	out := make(map[string][]string, len(f.Services))
+	for name, svc := range f.Services {
+		out[name] = svc.Expose
+	}
+	return out
 }
 
 // Load parses a compose file from disk.

@@ -6,8 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/yundera/maison/internal/domains"
 )
 
 func newStore(t *testing.T) *Store {
@@ -49,27 +47,26 @@ func TestSetKeepsFieldsTheCallerDidNotSend(t *testing.T) {
 }
 
 // The other half: a field must still be clearable. Absent means "leave it alone",
-// but an explicit empty list means "remove everything" — that is how the domains
-// editor removes the last domain.
+// but an explicit empty list means "remove everything".
 func TestSetClearsOnAnExplicitEmptyList(t *testing.T) {
 	s := newStore(t)
 
 	cur := s.Get()
-	cur.Domains = []domains.Domain{{Name: "sslip", Domain: "${APP_PUBLIC_IP_DASH}.sslip.io"}}
+	cur.StoreSources = []string{"https://example.com/store.zip"}
 	if err := s.Set(cur); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if len(s.Get().Domains) != 1 {
-		t.Fatalf("domains = %v, want the one that was added", s.Get().Domains)
+	if len(s.Get().StoreSources) != 1 {
+		t.Fatalf("store sources = %v, want the one that was added", s.Get().StoreSources)
 	}
 
 	cur = s.Get()
-	cur.Domains = []domains.Domain{}
+	cur.StoreSources = []string{}
 	if err := s.Set(cur); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if got := s.Get().Domains; len(got) != 0 {
-		t.Errorf("domains = %v, want none", got)
+	if got := s.Get().StoreSources; len(got) != 0 {
+		t.Errorf("store sources = %v, want none", got)
 	}
 }
 
@@ -206,5 +203,16 @@ func TestTheSeedIsAnEmptyDocument(t *testing.T) {
 	}
 	if got := New(path).Get(); !reflect.DeepEqual(got, Defaults()) {
 		t.Errorf("empty document loads as %+v, want the defaults %+v", got, Defaults())
+	}
+}
+
+// The first address the dashboard is seen at sticks: a dashboard reached under two
+// names must not flip the apps' address between them.
+func TestSeeHostKeepsTheFirst(t *testing.T) {
+	s := newStore(t)
+	s.SeeHost("192.168.1.10")
+	s.SeeHost("box.example.com")
+	if got := s.Get().SeenHost; got != "192.168.1.10" {
+		t.Fatalf("seen host = %q, want the first one", got)
 	}
 }

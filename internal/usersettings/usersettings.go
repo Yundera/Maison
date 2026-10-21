@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/yundera/maison/internal/domains"
 	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/routing"
 	"github.com/yundera/maison/internal/secrets"
 )
 
@@ -31,10 +31,20 @@ type Settings struct {
 	// box already has and what an operator editing settings.json by hand expects.
 	StoreNames map[string]string `json:"store_names,omitempty"`
 
-	// Domains are the additional domains every app is published on. Empty (the
-	// default) means apps are reachable only at the deployment's primary domain,
-	// exactly as their store compose routes them.
-	Domains []domains.Domain `json:"domains,omitempty"`
+	// Routing is how the box reaches its apps: the renderer and its parameters
+	// (internal/routing). Nil means the deployment's default (routing.Effective) —
+	// labels on its own domain when it has one, published ports when it has none.
+	//
+	// A POINTER, for the same reason SMTP is: merge reads a zero value as "not
+	// supplied". It travels only through its own endpoint and the admin socket; the
+	// dashboard's generic settings PUT never carries it (see the server).
+	Routing *routing.Setting `json:"routing,omitempty"`
+
+	// SeenHost is the host the dashboard was first opened at, recorded only while a
+	// ports-mode box has no url-host of its own: it is the best answer Maison — in a
+	// container, unable to see the host's addresses — has to "what address do the
+	// apps have?". It fills APP_URL and nothing else.
+	SeenHost string `json:"seen_host,omitempty"`
 
 	// SMTP is where Maison's outbound mail goes — today, the backup failure and
 	// recovery alerts.
@@ -141,7 +151,7 @@ func New(path string) *Store {
 		}
 		return s
 	}
-	loaded, err := decodeFile(b)
+	loaded, migrated, err := decodeFile(b)
 	if err != nil {
 		log.Printf("usersettings: %s unparseable: %v (running on defaults)", path, err)
 		return s
@@ -149,6 +159,13 @@ func New(path string) *Store {
 	owners := loaded.Managed
 	s.cur = merge(Defaults(), loaded)
 	s.cur.Managed = owners
+	if migrated {
+		// The old domains list became the routing setting: write it back once, so
+		// the file says what the box runs on.
+		if err := s.write(s.cur); err != nil {
+			log.Printf("usersettings: could not write the migrated routing setting: %v", err)
+		}
+	}
 	return s
 }
 
@@ -159,21 +176,62 @@ func (s *Store) Get() Settings {
 	return s.cur
 }
 
-// Domains returns the additional domains apps are published on. It is the live
-// accessor config.Config carries, so an app coming up after a settings change is
-// routed on the list as it stands now.
-func (s *Store) Domains() []domains.Domain { return s.Get().Domains }
+// Routing returns the stored routing setting, nil when there is none. The server
+// turns it into the effective one for config.Config, read live, so an app coming
+// up after a settings change is routed on the setting as it stands now.
+func (s *Store) Routing() *routing.Setting { return s.Get().Routing }
+
+// ErrManaged is a user edit of a setting the deployment owns.
+var ErrManaged = errors.New("managed by the deployment")
+
+// SetRouting replaces the routing setting — nil goes back to the deployment's
+// default. It is the routing editor's write: unlike Set, it can clear the field,
+// and it refuses rather than drops an edit of a managed setting, because the editor
+// is the only thing sending it.
+func (s *Store) SetRouting(r *routing.Setting) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, managed := s.cur.Managed["routing"]; managed {
+		return ErrManaged
+	}
+	next := s.cur
+	next.Routing = r
+	if err := s.write(next); err != nil {
+		return err
+	}
+	s.cur = next
+	return nil
+}
+
+// SeeHost records host as the address the dashboard is opened at — the first one
+// only. A dashboard reached under two names (a LAN address and a domain) would
+// otherwise flip the apps' address back and forth, and rewrite this file on every
+// request that did. Setting url-host is how the operator picks another. Cheap to
+// call on every request: it writes once.
+func (s *Store) SeeHost(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cur.SeenHost != "" {
+		return
+	}
+	next := s.cur
+	next.SeenHost = host
+	if err := s.write(next); err != nil {
+		log.Printf("usersettings: record dashboard host: %v", err)
+		return
+	}
+	s.cur = next
+}
 
 // Set persists new settings.
 //
 // The incoming set is merged onto the *current* settings, not onto the defaults:
 // callers send the fields they are editing, and a field they leave out has to keep
 // the value it has. Merging onto Defaults() instead silently reset every omitted
-// field — the dashboard's own PUT /api/settings carries only wallpaper, language,
-// widgets and domains, so adding a store source and then changing the wallpaper
+// field — the dashboard's own PUT /api/settings carries only wallpaper, language
+// and widgets, so adding a store source and then changing the wallpaper
 // dropped the store source. Clearing a field still works, by sending it as an
-// explicit empty value ([] rather than absent), which is how the domains editor
-// removes the last domain.
+// explicit empty value ([] rather than absent).
 //
 // A field the deployment manages is dropped from n before the merge (see
 // dropManaged): only Manage and Release change a managed setting.
@@ -252,8 +310,11 @@ func merge(base, in Settings) Settings {
 	if in.StoreNames != nil {
 		base.StoreNames = in.StoreNames
 	}
-	if in.Domains != nil {
-		base.Domains = in.Domains
+	if in.Routing != nil {
+		base.Routing = in.Routing
+	}
+	if in.SeenHost != "" {
+		base.SeenHost = in.SeenHost
 	}
 	if in.MetricsHistory != nil {
 		base.MetricsHistory = in.MetricsHistory

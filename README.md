@@ -63,8 +63,9 @@ MIT licensed
 - **Resources.** Live CPU, network, disk and per-app usage, 30 days of history, and disk /
   network benchmarks.
 - **Notifications.** Failed backups and other incidents can be sent by email over SMTP.
-- **Extra domains.** Publish every app on more domains (`sslip.io`, `nip.io` or your own) in
-  addition to its primary one.
+- **Routing.** Reach apps on published ports (the default with no domain), on your
+  domains through a reverse proxy, or through your own router — the same app listing
+  either way. See [`docs/routing.md`](./docs/routing.md).
 - **Installable as a PWA** from *Settings → This device*.
 
 ## Getting started
@@ -179,14 +180,19 @@ Maison is in **Community Applications**:
 
 ### Opening your apps: the one thing to know
 
-A tile opens whichever address the app declares:
+An app that declares [`routes`](./docs/x-compose-app.md#routes) is reached the way
+**Settings › Routing** says — with no domain configured, that is a port published on this
+machine, opened at `http://<the host you opened Maison on>:<port>`. See
+[`docs/routing.md`](./docs/routing.md).
+
+An app that still routes itself opens whichever address it declares:
 
 | The app declares… | It opens at… | What you need |
 |---|---|---|
 | a port and no host (`webui-port`, or `port_map` in `x-casaos`), or a published host port | `http://<the host you opened Maison on>:<port>` | nothing |
 | a domain route (`webui-host: myapp-${domain}`) | `https://myapp-<APP_DOMAIN>` | `APP_DOMAIN` set in `.env.app`, **and** a reverse proxy that routes it |
 
-Apps in the default [Yundera store](https://github.com/Yundera/AppStore) use the second
+Apps in today's [Yundera store](https://github.com/Yundera/AppStore) use the second
 kind. They publish no ports. A [Caddy](https://caddyserver.com) router finds them by their
 `caddy_*` labels on the app network. On a plain install with no domain, these apps install
 and run, but the tile shows **"no reachable address"**. To make them open, either:
@@ -252,7 +258,7 @@ Maison does.
 |-----|---------|---------|
 | `APP_NET` | `mesh` | External network each app's main service joins. It must already exist. |
 | `APP_DOMAIN` | (empty) | Base domain apps are routed on (`myapp-${APP_DOMAIN}`). |
-| `APP_PUBLIC_IP*` | (empty) | Public IP(s), used in fallback `sslip.io` / `nip.io` routes. |
+| `APP_PUBLIC_IP*` | (empty) | Public IP(s), for routing domains templated on the address (`{name}-${APP_PUBLIC_IP_DASH}.sslip.io`). |
 | `APP_EMAIL`, `APP_DEFAULT_PASSWORD` | (empty), `changeme-please` | Seeded into apps that create an admin account on first boot; an installed app keeps the password it got. **Change the password.** Legacy: one password shared by every app, replaced by per-app [`secrets`](./docs/x-compose-app.md#secrets-and-variables) and [`credentials`](./docs/x-compose-app.md#credentials). |
 
 Full reference: [`docs/app-env.md`](./docs/app-env.md).
@@ -325,7 +331,7 @@ full settings page (`/settings/<section>`) has these sections:
 
 | Section | What it does |
 |---|---|
-| Domains | Extra domains every app is published on ([`docs/domains.md`](./docs/domains.md)) |
+| Routing | How apps are reached: published ports, domains through a reverse proxy, or an external router ([`docs/routing.md`](./docs/routing.md)) |
 | App environment | Edit `.env.app` |
 | App stores | Add or remove store sources |
 | Updates | Every app that needs an update or attention, and an **Update all** button |
@@ -439,7 +445,7 @@ precedence if anything here disagrees with them.
 | [`lifecycle.md`](./docs/lifecycle.md) | What install / start / update / save / uninstall / backup / restore do, in order, and how they fail. |
 | [`app-env.md`](./docs/app-env.md) | `.env.app`: what an app receives, and how it reaches the app's `.env`. |
 | [`x-compose-app.md`](./docs/x-compose-app.md) | Maison's compose extension: web-UI URL, folders, steps and the script entry, views, lifecycle, backup exclusions. |
-| [`domains.md`](./docs/domains.md) | Extra domains and the Caddy routes Maison generates for them. |
+| [`routing.md`](./docs/routing.md) | The routing setting: ports, proxy labels on your domains, or an external router — and the address each app is told it has. |
 | [`backup.md`](./docs/backup.md) | Backup and recovery: the two backup sets, engines, schedule, retention, encryption. Mostly implemented; the status note at the top lists the gaps. |
 | [`incidents.md`](./docs/incidents.md) | Incident register and notifications. |
 | [`resources.md`](./docs/resources.md) | The Resources page, its history file, the `HOST_PROC` mount, benchmarks. |

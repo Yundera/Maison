@@ -201,13 +201,15 @@ func TestSyncKeepsAnInstalledAppsPassword(t *testing.T) {
 		t.Errorf("APP_DOMAIN = %q, want it still refreshed", got["APP_DOMAIN"])
 	}
 
-	// A fresh install, or an app whose value is empty, gets the deployment's.
+	// A fresh install, or an app whose value is empty, gets the deployment's — when
+	// it uses it.
 	for _, dotEnv := range []string{"", "APP_DEFAULT_PASSWORD=\n"} {
 		dir := filepath.Join(cfg.AppsDir(), "fresh")
 		_ = os.RemoveAll(dir)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
+		writeFile(t, filepath.Join(dir, "docker-compose.yml"), "environment:\n  PW: ${APP_DEFAULT_PASSWORD}\n  PW2: $DefaultPassword\n")
 		if dotEnv != "" {
 			if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(dotEnv), 0o644); err != nil {
 				t.Fatal(err)
@@ -329,5 +331,123 @@ func TestKeySourcesMirrorsSync(t *testing.T) {
 	}
 	if len(got) != len(want) {
 		t.Errorf("got %d keys, want %d: %v", len(got), len(want), got)
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The box's shared password reaches only an app that reads it. A listing that moved
+// to its own secrets names it as a seed alone, and a fresh install of it must not
+// carry the shared value in its .env.
+func TestSyncHandsTheSharedPasswordOnlyToAppsThatUseIt(t *testing.T) {
+	cfg := newCfg(t, "APP_DEFAULT_PASSWORD=box-pw\nDefaultPassword=box-pw\n")
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  map[string]bool
+	}{
+		{"seed only", map[string]string{
+			"docker-compose.yml": "x-compose-app:\n  secrets:\n    DB: ${APP_DEFAULT_PASSWORD}|alnum:32\n",
+		}, map[string]bool{}},
+		{"no reference", map[string]string{"docker-compose.yml": "services: {}\n"}, map[string]bool{}},
+		{"not a prefix", map[string]string{"docker-compose.yml": "X: ${APP_DEFAULT_PASSWORD_OLD}\n"}, map[string]bool{}},
+		{"compose", map[string]string{"docker-compose.yml": "PW: ${APP_DEFAULT_PASSWORD}\n"}, map[string]bool{"APP_DEFAULT_PASSWORD": true}},
+		{"with default", map[string]string{"docker-compose.yml": "PW: ${DefaultPassword:-x}\n"}, map[string]bool{"DefaultPassword": true}},
+		{"bcrypt", map[string]string{
+			"docker-compose.yml": "x-compose-app:\n  secrets:\n    H: bcrypt:${APP_DEFAULT_PASSWORD}\n",
+		}, map[string]bool{"APP_DEFAULT_PASSWORD": true}},
+		{"override", map[string]string{
+			"docker-compose.yml":          "services: {}\n",
+			"docker-compose.override.yml": "PW: $APP_DEFAULT_PASSWORD\n",
+		}, map[string]bool{"APP_DEFAULT_PASSWORD": true}},
+		{"seed tree", map[string]string{
+			"docker-compose.yml":      "services: {}\n",
+			".seed/conf/app.ini.tmpl": "password = ${APP_DEFAULT_PASSWORD}\n",
+		}, map[string]bool{"APP_DEFAULT_PASSWORD": true}},
+		{"script", map[string]string{
+			"docker-compose.yml": "services: {}\n",
+			".scripts/init.sh":   "echo \"$DefaultPassword\"\n",
+		}, map[string]bool{"DefaultPassword": true}},
+	}
+	for _, c := range cases {
+		dir := filepath.Join(cfg.AppsDir(), "app")
+		_ = os.RemoveAll(dir)
+		for name, body := range c.files {
+			writeFile(t, filepath.Join(dir, name), body)
+		}
+		if err := Sync(cfg, "app", dir); err != nil {
+			t.Fatal(err)
+		}
+		got := readEnv(t, dir)
+		for _, k := range []string{"APP_DEFAULT_PASSWORD", "DefaultPassword"} {
+			if has := got[k] != ""; has != c.want[k] {
+				t.Errorf("%s: %s in .env = %v, want %v", c.name, k, has, c.want[k])
+			}
+		}
+	}
+}
+
+// Every .env Maison writes or starts with is owner-only: it holds secrets, and
+// AppData is readable by more than Maison.
+func TestEnvFilesAreOwnerOnly(t *testing.T) {
+	cfg := config.Config{DataRoot: t.TempDir()}
+	if err := Ensure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, Path(cfg))
+
+	// An existing, world-readable .env.app is tightened at boot.
+	if err := os.Chmod(Path(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Ensure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, Path(cfg))
+
+	if err := WriteRaw(cfg, []byte("APP_NET=pcs\n")); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, Path(cfg))
+
+	// A fresh app's .env, and an older one Sync finds already current.
+	dir := filepath.Join(cfg.AppsDir(), "app")
+	writeFile(t, filepath.Join(dir, "docker-compose.yml"), "services: {}\n")
+	if err := Sync(cfg, "app", dir); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, filepath.Join(dir, ".env"))
+	if err := os.Chmod(filepath.Join(dir, ".env"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sync(cfg, "app", dir); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, filepath.Join(dir, ".env"))
+
+	// A stopped app is reached by the boot sweep.
+	other := filepath.Join(cfg.AppsDir(), "stopped")
+	writeFile(t, filepath.Join(other, "docker-compose.yml"), "services: {}\n")
+	writeFile(t, filepath.Join(other, ".env"), "K=v\n")
+	TightenAll(cfg)
+	assertMode(t, filepath.Join(other, ".env"))
+}
+
+func assertMode(t *testing.T, path string) {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != envinject.EnvFileMode {
+		t.Errorf("%s: mode %v, want %v", path, fi.Mode().Perm(), envinject.EnvFileMode)
 	}
 }

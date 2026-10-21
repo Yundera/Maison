@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/yundera/maison/internal/appenv"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
@@ -263,5 +264,19 @@ test "/DATA" = "/DATA"
 	}
 	if err := runScript(t, cfg, "jellyfin", appDir, "exit 3"); err == nil {
 		t.Fatal("a failing script returned nil")
+	}
+}
+
+// appenv scans these folders for the shared password, and cannot import this
+// package to name them (it would be a cycle): keep its copy equal.
+func TestAppenvStoreShippedMatches(t *testing.T) {
+	want := map[string]bool{SeedDir: true, ScriptsStateDir: true}
+	if len(appenv.StoreShipped) != len(want) {
+		t.Fatalf("appenv.StoreShipped = %v, want %v", appenv.StoreShipped, want)
+	}
+	for _, d := range appenv.StoreShipped {
+		if !want[d] {
+			t.Errorf("appenv.StoreShipped has %q, not one of %v", d, want)
+		}
 	}
 }

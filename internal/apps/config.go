@@ -224,12 +224,12 @@ func (r *Registry) SaveSettings(ctx context.Context, id string, c SettingsChange
 			// the up below re-ensures what .env.app and Maison provide either way.
 			patched = []byte{}
 		}
-		if err := os.WriteFile(envPath, patched, 0o644); err != nil {
+		if err := envinject.WriteEnvFile(envPath, patched); err != nil {
 			return err
 		}
 		restoreEnv = func() {
 			if existed {
-				_ = os.WriteFile(envPath, old, 0o644)
+				_ = envinject.WriteEnvFile(envPath, old)
 			} else {
 				_ = os.Remove(envPath)
 			}

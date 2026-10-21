@@ -15,9 +15,13 @@
 package appenv
 
 import (
+	"bytes"
 	_ "embed"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/envinject"
@@ -44,14 +48,15 @@ func Path(cfg config.Config) string {
 func Ensure(cfg config.Config) error {
 	path := Path(cfg)
 	if _, err := os.Stat(path); err == nil {
-		return nil
+		// The file holds the box's default password: owner-only, whoever wrote it.
+		return envinject.TightenEnvFile(path)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, defaultFile, 0o644)
+	return envinject.WriteEnvFile(path, defaultFile)
 }
 
 // ReadRaw returns the deployment's .env.app verbatim — comments, blank lines and
@@ -91,7 +96,7 @@ func WriteRaw(cfg config.Config, raw []byte) error {
 	if err := os.MkdirAll(filepath.Dir(Path(cfg)), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(Path(cfg), raw, 0o644)
+	return envinject.WriteEnvFile(Path(cfg), raw)
 }
 
 // Load reads the deployment's app-facing variables. A key with an empty value is
@@ -137,7 +142,8 @@ func Load(cfg config.Config) map[string]string {
 // run by hand in the app's folder must bring the app up exactly as Maison does.
 //
 // The one exception is seedOnce: those keys are written into an app's .env when it
-// has no value for them, and never refreshed after that.
+// has no value for them, and never refreshed after that — and only into an app
+// that still uses them (see usesSeedOnce).
 func Sync(cfg config.Config, appID, appDir string) error {
 	envPath := filepath.Join(appDir, ".env")
 	have := map[string]string{}
@@ -145,13 +151,48 @@ func Sync(cfg config.Config, appID, appDir string) error {
 		have = envinject.EnvFileVars(raw)
 	}
 	vars := envinject.BaseVars(cfg, appID)
+	var uses map[string]bool
 	for k, v := range Load(cfg) {
-		if seedOnce[k] && have[k] != "" {
-			continue // the app was set up with this one; keep it
+		if seedOnce[k] {
+			if have[k] != "" {
+				continue // the app was set up with this one; keep it
+			}
+			if uses == nil {
+				uses = usesSeedOnce(appDir)
+			}
+			if !uses[k] {
+				continue // nothing in the app reads it: don't hand it the box's password
+			}
 		}
 		vars[k] = v
 	}
 	return envinject.EnsureVars(envPath, vars)
+}
+
+// TightenAll brings the .env of every stack under AppsDir to
+// envinject.EnvFileMode. Called once at boot.
+//
+// Every write and every up already does this for the stack it touches; this
+// reaches the ones that are not started — a stopped app, one installed before .env
+// files were owner-only — so no app's secrets stay world-readable until its next
+// start. Best effort: a failure is logged and the rest go on.
+func TightenAll(cfg config.Config) {
+	entries, err := os.ReadDir(cfg.AppsDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(cfg.AppsDir(), e.Name())
+		if _, err := os.Stat(filepath.Join(dir, "docker-compose.yml")); err != nil {
+			continue
+		}
+		if err := envinject.TightenEnvFile(filepath.Join(dir, ".env")); err != nil {
+			log.Printf("%s: restrict .env: %v", e.Name(), err)
+		}
+	}
 }
 
 // seedOnce are the .env.app keys an app keeps from the first time it got them.
@@ -163,9 +204,80 @@ func Sync(cfg config.Config, appID, appDir string) error {
 // app that wired POSTGRES_PASSWORD to $APP_DEFAULT_PASSWORD could no longer reach
 // its own database after an edit to .env.app. So the deployment states the value
 // for apps installed from now on; an installed app keeps the one it has.
+//
+// They are also the box's shared password, so an app that does not use them does
+// not get them. A listing that has moved to its own secrets reads the old value
+// only as a seed (`${APP_DEFAULT_PASSWORD}|alnum:32`), and a seed reads the app's
+// PRIOR .env: an installed app already has the key and keeps it, a fresh install
+// has none and generates. Writing the key into that fresh install's .env would
+// serve nothing but to put the shared password where every reader of AppData can
+// find it.
 var seedOnce = map[string]bool{
 	"APP_DEFAULT_PASSWORD": true,
 	"DefaultPassword":      true,
+}
+
+// StoreShipped are the folders, inside an app's directory, holding files the store
+// shipped that may interpolate the app's .env: the copied seed tree and script
+// files (stackup.SeedDir and stackup.ScriptsStateDir — stackup checks the two stay
+// equal; it imports this package, so the reverse would be a cycle).
+var StoreShipped = []string{".seed", ".scripts"}
+
+// seedOnceRef finds a reference to a seedOnce key: `$NAME` or `${NAME…`.
+var seedOnceRef = regexp.MustCompile(`\$\{?(APP_DEFAULT_PASSWORD|DefaultPassword)\b`)
+
+// usesSeedOnce reports which seedOnce keys the app references, outside a seed
+// spec, in its compose files, seed tree or scripts.
+//
+// It is a text scan, deliberately: a comment that names the variable counts too.
+// A false positive costs what every app paid before (the key in its .env); a false
+// negative costs an app that starts with an empty password, so the scan errs wide.
+// An unreadable file counts as using both, for the same reason.
+func usesSeedOnce(appDir string) map[string]bool {
+	all := map[string]bool{}
+	for k := range seedOnce {
+		all[k] = true
+	}
+	uses := map[string]bool{}
+	scan := func(b []byte) {
+		for _, m := range seedOnceRef.FindAllSubmatchIndex(b, -1) {
+			rest := b[m[1]:]
+			if b[m[0]+1] == '{' && bytes.HasPrefix(rest, []byte("}|")) {
+				continue // a seed: `${APP_DEFAULT_PASSWORD}|alnum:32`
+			}
+			uses[string(b[m[2]:m[3]])] = true
+		}
+	}
+	for _, name := range []string{"docker-compose.yml", "docker-compose.override.yml"} {
+		b, err := os.ReadFile(filepath.Join(appDir, name))
+		if err != nil && !os.IsNotExist(err) {
+			return all
+		}
+		scan(b)
+	}
+	for _, dir := range StoreShipped {
+		err := filepath.WalkDir(filepath.Join(appDir, dir), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			scan(b)
+			return nil
+		})
+		if err != nil {
+			return all
+		}
+	}
+	return uses
 }
 
 // Where an app's .env key comes from, as the editor reports it. A key with no

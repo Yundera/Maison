@@ -517,10 +517,11 @@ depends on it and stops handing it to every new install.
 - A seeded value is a secret like any other: it is never written to a log, an
   install event, or an error.
 
-> `secrets` writes plaintext into the app's `.env`, on a box that has no auth and
-> whose `.env.app` already holds `APP_DEFAULT_PASSWORD` in the clear (see
-> [`app-env.md`](./app-env.md)). It removes a class of *silent failure*; it is not
-> a secrets manager and does not pretend to be one.
+> `secrets` writes plaintext into the app's `.env`. The file is `0600` and owned by
+> Maison's user (see [`app-env.md`](./app-env.md#who-can-read-it)), so it is out of
+> reach of other apps and file shares, not of root. It removes a class of *silent
+> failure*; it is not a secrets manager and does not pretend to be one — the app
+> folder must keep working with a plain `docker compose up -d`.
 
 ---
 

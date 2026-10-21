@@ -54,6 +54,18 @@ would change nothing inside the app and break whatever connects to it. So an edi
 these in `.env.app` applies to apps installed **afterwards**; an installed app keeps
 the one it has (change it in its own `.env`, knowingly, if you must).
 
+**And only to an app that uses them.** The two are the box's *shared* password, so a
+fresh install gets them only when something it ships still reads them: its compose,
+its override, its seed tree or its scripts reference `$APP_DEFAULT_PASSWORD` /
+`${DefaultPassword…}` other than as a [seed](./x-compose-app.md#seeded-secrets--moving-an-installed-app-off-a-shared-value).
+A listing that moved to its own secrets names the old value only as a seed, and a
+seed reads the app's *prior* `.env` — an installed app already has the key and keeps
+it, a fresh install has none and generates its own. Handing that fresh install the
+shared value anyway would serve nothing but to put it where every reader of
+`AppData` finds it. The check is a plain text scan that errs wide: a comment naming
+the variable counts, so the worst a false positive costs is what every app paid
+before.
+
 Merged in alongside are the few variables Maison computes per app and per install,
 which a deployment cannot state: `AppID`, `PUID`, `PGID`, `TZ`, `DATA_ROOT`,
 `DATA_HOST_PATH`. Setting those in `.env.app` has no effect.
@@ -83,6 +95,23 @@ writes only the override and this `.env`.
 So a store app writes `${APP_NET:-pcs}` and `${DATA_ROOT:-/DATA}` itself — the
 default keeping a bare `docker compose up` working outside Maison — `.env.app` says
 what they currently are, and every start resolves the two afresh.
+
+## Who can read it
+
+Every `.env` Maison writes — each app's, and `.env.app` — is **`0600`, owned by
+Maison's user** (root on a PCS). They hold secrets in plain text, and `AppData` is
+reachable by more than Maison: an app that mounts the whole data root, a file share
+running as `PUID`. Owner-only means the file is read and changed through Maison or
+as root, nothing else.
+
+Writes go through a temp file and a rename, so the new file is root's whoever
+owned the old one. A file Maison did not write — created by hand, restored from a
+backup with its old mode — is brought to `0600` on the app's next up (even when
+nothing in it changed), and every app's at Maison's boot, so a stopped app is
+reached too. A symlink is left alone.
+
+A hand-run `docker compose up -d` in the app folder still works, with `sudo` —
+which the Docker socket already amounts to.
 
 ## Why the values are written into the app's `.env`
 
@@ -127,9 +156,8 @@ A key Maison computes per app (`AppID`, `PUID`, `PGID`, `TZ`, `DATA_ROOT`,
 deployment's, and it is free to say what it likes.
 
 Note the file holds `APP_DEFAULT_PASSWORD` and `DefaultPassword` in plain text, so the
-page shows credentials. It was always a readable file on a box with no auth (Maison
-assumes a trusted network — see the README); the page does not change who can read it,
-only how far they have to reach.
+page shows credentials. The file is owner-only on disk (see [Who can read it](#who-can-read-it));
+the page is behind whatever guards Maison itself — on a PCS, the AppShield gate.
 
 An app's own `.env` (its settings window, Config › Env) is stricter. There the
 password is the one the app was **installed with**, not a value you might still edit, so

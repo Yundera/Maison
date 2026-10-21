@@ -194,26 +194,8 @@ func (s *Store) write(vars []envinject.Var) error {
 	return WriteFileAtomic(s.path, out, 0o600)
 }
 
-// WriteFileAtomic writes b to path through a temp file in the same directory and a
-// rename, so a reader — another container, the operator's editor — never sees a
-// half-written file, and the file never exists with looser permissions than perm.
+// WriteFileAtomic writes b to path through a temp file and a rename; see
+// envinject.WriteFileAtomic, which it is.
 func WriteFileAtomic(path string, b []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name) // no-op once renamed
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return envinject.WriteFileAtomic(path, b, perm)
 }

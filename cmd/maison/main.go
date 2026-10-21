@@ -55,6 +55,7 @@ func main() {
 	if err := appenv.Ensure(cfg); err != nil {
 		log.Fatalf("app env: %v", err)
 	}
+	appenv.TightenAll(cfg)
 	cfg.AppEnv = func() map[string]string { return appenv.Load(cfg) }
 
 	srv := &http.Server{

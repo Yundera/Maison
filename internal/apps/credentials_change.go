@@ -14,7 +14,6 @@ import (
 
 	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/secretgen"
-	"github.com/yundera/maison/internal/secrets"
 	"github.com/yundera/maison/internal/stackup"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
@@ -232,7 +231,7 @@ func (r *Registry) ChangeCredential(ctx context.Context, id string, index int, v
 		}
 	}
 
-	if err := secrets.WriteFileAtomic(envPath, next, 0o644); err != nil {
+	if err := envinject.WriteEnvFile(envPath, next); err != nil {
 		return redact(err)
 	}
 	err = r.upAndWait(ctx, id, t.dir)
@@ -247,7 +246,7 @@ func (r *Registry) ChangeCredential(ctx context.Context, id string, index int, v
 
 	// env: put the app back on the password it had.
 	log.Printf("credential change for %s (%s): app did not come back, reverting", id, label)
-	if werr := secrets.WriteFileAtomic(envPath, before, 0o644); werr != nil {
+	if werr := envinject.WriteEnvFile(envPath, before); werr != nil {
 		return redact(fmt.Errorf("the app did not start with the new password (%v), and restoring the previous one failed: %w", err, werr))
 	}
 	if uerr := r.upAndWait(ctx, id, t.dir); uerr != nil {

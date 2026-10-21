@@ -104,9 +104,12 @@ func EnsureVars(envPath string, vars map[string]string) error {
 		return err
 	}
 	if bytes.Equal(patched, raw) {
-		return nil // nothing drifted — don't touch the file's mtime
+		// Nothing drifted — don't touch the file's mtime, but do bring a file
+		// written before .env files were owner-only (or restored, or created by
+		// hand) to EnvFileMode: this runs on every up, so it is what reaches them.
+		return TightenEnvFile(envPath)
 	}
-	return os.WriteFile(envPath, patched, 0o644)
+	return WriteEnvFile(envPath, patched)
 }
 
 // Env returns the process environment plus the base interpolation variables so

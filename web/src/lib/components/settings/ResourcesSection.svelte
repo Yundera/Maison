@@ -571,7 +571,7 @@
 
   <section class="block recording">
     <h4>{$t('resources_recording')}</h4>
-    <p class="hint">{$t('resources_recording_hint')}</p>
+    <p class="hint">{$t('resources_recording_hint')} {$t('resources_recording_alerts')}</p>
     <div class="run">
       <label class="toggle">
         <input

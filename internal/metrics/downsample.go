@@ -23,6 +23,35 @@ type Span struct {
 	DskRd  float64   `json:"disk_read"`
 	DskWr  float64   `json:"disk_write"`
 	Points int       `json:"points"`
+
+	// Pressure shares, averaged over the samples that had them. Null when none
+	// did — a kernel without PSI is not a box where nothing ever waited.
+	CPUPressure *float64 `json:"cpu_pressure"`
+	MemPressure *float64 `json:"mem_pressure"`
+	IOPressure  *float64 `json:"io_pressure"`
+
+	cpuP, memP, ioP pressureSum
+}
+
+// pressureSum averages a pressure series, skipping NoPressure samples.
+type pressureSum struct {
+	sum float64
+	n   int
+}
+
+func (p *pressureSum) add(v float64) {
+	if v >= 0 {
+		p.sum += v
+		p.n++
+	}
+}
+
+func (p pressureSum) mean() *float64 {
+	if p.n == 0 {
+		return nil
+	}
+	v := p.sum / float64(p.n)
+	return &v
 }
 
 // MinAvgMax is a series' envelope over a bucket.
@@ -111,6 +140,9 @@ func accumulate(s *Span, r Record) {
 	s.NetTx += r.NetTx
 	s.DskRd += r.DiskRead
 	s.DskWr += r.DiskWrite
+	s.cpuP.add(r.CPUPressure)
+	s.memP.add(r.MemPressure)
+	s.ioP.add(r.IOPressure)
 	s.Points++
 }
 
@@ -128,6 +160,7 @@ func finish(s Span) Span {
 	s.NetTx /= n
 	s.DskRd /= n
 	s.DskWr /= n
+	s.CPUPressure, s.MemPressure, s.IOPressure = s.cpuP.mean(), s.memP.mean(), s.ioP.mean()
 	return s
 }
 

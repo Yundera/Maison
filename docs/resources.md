@@ -50,12 +50,13 @@ than the page's 2 s (`slowEvery` in `internal/system/detailed.go`).
 in-memory buffer.
 
 ```
-64-byte header   magic MSNRING1, format version, record size, step, slot count
-43,200 records   32 bytes each: timestamp, cpu, mem, load1, swap, disk%,
-                 net rx/tx, disk read/write
+64-byte header   magic MSNRING2, format version, record size, step, slot count
+43,200 records   40 bytes each: timestamp, cpu, mem, load1, swap, disk%,
+                 net rx/tx, disk read/write, and pressure-stall shares
+                 (cpu some, memory some, memory full, io full)
 ```
 
-30 days at one-minute resolution = **1.32 MiB**, so no multi-tier downsampling is needed;
+30 days at one-minute resolution = **1.65 MiB**, so no multi-tier downsampling is needed;
 one tier, one file. The file is **sparse** — it reaches its full size only once the slots
 have been written (12 KB after ten records on a real box).
 
@@ -70,9 +71,18 @@ Three properties are load-bearing:
   at shutdown**. A slot left over from a previous lap carries a timestamp outside the
   requested window and is skipped, so downtime renders as a gap in the graph rather than
   as stale data presented as current.
-- **Staged for five minutes** (5 × 32 B) and flushed as one contiguous write. An ungraceful
+- **Staged for five minutes** (5 × 40 B) and flushed as one contiguous write. An ungraceful
   kill loses at most that, and loses it as a gap. Verified: 10 records before a
   `docker rm -f`, 10 records after.
+
+The pressure shares come from `/proc/pressure` (PSI), differentiated from the cumulative
+`total=` microseconds over the sampler's own interval, the same way CPU is. They are
+stored as hundredths with `0xFFFF` meaning "no PSI on this kernel", decoded as `-1` and
+sent as `null` from the history API, so a kernel that cannot tell is never drawn or
+judged as one where nothing waited. They feed the resource alerts
+([`incidents.md` › Resource pressure](./incidents.md#resource-pressure)), which is why
+switching history off also switches those alerts off. `MSNRING1` files (no pressure) were
+reset by the change rather than migrated.
 
 A header that does not match the requested geometry resets the file. The contents are
 samples; re-deriving them costs history, not data, and that is much safer than
@@ -85,7 +95,7 @@ client can break the line wherever two points are further apart than one bucket.
 ### Why history has no per-interface columns
 
 Fixed-width records are what make the ring addressable by arithmetic, and what let thirty
-days fit in 1.32 MiB with no database. The cost is that a variable number of interfaces or
+days fit in 1.65 MiB with no database. The cost is that a variable number of interfaces or
 devices cannot live in one. History therefore stores **summed** net and disk rates; the
 per-interface and per-device breakdown exists in the live view only, and the page says so
 rather than showing one interface's line labelled as the box's.

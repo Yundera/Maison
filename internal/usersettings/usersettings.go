@@ -89,7 +89,7 @@ func Defaults() Settings {
 		Wallpaper: "/wallpapers/default_wallpaper.jpg",
 		Language:  "en_us",
 		Widgets:   map[string]bool{"clock": true, "system": true, "storage": true},
-		// On: the cost is a sparse file that reaches 1.32 MiB after thirty days and
+		// On: the cost is a sparse file that reaches 1.65 MiB after thirty days and
 		// one cheap reading a minute, and the alternative is a graph that is empty
 		// the first time anyone looks for it.
 		MetricsHistory: boolPtr(true),

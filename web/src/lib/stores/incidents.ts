@@ -140,7 +140,15 @@ export const KNOWN_KINDS = [
   'app.update',
   'app.stackup',
   'store.source',
+  'host.cpu',
+  'host.memory',
+  'disk.trend',
+  'app.oom',
+  'host.oom',
 ] as const
+
+/** Kinds judged from the recorded resource history: not sent while it is off. */
+export const HISTORY_KINDS: readonly string[] = ['host.cpu', 'host.memory', 'disk.trend']
 
 /** Things that happened rather than things that are wrong. Opt-in, where incidents are
  *  opt-out: they are mailed in the same digest when switched on, and never enter the

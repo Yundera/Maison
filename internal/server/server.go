@@ -67,6 +67,8 @@ type Server struct {
 	// group below it is never nil: a box with no Docker can still fill its disk, and
 	// reporting that must not depend on a daemon being reachable.
 	incidents *incident.Store
+	// oom counts OOM kills per app as Docker reports them, between detector passes.
+	oom oomTally
 
 	// Backup engines, their persisted configuration, and the nightly schedule.
 	// All three are nil-tolerant: a box with no Docker still serves the settings
@@ -901,7 +903,13 @@ func (s *Server) broadcastApps() {
 func (s *Server) watchDocker() {
 	go func() {
 		trigger := make(chan struct{}, 1)
-		go s.dx.WatchContainers(context.Background(), func() {
+		go s.dx.WatchContainers(context.Background(), func(ev dockerx.ContainerEvent) {
+			// Docker emits "oom" when the kernel kills any process in the container's
+			// cgroup for memory, main process or not — the only place a kill is
+			// attributable to an app. Counted here, reported by the detector.
+			if ev.Action == "oom" {
+				s.oom.record(ev.Project)
+			}
 			select {
 			case trigger <- struct{}{}:
 			default:

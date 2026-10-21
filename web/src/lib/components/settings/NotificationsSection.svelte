@@ -23,6 +23,7 @@
     sendTestNotification,
     KNOWN_KINDS,
     ACTIVITY_KINDS,
+    HISTORY_KINDS,
     incidentLabel,
     type Incident,
   } from '../../stores/incidents'
@@ -92,6 +93,9 @@
   const recent = $derived($incidents.recent)
   // Kinds this build knows, plus anything already seen that it does not — so an
   // incident raised by another component becomes mutable once it has happened.
+  // The resource alerts read the recorded history; with it off they are never judged.
+  const historyOff = $derived($settings.metrics_history === false)
+
   const kinds = $derived([
     ...new Set([
       ...KNOWN_KINDS,
@@ -230,6 +234,7 @@
 <section class="card">
   <h4>{$t('notifications_mute')}</h4>
   <p class="hint">{$t('notifications_mute_hint')}</p>
+  {#if historyOff}<p class="hint warn">{$t('notifications_needs_history')}</p>{/if}
   <div class="kinds">
     {#each kinds as kind (kind)}
       <label class="check">
@@ -240,6 +245,9 @@
           onchange={(e) => act(() => muteKind(kind, !e.currentTarget.checked))}
         />
         {kindName(kind)}
+        {#if historyOff && HISTORY_KINDS.includes(kind)}
+          <span class="off">({$t('notifications_history_off')})</span>
+        {/if}
       </label>
     {/each}
   </div>
@@ -407,6 +415,13 @@
     margin: 0.3rem 0;
     font-size: 0.9rem;
     color: var(--text);
+  }
+  .warn {
+    color: var(--warning, var(--text-muted));
+  }
+  .off {
+    color: var(--text-muted);
+    font-size: 0.8rem;
   }
   .kinds {
     display: grid;

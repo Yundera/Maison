@@ -32,18 +32,18 @@ const (
 	// magic identifies the file and its byte layout in one go. Bump the trailing
 	// digit rather than adding a compatibility path: the file is a cache of
 	// samples, and throwing it away costs the user history, not data.
-	magic = "MSNRING1"
+	magic = "MSNRING2"
 
 	headerSize = 64
-	recordSize = 32
+	recordSize = 40
 
 	// DefaultStep and DefaultSlots give 30 days at one-minute resolution:
-	// 43,200 records x 32 B = 1.32 MiB, plus the header.
+	// 43,200 records x 40 B = 1.65 MiB, plus the header.
 	DefaultStep  = time.Minute
 	DefaultSlots = 30 * 24 * 60
 
 	// flushEvery is how many records are staged before they are written. Five
-	// minutes of staging is 160 B of RAM and turns five pwrites into one; an
+	// minutes of staging is 200 B of RAM and turns five pwrites into one; an
 	// ungraceful stop loses at most that much, and loses it as a gap, which the
 	// format already renders honestly.
 	flushEvery = 5
@@ -67,7 +67,22 @@ type Record struct {
 	NetTx     float64
 	DiskRead  float64 // bytes/sec, summed over real block devices
 	DiskWrite float64
+
+	// Pressure-stall shares over the bucket, percent of wall time (see
+	// system.Pressure). NoPressure (-1) when the kernel has no PSI, which is a
+	// different statement from 0: "nothing waited" versus "we cannot tell".
+	CPUPressure     float64 // cpu some
+	MemPressure     float64 // memory some
+	MemFullPressure float64 // memory full
+	IOPressure      float64 // io full
 }
+
+// NoPressure marks a pressure field the kernel could not provide.
+const NoPressure = -1.0
+
+// psiUnset is NoPressure on disk. A pressure share is at most 100%, so it can never
+// collide with a real reading.
+const psiUnset = math.MaxUint16
 
 // Codec is the byte layout of one record type. The ring itself only knows slots
 // and timestamps; everything about what a record holds lives here, so the host
@@ -87,7 +102,7 @@ type Codec[T any] struct {
 	SetAt  func(v *T, t time.Time)
 }
 
-// hostCodec is the host history's 32-byte layout.
+// hostCodec is the host history's 40-byte layout.
 var hostCodec = Codec[Record]{
 	Magic:  magic,
 	Size:   recordSize,
@@ -181,7 +196,7 @@ func (r *RingOf[T]) headerMatches() (bool, error) {
 
 // reset rewrites the header and truncates the file to its full length. The body is
 // left as a hole — the file is sparse until the slots are actually written, so a
-// fresh install pays for a header, not for 1.32 MiB.
+// fresh install pays for a header, not for 1.65 MiB.
 func (r *RingOf[T]) reset() error {
 	buf := make([]byte, headerSize)
 	copy(buf, r.codec.Magic)
@@ -337,7 +352,7 @@ func (r *RingOf[T]) Read(from, to time.Time) ([]T, error) {
 // Bytes is how much disk the ring actually occupies. The file is sparse until its
 // slots have been written, so this reports allocated blocks rather than the
 // nominal length — the settings page shows this number, and a fresh install
-// claiming 1.32 MiB it has not used would be a lie.
+// claiming 1.65 MiB it has not used would be a lie.
 func (r *RingOf[T]) Bytes() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -419,11 +434,29 @@ func encode(b *[recordSize]byte, r Record) {
 	binary.LittleEndian.PutUint16(b[8:10], pct(r.Load1))
 	binary.LittleEndian.PutUint16(b[10:12], pct(r.Swap))
 	binary.LittleEndian.PutUint16(b[12:14], pct(r.Disk))
-	// b[14:16] reserved
+	binary.LittleEndian.PutUint16(b[14:16], psi(r.CPUPressure))
 	binary.LittleEndian.PutUint32(b[16:20], math.Float32bits(rate(r.NetRx)))
 	binary.LittleEndian.PutUint32(b[20:24], math.Float32bits(rate(r.NetTx)))
 	binary.LittleEndian.PutUint32(b[24:28], math.Float32bits(rate(r.DiskRead)))
 	binary.LittleEndian.PutUint32(b[28:32], math.Float32bits(rate(r.DiskWrite)))
+	binary.LittleEndian.PutUint16(b[32:34], psi(r.MemPressure))
+	binary.LittleEndian.PutUint16(b[34:36], psi(r.MemFullPressure))
+	binary.LittleEndian.PutUint16(b[36:38], psi(r.IOPressure))
+	// b[38:40] reserved
+}
+
+func psi(v float64) uint16 {
+	if v < 0 {
+		return psiUnset
+	}
+	return pct(min(v, 100))
+}
+
+func unpsi(v uint16) float64 {
+	if v == psiUnset {
+		return NoPressure
+	}
+	return unpct(v)
 }
 
 // decode returns the record and whether the slot was ever written. A zero
@@ -444,5 +477,10 @@ func decode(b []byte) (Record, bool) {
 		NetTx:     float64(math.Float32frombits(binary.LittleEndian.Uint32(b[20:24]))),
 		DiskRead:  float64(math.Float32frombits(binary.LittleEndian.Uint32(b[24:28]))),
 		DiskWrite: float64(math.Float32frombits(binary.LittleEndian.Uint32(b[28:32]))),
+
+		CPUPressure:     unpsi(binary.LittleEndian.Uint16(b[14:16])),
+		MemPressure:     unpsi(binary.LittleEndian.Uint16(b[32:34])),
+		MemFullPressure: unpsi(binary.LittleEndian.Uint16(b[34:36])),
+		IOPressure:      unpsi(binary.LittleEndian.Uint16(b[36:38])),
 	}, true
 }

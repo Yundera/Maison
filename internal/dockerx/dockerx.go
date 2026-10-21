@@ -504,17 +504,23 @@ func (c *Client) ContainerStatsOnce(ctx context.Context, id string) (container.S
 	return out, err
 }
 
+// ContainerEvent is the part of a Docker container event Maison acts on.
+type ContainerEvent struct {
+	Action  string // "start", "die", "oom", …
+	Project string // the compose project, "" for a container outside one
+}
+
 // WatchContainers calls onEvent (debounced by the caller) whenever a container
 // lifecycle event occurs, until ctx is cancelled.
-func (c *Client) WatchContainers(ctx context.Context, onEvent func()) {
+func (c *Client) WatchContainers(ctx context.Context, onEvent func(ContainerEvent)) {
 	f := filters.NewArgs(filters.Arg("type", string(events.ContainerEventType)))
 	msgs, errs := c.cli.Events(ctx, events.ListOptions{Filters: f})
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-msgs:
-			onEvent()
+		case m := <-msgs:
+			onEvent(ContainerEvent{Action: string(m.Action), Project: m.Actor.Attributes[labelProject]})
 		case err := <-errs:
 			if err != nil {
 				// Stream broke (daemon restart etc). Give up; caller may restart.

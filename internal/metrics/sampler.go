@@ -18,7 +18,7 @@ import (
 // be: a graph of the last thirty days has to have been recorded during those
 // thirty days. So this loop is the one place where the idle budget is actually
 // spent, and it is kept to a single cheap reading per minute (see
-// system.ReadCounters for what is deliberately NOT in it) writing 32 bytes into a
+// system.ReadCounters for what is deliberately NOT in it) writing 40 bytes into a
 // file. The staged records are the only part held in memory.
 type Sampler struct {
 	dataRoot string
@@ -108,6 +108,7 @@ func (s *Sampler) tick() {
 	if dt := cur.CPUTotal - prev.CPUTotal; dt > 0 {
 		rec.CPU = (cur.CPUBusy - prev.CPUBusy) / dt * 100
 	}
+	rec.CPUPressure, rec.MemPressure, rec.MemFullPressure, rec.IOPressure = pressureShares(prev.Pressure, cur.Pressure, elapsed)
 	rec.NetRx = delta(cur.NetRx, prev.NetRx, secs)
 	rec.NetTx = delta(cur.NetTx, prev.NetTx, secs)
 	rec.DiskRead = delta(cur.DiskRead, prev.DiskRead, secs)
@@ -116,6 +117,26 @@ func (s *Sampler) tick() {
 	if err := r.Append(rec); err != nil {
 		log.Printf("metrics: append: %v", err)
 	}
+}
+
+// pressureShares turns two PSI readings into the share of the interval that work
+// spent stalled, in percent. Either reading without PSI makes all four NoPressure:
+// a kernel cannot gain or lose PSI between two minutes, so that is a sampler that
+// has just started on a kernel without it, and 0 would claim a box that never
+// waited.
+func pressureShares(prev, cur system.Pressure, elapsed time.Duration) (cpu, mem, memFull, io float64) {
+	if !prev.OK || !cur.OK || elapsed <= 0 {
+		return NoPressure, NoPressure, NoPressure, NoPressure
+	}
+	us := float64(elapsed.Microseconds())
+	share := func(now, was uint64) float64 {
+		if now < was {
+			return 0
+		}
+		return min(float64(now-was)/us*100, 100)
+	}
+	return share(cur.CPUSome, prev.CPUSome), share(cur.MemSome, prev.MemSome),
+		share(cur.MemFull, prev.MemFull), share(cur.IOFull, prev.IOFull)
 }
 
 // delta turns two cumulative counters into a rate, treating a counter that went

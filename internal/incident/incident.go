@@ -109,6 +109,16 @@ const (
 	KindAppStackup   = "app.stackup"
 	KindStoreSource  = "store.source"
 	KindTest         = "test.notification"
+
+	// Sustained resource starvation, judged over recorded history (server/resources
+	// detectors). One each per box: "host.cpu", "host.memory", "disk.trend".
+	KindHostCPU    = "host.cpu"
+	KindHostMemory = "host.memory"
+	KindDiskTrend  = "disk.trend"
+	// Out-of-memory kills: "app.oom:<app>" when Docker attributes the kill to an app's
+	// container, "host.oom" for kills outside every app.
+	KindAppOOM  = "app.oom"
+	KindHostOOM = "host.oom"
 )
 
 // Activity kinds. These are NOT incidents, and the difference is the whole of how they

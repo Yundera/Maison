@@ -318,3 +318,46 @@ func TestHeaderRecordsTheGeometry(t *testing.T) {
 		t.Errorf("file length = %d, want %d", len(b), want)
 	}
 }
+
+// Pressure keeps "the kernel cannot tell" apart from "nothing waited".
+func TestPressureRoundTripAndUnset(t *testing.T) {
+	var b [recordSize]byte
+	encode(&b, Record{At: base, CPUPressure: 25.5, MemPressure: 0, MemFullPressure: NoPressure, IOPressure: 150})
+	got, _ := decode(b[:])
+	if got.CPUPressure < 25.49 || got.CPUPressure > 25.51 {
+		t.Errorf("CPUPressure = %v, want 25.5", got.CPUPressure)
+	}
+	if got.MemPressure != 0 {
+		t.Errorf("MemPressure = %v, want 0", got.MemPressure)
+	}
+	if got.MemFullPressure != NoPressure {
+		t.Errorf("MemFullPressure = %v, want NoPressure", got.MemFullPressure)
+	}
+	if got.IOPressure != 100 {
+		t.Errorf("IOPressure = %v, want clamped to 100", got.IOPressure)
+	}
+}
+
+// A file in the previous 32-byte layout is wiped and restarted, never misread.
+func TestPreviousLayoutIsReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.ring")
+	hdr := make([]byte, headerSize)
+	copy(hdr, "MSNRING1")
+	binary.LittleEndian.PutUint16(hdr[8:10], 32)
+	binary.LittleEndian.PutUint32(hdr[10:14], 60)
+	binary.LittleEndian.PutUint32(hdr[14:18], 10)
+	old := append(hdr, make([]byte, 10*32)...)
+	binary.LittleEndian.PutUint32(old[headerSize:], uint32(base.Unix()))
+	if err := os.WriteFile(path, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(path, time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	recs, err := r.Read(base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil || len(recs) != 0 {
+		t.Fatalf("Read = %v, %v; want an empty, reset ring", recs, err)
+	}
+}

@@ -5,9 +5,8 @@
 > families of detector are in the tree and tested. The backup scheduler's own
 > notification logic has been ported onto it and no longer exists separately.
 >
-> **Not yet built:** sinks other than mail (webhook / ntfy / Telegram), predictive
-> disk ("full in about five days"), and an alert for backups whose encryption key the
-> owner has never saved. See [Deliberately not done](#deliberately-not-done).
+> **Not yet built:** sinks other than mail (webhook / ntfy / Telegram), and an alert
+> for backups whose encryption key the owner has never saved. See [Deliberately not done](#deliberately-not-done).
 
 Its companions:
 
@@ -144,6 +143,11 @@ immediately would find half of them unhealthy every time Maison restarted.
 | `app.partial:<app>` | `app.partial` | Some containers up, some down, two passes running |
 | `app.crashloop:<app>` | `app.crashloop` | Docker's restart counter moved between two passes |
 | `app.address:<app>` | `app.address` | A running container publishes a port on a host address the box does not carry, three passes running. Needs `HOST_PROC`; not gated on `HasReached` |
+| `host.cpu` | `host.cpu` | CPU pressure (PSI `some`) ≥ 25% averaged over 24h, and the last 6h not calm. Without PSI: CPU busy ≥ 90%. Clears when the 6h average is under 10% (busy: 75%). Needs resource history |
+| `host.memory` | `host.memory` | Memory pressure ≥ 10% over 1h, or memory in use (cache excluded) ≥ 90% over 6h. Critical when memory pressure `full` ≥ 10% over 1h. Clears under 2% pressure and 85% in use. Needs resource history |
+| `disk.trend` | `disk.trend` | A line through the last week of the data disk (≥ 3 days of it) reaches 100% within 7 days, and the disk is ≥ 50% full. Clears past 14 days or when it stops growing. Not raised while a `disk.full` is open. Needs resource history |
+| `app.oom:<app>` | `app.oom` | Docker's `oom` event for one of the app's containers. Closes after 24h with no new kill |
+| `host.oom` | `host.oom` | `/proc/vmstat` `oom_kill` moved by more than the kills Docker attributed to apps: a process outside every app. Closes after 24h with no new kill |
 
 Four rules in there are load-bearing:
 
@@ -164,6 +168,41 @@ minutes after the app listening on it.
 that the app has been observed reachable at least once. Without it a half-configured
 app that never came up would alert forever, and the owner already knows about that
 one: they were watching when it failed to install.
+
+### Resource pressure
+
+`host.cpu`, `host.memory` and `disk.trend` live in `detect_resources.go` and judge
+the **recorded host history** (`internal/metrics`) rather than taking readings of
+their own. A rule about "the last 24 hours" needs those hours to have been recorded,
+and the history sampler already does that once a minute; the detector reads one
+week of it per pass and measures nothing.
+
+So **they depend on the history switch.** With it off they are not judged, any that
+are open are resolved (an alert nothing will re-evaluate would never close), and the
+Notifications and Resources pages both say so. That is the owner's call to make.
+
+The rules lean on four choices:
+
+- **Pressure before percentages.** The record carries PSI shares
+  (`/proc/pressure/{cpu,memory,io}`, differentiated from the cumulative `total=`
+  like CPU jiffies). 90% CPU on a niced transcode is a box doing its job; tasks
+  queued for a core a quarter of the time is a box that feels slow. Percentages are
+  the fallback for kernels without PSI (Debian ships it `psi=0`). A missing reading
+  is stored as `-1`, not 0: "cannot tell" is not "nothing waited".
+- **Coverage before verdicts.** A window is judged only when 80% of its minutes were
+  recorded. A day Maison was down for half of is no evidence either way.
+- **Hysteresis on two windows.** CPU opens on 24h and clears on 6h. Opening also
+  needs the last 6h not to be calm, or the day-long average would reopen what the
+  clear rule just closed.
+- **Blame once.** When `host.cpu` or `host.memory` opens, the per-app history over
+  the same window names the top three apps in the mail. Re-assertions carry that
+  list forward instead of re-reading every app's ring every five minutes.
+
+OOM kills are different: events, not levels, judged whether history is on or not.
+Docker's `oom` event (from the same event stream that refreshes the app list) names
+the compose project. The host counter catches what Docker did not attribute. Either
+incident stays open until a day passes with no new kill; after a restart, that day
+counts from the incident's last update.
 
 ### The gap: a stopped app raises nothing
 
@@ -278,7 +317,5 @@ Two notes on the wiring:
   warning nobody can ever clear — the exact thing that turns into a filter rule.
 - **No delivery confirmation.** It is not obtainable from here; see
   [Mail is a sink](#mail-is-a-sink-not-the-feature).
-- **Predictive disk.** `internal/metrics` already ring-buffers the history, so "full in
-  about five days" is cheap and much more actionable than a threshold. A follow-up.
 - **`backup.key` never revealed.** Backups nobody can decrypt are worse than none, and
   Maison knows whether the key has ever been shown. Worth adding.

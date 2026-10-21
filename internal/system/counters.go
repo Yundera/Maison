@@ -41,6 +41,9 @@ type Counters struct {
 	SwapPercent float64
 	DiskPercent float64
 	Load1       float64
+
+	// Pressure is cumulative, like the CPU jiffies above. See ReadPressure.
+	Pressure Pressure
 }
 
 // ReadCounters takes one cheap sample. Individual metrics degrade to zero rather
@@ -64,6 +67,7 @@ func ReadCounters(dataRoot string) Counters {
 	if u, err := statfsPath(dataRoot); err == nil && u.used+u.avail > 0 {
 		c.DiskPercent = float64(u.used) / float64(u.used+u.avail) * 100
 	}
+	c.Pressure = ReadPressure()
 	for _, n := range readNetDev() {
 		c.NetRx += n.RxBytes
 		c.NetTx += n.TxBytes

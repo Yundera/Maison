@@ -68,6 +68,9 @@ type detector struct {
 	// forty times looks exactly like one that restarted forty times last month — so
 	// it has to be a difference between two observations.
 	restarts map[string]int
+
+	// oom is the OOM watch's counters; see checkOOM.
+	oom oomState
 }
 
 // runDetectors is the polling loop. It waits a full interval before the first pass,
@@ -90,6 +93,8 @@ func (s *Server) runDetectors(ctx context.Context) {
 func (s *Server) checkOnce(ctx context.Context, d *detector) {
 	d.seen = map[string]bool{}
 	s.checkDisk()
+	// After checkDisk: a disk already over the line suppresses the fill-date forecast.
+	s.checkResources(ctx, d)
 	// Before checkBackup, so an engine that appeared since the last pass is judged on
 	// this one. The container watcher normally gets there first; this is its safety net.
 	s.rescanEngines()
@@ -644,7 +649,7 @@ func (s *Server) checkApps(ctx context.Context, d *detector) {
 	for _, inc := range s.incidents.Snapshot().Open {
 		switch inc.Kind {
 		case incident.KindAppUnhealthy, incident.KindAppPartial, incident.KindAppStackup, incident.KindAppUpdate,
-			incident.KindAppAddress:
+			incident.KindAppAddress, incident.KindAppOOM:
 			if _, app, ok := strings.Cut(inc.ID, ":"); ok && !live[app] {
 				s.incidents.Resolve(inc.ID)
 			}

@@ -1,12 +1,13 @@
 # Router-neutral routing — proposal
 
-> **Status (2026-10-21): step 1 done; step 2 implemented in Maison, not yet released;
-> steps 3–4 not started.** The official store no longer carries a proxy-specific route
-> tree: the five apps that had one ship their own router (store commits `663717b`,
-> `e67ba1a`), tested on holyhorse and running on real boxes. Maison now has the routing
-> setting, the three renderers, the Caddy dialect and the seeded `APP_URL` family
-> (unstaged); [`docs/routing.md`](./docs/routing.md) describes what is built and is
-> authoritative where this proposal and it differ.
+> **Status (2026-10-22): steps 1–3 done, step 4 prepared.** Maison 1.1.80 (routing setting,
+> renderers, `APP_URL` family) is on `stable`. The mesh template builds Maison's setting, the
+> registrar's `REDIRECT_HOST_SUFFIXES` and the platform stacks' own routes from one domain list
+> (`routing_domains`). The official store reads its own address from `APP_URL` / `ROUTE_*`
+> with fallbacks, and its labels → `routes` conversion is done and tested, unstaged, together
+> with the address-list variables (`APP_URLS`, `APP_HOSTS`, `APP_HOST_SUFFIXES`, unreleased
+> Maison). [`docs/routing.md`](./docs/routing.md) describes what is built and is authoritative
+> where this proposal and it differ.
 
 ## Goal
 
@@ -307,12 +308,10 @@ port, else no route plus a visible install-time error. An app that installs clea
 - The upstream port lives today **only** inside `{{upstreams N}}`. The migration script
   must harvest it into `routes[].upstream-port` as it removes the labels; it is not a
   `yq delete`.
-- Trimmed listings ship at a **new store URL**. Every PCS pulls the store from jsDelivr;
-  trimming `@main` in place would make every installed app report "update available",
-  and a Maison too old to generate routes would update an app into unreachability.
-  Only a Maison that understands `routes` subscribes to the new URL.
-- Open: how `store-ref` in an installed app's override behaves when the app's store URL
-  changes. It has to be graceful before any cutover.
+- ~~Trimmed listings ship at a new store URL.~~ **Decided 2026-10-22: no new URL.** Maison
+  ≥1.1.80 reaches `stable` first, then the official store is trimmed in place on `main`;
+  every installed app shows one update, and applying it swaps its labels for generated
+  ones. The `store-ref` question goes away with the new URL.
 
 ## Sequencing
 
@@ -322,10 +321,13 @@ port, else no route plus a visible install-time error. An app that installs clea
 2. **Maison: route table + `APP_URL` family + the three renderers**, the primary domain
    as an entry. Store untouched, so nothing changes for anyone: the "already routed"
    skip leaves every labelled app alone.
-3. **Mesh template**: sets `routing` through the CLI and feeds the registrar's suffixes
-   from it.
-4. **New store URL**, script-generated: labels → `routes`, `seafile-$APP_DOMAIN` →
-   `${APP_URL}`. New deployments point at it; the fleet is cut over when comfortable.
+3. ~~**Mesh template**: sets `routing` through the CLI and feeds the registrar's suffixes
+   from it.~~ **Done 2026-10-22**, and further: the platform stacks (maison, auth,
+   mesh-console; template-root's admin and kopia) render their routes from the same
+   domain list into a `docker-compose.override.yml`, so the `ip` zone reaches them too.
+4. **Store, in place**, script-generated: `seafile-$APP_DOMAIN` → `${APP_URL:-…}` (shipped
+   2026-10-22), then labels → `routes` and the domain lists → `APP_URLS` / `APP_HOSTS` /
+   `APP_HOST_SUFFIXES` (prepared, after Maison ≥1.1.80 on `stable`).
 
 ## Settled questions (2026-10-21)
 

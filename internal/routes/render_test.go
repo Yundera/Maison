@@ -144,6 +144,15 @@ func TestTableResolvesTheAddresses(t *testing.T) {
 		"APP_HOST":                "outline-alice.nsl.sh",
 		"ROUTE_OUTLINE_AUTH_URL":  "https://outline-auth-alice.nsl.sh",
 		"ROUTE_OUTLINE_AUTH_HOST": "outline-auth-alice.nsl.sh",
+		// Every domain, primary first: the allow-lists an app keeps of its own addresses.
+		"APP_URLS":  "https://outline-alice.nsl.sh,https://outline-203-0-113-10.nip.io,https://outline-203-0-113-10.sslip.io",
+		"APP_HOSTS": "outline-alice.nsl.sh,outline-203-0-113-10.nip.io,outline-203-0-113-10.sslip.io",
+		"ROUTE_OUTLINE_AUTH_URLS": "https://outline-auth-alice.nsl.sh,https://outline-auth-203-0-113-10.nip.io," +
+			"https://outline-auth-203-0-113-10.sslip.io",
+		"ROUTE_OUTLINE_AUTH_HOSTS": "outline-auth-alice.nsl.sh,outline-auth-203-0-113-10.nip.io," +
+			"outline-auth-203-0-113-10.sslip.io",
+		// What an AppShield gate's REDIRECT_HOST_SUFFIXES takes, the primary domain first.
+		"APP_HOST_SUFFIXES": "alice.nsl.sh,203-0-113-10.nip.io,203-0-113-10.sslip.io",
 	}
 	if len(vars) != len(want) {
 		t.Errorf("vars = %v, want %v", vars, want)
@@ -185,6 +194,11 @@ func TestRenderPortsPublishesEachRoute(t *testing.T) {
 		"APP_BIND": "0.0.0.0", "APP_PORT_OUTLINE": "20000", "APP_PORT_OUTLINE_AUTH": "5556",
 		"APP_URL": "http://192.168.1.10:20000", "APP_HOST": "192.168.1.10:20000",
 		"ROUTE_OUTLINE_AUTH_URL": "http://192.168.1.10:5556", "ROUTE_OUTLINE_AUTH_HOST": "192.168.1.10:5556",
+		"APP_URLS": "http://192.168.1.10:20000", "APP_HOSTS": "192.168.1.10:20000",
+	}
+	// No domain, so no suffix for a gate to build hosts from.
+	if v, ok := vars["APP_HOST_SUFFIXES"]; ok {
+		t.Errorf("APP_HOST_SUFFIXES = %q in ports mode", v)
 	}
 	for k, v := range want {
 		if vars[k] != v {

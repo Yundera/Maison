@@ -171,7 +171,16 @@ on every start, before `files` and steps render, so a listing writes
 | `APP_URL` | `https://outline-alice.nsl.sh` | `http://192.168.1.10:20000` |
 | `APP_HOST` | `outline-alice.nsl.sh` | `192.168.1.10:20000` |
 | `ROUTE_<NAME>_URL`, `_HOST` | each further route (`ROUTE_OUTLINE_AUTH_URL`) | same |
+| `APP_URLS`, `APP_HOSTS` | the first route on every domain, primary first, comma-separated | the one published port |
+| `ROUTE_<NAME>_URLS`, `_HOSTS` | the same for each further route | same |
+| `APP_HOST_SUFFIXES` | what follows `<name>-` on each domain: `alice.nsl.sh,203-0-113-10.nip.io,…` | — |
 | `APP_BIND`, `APP_PORT_<NAME>` | — | what the `ports:` entries read |
+
+The lists are for an app's allow-lists of its own addresses — CORS and CSRF origins,
+trusted hosts — so a domain added to the setting reaches them on the next start
+(`CSRF_TRUSTED_ORIGINS: ${APP_URLS}`). `APP_HOST_SUFFIXES` is what an AppShield gate's
+`REDIRECT_HOST_SUFFIXES` takes; it only covers domains written `{name}-<suffix>`, and
+its first entry is the primary domain's, which the gate derives its OAuth issuer from.
 
 `APP_URL` is an **origin**: `scheme://host[:port]`, no path and no trailing slash, and
 the scheme's default port left out. Append a path to it (`${APP_URL}/seafhttp`). The

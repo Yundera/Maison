@@ -67,7 +67,9 @@ the variable counts, so the worst a false positive costs is what every app paid
 before.
 
 Also written on every start are the app's **own address** — `APP_URL`, `APP_HOST`,
-`ROUTE_<NAME>_URL` / `_HOST`, and in ports mode `APP_BIND` / `APP_PORT_<NAME>` —
+`ROUTE_<NAME>_URL` / `_HOST`, the lists of every address `APP_URLS` / `APP_HOSTS` /
+`ROUTE_<NAME>_URLS` / `_HOSTS` and the gate's `APP_HOST_SUFFIXES`, and in ports mode
+`APP_BIND` / `APP_PORT_<NAME>` —
 computed from its routes and the box's routing setting; see
 [`routing.md`](./routing.md#the-apps-own-address).
 

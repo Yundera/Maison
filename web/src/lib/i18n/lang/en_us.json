@@ -509,6 +509,7 @@
   "notifications_all_clear": "Nothing to report. Everything this server watches is working.",
   "notifications_since": "Since {when}",
   "notifications_cleared": "Cleared {when}",
+  "notifications_dismissed": "Dismissed {when}",
   "notifications_ack": "Seen",
   "notifications_dismiss": "Dismiss",
   "notifications_show_history": "Show {n} earlier",

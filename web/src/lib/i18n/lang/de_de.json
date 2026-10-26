@@ -413,6 +413,7 @@
   "notifications_all_clear": "Nichts zu melden. Alles, was dieser Server überwacht, funktioniert.",
   "notifications_since": "Seit {when}",
   "notifications_cleared": "Behoben am {when}",
+  "notifications_dismissed": "Ausgeblendet am {when}",
   "notifications_ack": "Gesehen",
   "notifications_dismiss": "Verwerfen",
   "notifications_show_history": "{n} ältere anzeigen",

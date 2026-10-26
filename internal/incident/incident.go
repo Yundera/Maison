@@ -204,6 +204,11 @@ type Incident struct {
 	// Acked means the owner has seen it and does not want the badge any more. It does
 	// not resolve the incident and does not stop the recovery notice.
 	Acked bool `json:"acked,omitempty"`
+
+	// Dismissed marks a record the owner closed rather than one its reporter cleared, so
+	// the history does not claim a problem was fixed when somebody only stopped
+	// listening to it. See Dismiss.
+	Dismissed bool `json:"dismissed,omitempty"`
 }
 
 // Open reports whether this incident is still current.
@@ -243,6 +248,18 @@ type document struct {
 	// its delivery pass is a window a restart can land in — and an alert lost to a
 	// container restart is exactly the silent failure this package exists to prevent.
 	Pending []pending `json:"pending,omitempty"`
+
+	// Dismissals are the IDs the owner dismissed while their condition still held,
+	// keyed by ID. Persisted for the reason Pending is: a restart must not bring back
+	// everything the owner closed.
+	Dismissals map[string]dismissal `json:"dismissals,omitempty"`
+}
+
+// dismissal is one ID the owner closed: re-assertions at or below Severity are absorbed
+// until the reporter resolves it, or until it is keepResolvedFor old.
+type dismissal struct {
+	Severity Severity  `json:"severity"`
+	At       time.Time `json:"at"`
 }
 
 // Retention. Resolved incidents are kept so the settings page can answer "has this
@@ -366,6 +383,16 @@ func (s *Store) Report(r Report) {
 
 	s.mu.Lock()
 	now := s.now()
+	if d, ok := s.cur.Dismissals[r.ID]; ok {
+		// The owner closed this while it was still true, and a detector re-asserting it
+		// on its next pass is not news. Getting worse is: a warning dismissed does not
+		// hide the same thing going critical.
+		if now.Sub(d.At) <= keepResolvedFor && !(r.Severity == Critical && d.Severity != Critical) {
+			s.mu.Unlock()
+			return
+		}
+		delete(s.cur.Dismissals, r.ID)
+	}
 	changed := false
 	if i, ok := s.findOpenLocked(r.ID); ok {
 		cur := s.cur.Incidents[i]
@@ -375,6 +402,11 @@ func (s *Store) Report(r Report) {
 		cur.Count++
 		cur.Updated = now
 		changed = cur.Title != r.Title || cur.Detail != r.Detail || cur.Severity != r.Severity
+		// Seen was said about a warning. The same thing going critical lights the badge
+		// again, by the rule that lets an escalation through a dismissal.
+		if r.Severity == Critical && cur.Severity != Critical {
+			cur.Acked = false
+		}
 		cur.Report = r
 		s.cur.Incidents[i] = cur
 	} else {
@@ -429,6 +461,12 @@ func (s *Store) Resolve(id string) {
 	s.mu.Lock()
 	i, ok := s.findOpenLocked(id)
 	if !ok {
+		// The reporter saying the condition is gone is what ends a dismissal: the next
+		// time it happens is a new problem, and the owner hears about it.
+		if _, dismissed := s.cur.Dismissals[id]; dismissed {
+			delete(s.cur.Dismissals, id)
+			s.persistLocked(s.now())
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -442,6 +480,41 @@ func (s *Store) Resolve(id string) {
 	s.mu.Unlock()
 
 	s.changed()
+}
+
+// Dismiss is the owner closing an open incident whose condition may still hold.
+//
+// It is not Resolve, and the difference is why it exists. Most incidents are re-asserted
+// by a detector every pass for as long as they are true, so resolving one on the
+// owner's say-so brought it straight back five minutes later as a new incident — and
+// mailed "cleared" then "opened" in between. A dismissed ID instead absorbs every
+// re-assertion until its reporter resolves it (the condition really went away), it
+// escalates to critical, or keepResolvedFor passes, so a forgotten problem is raised
+// once a month rather than never.
+//
+// No recovery notice is queued: nothing recovered.
+func (s *Store) Dismiss(id string) error {
+	s.mu.Lock()
+	i, ok := s.findOpenLocked(id)
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("no open incident %q", id)
+	}
+	now := s.now()
+	cur := s.cur.Incidents[i]
+	cur.Resolved = &now
+	cur.Updated = now
+	cur.Dismissed = true
+	s.cur.Incidents[i] = cur
+	if s.cur.Dismissals == nil {
+		s.cur.Dismissals = map[string]dismissal{}
+	}
+	s.cur.Dismissals[id] = dismissal{Severity: cur.Severity, At: now}
+	err := s.persistLocked(now)
+	s.mu.Unlock()
+
+	s.changed()
+	return err
 }
 
 // Announce queues an activity notice — something that happened, not something that is
@@ -798,6 +871,14 @@ func sane(d document, now time.Time) document {
 		}
 	}
 	d.Incidents = kept
+	for id, dm := range d.Dismissals {
+		if now.Sub(dm.At) > keepResolvedFor {
+			delete(d.Dismissals, id)
+		}
+	}
+	if len(d.Dismissals) == 0 {
+		d.Dismissals = nil
+	}
 	if len(d.Muted) == 0 {
 		d.Muted = nil
 	}

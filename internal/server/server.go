@@ -597,6 +597,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Put("/incidents/mute", s.handleMuteKind)
 		r.Put("/incidents/announce", s.handleAnnounceKind)
 		r.Post("/incidents/{id}/ack", s.handleAckIncident)
+		r.Post("/incidents/{id}/dismiss", s.handleDismissIncident)
 		r.Delete("/incidents/{id}", s.handleResolveIncident)
 		r.Post("/notifications/test", s.handleTestNotification)
 

@@ -8,7 +8,7 @@
     loadIncidents,
     subscribeIncidents,
     ackIncident,
-    resolveIncident,
+    dismissIncident,
     incidentLabel,
   } from '../stores/incidents'
   import { canInstall, installed, installHelp, isIOSSafari, promptInstall } from '../stores/pwa'
@@ -166,7 +166,7 @@
                     {#if !inc.acked}
                       <button disabled={busy} onclick={() => act(() => ackIncident(inc.id))}>{$t('notifications_ack')}</button>
                     {/if}
-                    <button disabled={busy} onclick={() => act(() => resolveIncident(inc.id))}>{$t('notifications_dismiss')}</button>
+                    <button disabled={busy} onclick={() => act(() => dismissIncident(inc.id))}>{$t('notifications_dismiss')}</button>
                   </div>
                 </div>
               </li>

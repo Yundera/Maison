@@ -509,6 +509,7 @@
   "notifications_all_clear": "Rien à signaler. Tout ce que ce serveur surveille fonctionne.",
   "notifications_since": "Depuis le {when}",
   "notifications_cleared": "Résolu le {when}",
+  "notifications_dismissed": "Ignoré le {when}",
   "notifications_ack": "Vu",
   "notifications_dismiss": "Ignorer",
   "notifications_show_history": "Afficher {n} plus anciens",

@@ -106,6 +106,21 @@ func (s *Server) handleResolveIncident(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
+// handleDismissIncident is the owner closing one from the dashboard. Not the DELETE
+// above: that is a reporter saying its condition is gone, this is a person saying they
+// do not want to hear about it until it is — see incident.Store.Dismiss.
+func (s *Server) handleDismissIncident(w http.ResponseWriter, r *http.Request) {
+	if s.incidents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "incidents unavailable"})
+		return
+	}
+	if err := s.incidents.Dismiss(chi.URLParam(r, "id")); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.incidents.Snapshot())
+}
+
 func (s *Server) handleAckIncident(w http.ResponseWriter, r *http.Request) {
 	if s.incidents == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "incidents unavailable"})

@@ -135,6 +135,7 @@ func TestIncidentRoutesAreNotShadowed(t *testing.T) {
 		{http.MethodGet, "/api/incidents", "", http.StatusOK},
 		{http.MethodPut, "/api/incidents/mute", `{"kind":"disk.full","muted":true}`, http.StatusOK},
 		{http.MethodPost, "/api/incidents/nothing.here/ack", "", http.StatusBadRequest},
+		{http.MethodPost, "/api/incidents/nothing.here/dismiss", "", http.StatusBadRequest},
 	} {
 		if code, got := call(t, h, c.method, c.path, c.body); code != c.want {
 			t.Errorf("%s %s = %d, want %d: %s", c.method, c.path, code, c.want, got)

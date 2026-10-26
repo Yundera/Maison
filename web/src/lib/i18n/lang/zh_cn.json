@@ -413,6 +413,7 @@
   "notifications_all_clear": "一切正常。此服务器监控的项目都在正常运行。",
   "notifications_since": "开始于 {when}",
   "notifications_cleared": "已于 {when} 恢复",
+  "notifications_dismissed": "已于 {when} 忽略",
   "notifications_ack": "已读",
   "notifications_dismiss": "忽略",
   "notifications_show_history": "显示 {n} 条历史记录",

@@ -17,7 +17,7 @@
     subscribeIncidents,
     loadIncidents,
     ackIncident,
-    resolveIncident,
+    dismissIncident,
     muteKind,
     announceKind,
     sendTestNotification,
@@ -131,7 +131,7 @@
                 {$t('notifications_ack')}
               </button>
             {/if}
-            <button disabled={busy} onclick={() => act(() => resolveIncident(inc.id))}>
+            <button disabled={busy} onclick={() => act(() => dismissIncident(inc.id))}>
               {$t('notifications_dismiss')}
             </button>
           </div>
@@ -151,7 +151,7 @@
             <span class="dot done"></span>
             <div class="body">
               <p class="title">{label(inc)}</p>
-              <p class="meta">{$t('notifications_cleared', { when: when(inc.resolved ?? '') })}</p>
+              <p class="meta">{$t(inc.dismissed ? 'notifications_dismissed' : 'notifications_cleared', { when: when(inc.resolved ?? '') })}</p>
             </div>
           </li>
         {/each}

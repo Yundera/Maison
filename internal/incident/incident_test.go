@@ -555,3 +555,92 @@ func TestActivitySurvivesARestart(t *testing.T) {
 		t.Error("the switch was lost across a restart")
 	}
 }
+
+// A detector re-asserts its condition every pass, so a dismissal that only resolved the
+// record brought it straight back. It must stay closed — and silent — until the
+// detector itself says the condition is gone.
+func TestADismissedIncidentStaysClosedWhileItIsReAsserted(t *testing.T) {
+	s, mb, clock := newStore(t)
+	r := Report{ID: KindHostCPU, Kind: KindHostCPU, Severity: Warning, Title: "The processor is overloaded"}
+	s.Report(r)
+	s.Deliver()
+	if err := s.Dismiss(KindHostCPU); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(5 * time.Minute)
+	s.Report(r)
+	s.Deliver()
+	snap := s.Snapshot()
+	if len(snap.Open) != 0 {
+		t.Fatalf("a re-assertion reopened a dismissed incident: %+v", snap.Open)
+	}
+	if len(snap.Recent) != 1 || !snap.Recent[0].Dismissed {
+		t.Errorf("the history should say it was dismissed, not fixed: %+v", snap.Recent)
+	}
+	if len(mb.sent) != 1 {
+		t.Errorf("dismissing announces nothing, got %q", mb.sent)
+	}
+
+	// Going critical is new information.
+	s.Report(Report{ID: KindHostCPU, Kind: KindHostCPU, Severity: Critical, Title: "The processor is overloaded"})
+	if len(s.Snapshot().Open) != 1 {
+		t.Fatal("an escalation to critical should break through a dismissed warning")
+	}
+	if err := s.Dismiss(KindHostCPU); err != nil {
+		t.Fatal(err)
+	}
+
+	// The condition clearing ends the dismissal: the next occurrence is a new problem.
+	s.Resolve(KindHostCPU)
+	s.Report(r)
+	if len(s.Snapshot().Open) != 1 {
+		t.Error("after the reporter resolved it, the next occurrence should open again")
+	}
+	if err := s.Dismiss("nothing.here"); err == nil {
+		t.Error("dismissing an unknown incident should be an error")
+	}
+}
+
+// A dismissal survives a restart, and lapses after a month so a forgotten problem is
+// raised again rather than hidden forever.
+func TestADismissalPersistsAndLapses(t *testing.T) {
+	s, _, clock := newStore(t)
+	// New trims against the real clock before a test can install its own.
+	*clock = time.Now()
+	s.Report(failing("backup.run"))
+	if err := s.Dismiss("backup.run"); err != nil {
+		t.Fatal(err)
+	}
+	again := New(s.path)
+	again.Now = s.Now
+	again.Report(failing("backup.run"))
+	if len(again.Snapshot().Open) != 0 {
+		t.Fatal("a restart forgot the dismissal")
+	}
+	*clock = clock.Add(keepResolvedFor + time.Hour)
+	again.Report(failing("backup.run"))
+	if len(again.Snapshot().Open) != 1 {
+		t.Error("a month-old dismissal should lapse")
+	}
+}
+
+// Seen hides the badge for as long as the detector keeps re-asserting the same thing,
+// but not once that thing turns critical.
+func TestSeenSurvivesReAssertionButNotEscalation(t *testing.T) {
+	s, _, _ := newStore(t)
+	r := Report{ID: KindHostCPU, Kind: KindHostCPU, Severity: Warning, Title: "The processor is overloaded"}
+	s.Report(r)
+	if err := s.Ack(KindHostCPU); err != nil {
+		t.Fatal(err)
+	}
+	r.Detail = "a new figure"
+	s.Report(r)
+	if !s.Snapshot().Open[0].Acked {
+		t.Fatal("a re-assertion un-acked the incident")
+	}
+	r.Severity = Critical
+	s.Report(r)
+	if s.Snapshot().Open[0].Acked {
+		t.Error("an escalation to critical should light the badge again")
+	}
+}

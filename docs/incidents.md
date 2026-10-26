@@ -258,6 +258,7 @@ GET    /api/incidents                 the whole register
 POST   /api/incidents                 assert one   {id, kind, severity, title, detail, args}
 DELETE /api/incidents/{id}            clear one
 POST   /api/incidents/{id}/ack        hide the badge without resolving
+POST   /api/incidents/{id}/dismiss    close it until its reporter resolves it (the dashboard's Dismiss)
 PUT    /api/incidents/mute            {kind, muted}
 PUT    /api/incidents/announce        {kind, on}   activity notices, opt-in
 POST   /api/notifications/test        send a real alert, synchronously

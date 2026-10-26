@@ -32,6 +32,8 @@ export interface Incident {
    *  server sends nothing at all rather than a date that would render. */
   resolved?: string
   acked?: boolean
+  /** Closed by the owner rather than cleared by its reporter — see dismissIncident. */
+  dismissed?: boolean
 }
 
 export interface IncidentSnapshot {
@@ -98,8 +100,11 @@ async function apply(p: Promise<unknown>): Promise<void> {
 export const ackIncident = (id: string) =>
   apply(api.post(`/api/incidents/${encodeURIComponent(id)}/ack`))
 
-export const resolveIncident = (id: string) =>
-  apply(api.del(`/api/incidents/${encodeURIComponent(id)}`))
+/** Close an open incident until its condition actually clears. Not the DELETE the
+ *  inbound API offers reporters: a detector re-asserts its condition every pass, so a
+ *  plain resolve came straight back as a new incident a few minutes later. */
+export const dismissIncident = (id: string) =>
+  apply(api.post(`/api/incidents/${encodeURIComponent(id)}/dismiss`))
 
 /** Stop a whole class of incident being mailed. It is still recorded and still
  *  listed — a mute that erased the evidence would be indistinguishable from the

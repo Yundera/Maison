@@ -56,7 +56,8 @@ export interface AppUpdate {
   blocked_message?: Localized
 }
 
-export type RunStatus = 'queued' | 'updating' | 'done' | 'failed'
+/** `cancelled`: taken off the queue before its turn — nothing was done to the app. */
+export type RunStatus = 'queued' | 'updating' | 'done' | 'failed' | 'cancelled'
 
 export interface RunItem {
   id: string
@@ -78,6 +79,8 @@ export interface RunItem {
 
 export interface UpdateRun {
   running: boolean
+  /** The owner stopped the run: the app being updated finishes, the rest are dropped. */
+  cancelled?: boolean
   items: RunItem[] | null
   started?: string
   finished?: string
@@ -114,6 +117,9 @@ export const checkUpdates = () => api.post('/api/updates/check')
 /** `noBackup` is accepted for exactly one app — the retry after a refusal. */
 export const runUpdates = (ids: string[] = [], noBackup = false) =>
   api.post('/api/updates/run', noBackup ? { ids, noBackup } : { ids })
+
+/** Stop a run: every queued app is taken off at once, the one being updated finishes. */
+export const cancelUpdates = () => api.post('/api/updates/cancel')
 
 /** What the settings rail badges: updates waiting in the ordinary grid, plus checks
  *  that failed. Stays-up apps are not counted — they are not in "update all". */

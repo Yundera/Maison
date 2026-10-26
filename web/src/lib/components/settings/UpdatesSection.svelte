@@ -31,6 +31,7 @@
     subscribeUpdates,
     checkUpdates,
     runUpdates,
+    cancelUpdates,
     type AppUpdate,
     type ImageChange,
     type RunItem,
@@ -209,7 +210,8 @@
   }
   const checkedAt = $derived(valid($updates?.checked_at))
 
-  const runTotal = $derived(run?.items?.length ?? 0)
+  // Cancelled apps leave the count: "Updating 2 of 2" once the queue is dropped, not "of 5".
+  const runTotal = $derived((run?.items ?? []).filter((i) => i.status !== 'cancelled').length)
   const runDone = $derived((run?.items ?? []).filter((i) => i.status === 'done' || i.status === 'failed').length)
   const runCurrent = $derived((run?.items ?? []).find((i) => i.status === 'updating'))
   const currentLive = $derived(runCurrent ? live.get(runCurrent.id) : undefined)
@@ -221,10 +223,12 @@
     const updated = items.filter((i) => i.status === 'done' && i.applied).length
     const refused = items.filter((i) => i.status === 'failed' && i.no_rollback).length
     const failed = items.filter((i) => i.status === 'failed' && !i.no_rollback).length
+    const cancelled = items.filter((i) => i.status === 'cancelled').length
     const bits: string[] = []
     if (updated) bits.push(tn('updates_result_updated', updated))
     if (refused) bits.push(tn('updates_result_refused', refused))
     if (failed) bits.push(tn('updates_result_failed', failed))
+    if (cancelled) bits.push(tn('updates_result_cancelled', cancelled))
     return bits.join(' · ')
   })
 
@@ -295,6 +299,9 @@
       await runUpdates([])
       confirm = null
     })
+
+  /** The app being updated finishes; the queue behind it is dropped. */
+  const cancelRun = () => act(cancelUpdates)
 
   function link(row: AppUpdate) {
     const ref = row.suggestion?.ref
@@ -464,7 +471,11 @@
   {#if running && runTotal > 0}
     <div class="banner">
       <p class="banner-line">
-        <strong>{$t('updates_banner_running', { i: String(Math.min(runDone + 1, runTotal)), n: String(runTotal) })}</strong>
+        <strong>
+          {run?.cancelled
+            ? $t('updates_banner_cancelling')
+            : $t('updates_banner_running', { i: String(Math.min(runDone + 1, runTotal)), n: String(runTotal) })}
+        </strong>
         {#if runCurrent}
           <span class="muted">
             — {$loc(byID.get(runCurrent.id)?.title, byID.get(runCurrent.id)?.name ?? runCurrent.id)}{#if currentLive?.p}
@@ -473,7 +484,12 @@
         {/if}
       </p>
       <div class="bar big"><span class="fill" style:width={`${runPct}%`}></span></div>
-      <p class="muted small">{$t('updates_run_hint')}</p>
+      <div class="banner-foot">
+        <p class="muted small">{run?.cancelled ? $t('updates_cancel_hint') : $t('updates_run_hint')}</p>
+        {#if !run?.cancelled && (run?.items ?? []).some((i) => i.status === 'queued')}
+          <button disabled={busy} onclick={cancelRun}>{$t('updates_cancel')}</button>
+        {/if}
+      </div>
     </div>
   {:else if runTotal > 0 && runResult}
     <p class="result">
@@ -825,6 +841,12 @@
     padding: 0.75rem 0.85rem;
     border-radius: 8px;
     background: var(--surface-2);
+  }
+  .banner-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
   .banner-line {
     margin: 0;

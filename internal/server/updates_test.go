@@ -140,10 +140,56 @@ func TestSecondRunIsRefusedWhileOneIsGoing(t *testing.T) {
 	}
 }
 
+// Cancelling drops the apps still waiting and leaves the one being updated alone: the
+// loop must skip a cancelled item rather than start it.
+func TestCancelDropsTheQueueButNotTheCurrentApp(t *testing.T) {
+	s := testUpdatesServer(t)
+	s.updates.run = UpdateRun{Running: true, Items: []UpdateRunItem{
+		{ID: "a", Status: runUpdating},
+		{ID: "b", Status: runQueued},
+		{ID: "c", Status: runQueued},
+	}}
+	if err := s.cancelUpdateRun(); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	run := s.updates.run
+	if !run.Cancelled || !run.Running {
+		t.Errorf("run = %+v, want cancelled and still running until a finishes", run)
+	}
+	want := []string{runUpdating, runCancelled, runCancelled}
+	for i, it := range run.Items {
+		if it.Status != want[i] {
+			t.Errorf("%s: %s, want %s", it.ID, it.Status, want[i])
+		}
+	}
+
+	s.updates.run = UpdateRun{}
+	if err := s.cancelUpdateRun(); !errors.Is(err, errNoRun) {
+		t.Errorf("cancel with nothing running = %v, want errNoRun", err)
+	}
+}
+
+// The loop itself: an item cancelled before its turn is never updated.
+func TestRunSkipsCancelledItems(t *testing.T) {
+	s := testUpdatesServer(t)
+	s.updates.run = UpdateRun{Running: true, Cancelled: true, Items: []UpdateRunItem{
+		{ID: "a", Status: runCancelled},
+		{ID: "b", Status: runCancelled},
+	}}
+	s.runUpdates([]string{"a", "b"}, installer.UpdateOptions{})
+	run := waitRunDone(t, s)
+	for _, it := range run.Items {
+		if it.Status != runCancelled || it.Error != "" {
+			t.Errorf("%s: %+v, want left cancelled and untouched", it.ID, it)
+		}
+	}
+}
+
 func TestUpdatesRoutesAreReachable(t *testing.T) {
 	h := New(config.Config{DataRoot: t.TempDir()}, fstest.MapFS{})
 	for _, c := range []struct{ method, path string }{
 		{http.MethodPost, "/api/updates/run"},
+		{http.MethodPost, "/api/updates/cancel"},
 	} {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader(`{}`))
 		rec := httptest.NewRecorder()

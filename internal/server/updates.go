@@ -47,6 +47,8 @@ const (
 	runUpdating = "updating"
 	runDone     = "done"
 	runFailed   = "failed"
+	// runCancelled is an app taken off the queue before its turn. Nothing was done to it.
+	runCancelled = "cancelled"
 )
 
 // UpdateRunItem is one app of a run.
@@ -71,10 +73,13 @@ type UpdateRunItem struct {
 // UpdateRun is the current run, or the last one once it has finished. A run's
 // results stay on the page until the next run replaces them.
 type UpdateRun struct {
-	Running  bool            `json:"running"`
-	Items    []UpdateRunItem `json:"items"`
-	Started  time.Time       `json:"started,omitempty"`
-	Finished time.Time       `json:"finished,omitempty"`
+	Running bool `json:"running"`
+	// Cancelled: the owner stopped the run. The app being updated finishes — stopping
+	// it halfway would leave it neither old nor new — and the queued ones are dropped.
+	Cancelled bool            `json:"cancelled,omitempty"`
+	Items     []UpdateRunItem `json:"items"`
+	Started   time.Time       `json:"started,omitempty"`
+	Finished  time.Time       `json:"finished,omitempty"`
 }
 
 // UpdatesSnapshot is what GET /api/updates and the "updates" channel carry.
@@ -99,6 +104,7 @@ var (
 	// seeing that app refused — never something "update all" does wholesale.
 	errNoBackupNeedsOneApp = errors.New("an update without a backup is chosen for one app at a time")
 	errNothingToRun        = errors.New("nothing to update")
+	errNoRun               = errors.New("no update run in progress")
 )
 
 func (s *Server) updatesSnapshot() any {
@@ -306,7 +312,18 @@ func (s *Server) runUpdates(q []string, opts installer.UpdateOptions) {
 	}
 
 	for i, id := range q {
-		set(i, func(it *UpdateRunItem) { it.Status = runUpdating })
+		// Checked and claimed under one lock, so a cancel landing between two apps
+		// cannot leave one marked cancelled that then runs anyway.
+		u.mu.Lock()
+		skip := u.run.Items[i].Status != runQueued
+		if !skip {
+			u.run.Items[i].Status = runUpdating
+		}
+		u.mu.Unlock()
+		if skip {
+			continue
+		}
+		s.broadcastUpdates()
 
 		// The budget bounds the update from the stop onward; the backup before it is
 		// the app's own time (see installer.UpdateOptions.Budget).
@@ -350,6 +367,26 @@ func (s *Server) runUpdates(q []string, opts installer.UpdateOptions) {
 
 	// So the list reflects what the run did, including what it failed to do.
 	s.checkUpdates(context.Background())
+}
+
+// cancelUpdateRun takes every app still queued off the run. The one being updated is
+// left to finish, so the run ends as soon as it does.
+func (s *Server) cancelUpdateRun() error {
+	u := &s.updates
+	u.mu.Lock()
+	if !u.run.Running {
+		u.mu.Unlock()
+		return errNoRun
+	}
+	u.run.Cancelled = true
+	for i := range u.run.Items {
+		if u.run.Items[i].Status == runQueued {
+			u.run.Items[i].Status = runCancelled
+		}
+	}
+	u.mu.Unlock()
+	s.broadcastUpdates()
+	return nil
 }
 
 // startDailyUpdateCheck checks once shortly after boot, then every day after the
@@ -442,4 +479,15 @@ func (s *Server) handleRunUpdates(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 	}
+}
+
+func (s *Server) handleCancelUpdates(w http.ResponseWriter, _ *http.Request) {
+	if !s.requireUpdates(w) {
+		return
+	}
+	if err := s.cancelUpdateRun(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.updatesSnapshot())
 }

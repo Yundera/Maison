@@ -571,6 +571,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/updates", s.handleGetUpdates)
 		r.Post("/updates/check", s.handleCheckUpdates)
 		r.Post("/updates/run", s.handleRunUpdates)
+		r.Post("/updates/cancel", s.handleCancelUpdates)
 
 		r.Get("/backups", s.handleGlobalBackups)
 		// Static beats {app} in chi, which is what keeps this from being read as a

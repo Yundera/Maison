@@ -324,6 +324,9 @@ overlay. Three rules:
 - **Apps declaring `lifecycle.stoppable: false` are left out.** Updating the dashboard,
   or the gateway in front of it, can take down the process running the queue. Such an
   app is updated on its own, by naming it alone; a run naming it among others is refused.
+- **Cancel stops the queue, not the app.** `POST /api/updates/cancel` marks every queued
+  app `cancelled` at once and sets the run's `cancelled`; the app being updated finishes
+  (stopping it halfway would leave it neither old nor new), and the run ends with it.
 
 An untracked app is offered a **suggestion**, from two kinds of evidence: the project
 name an install of a store app would have created, and the image of the app's main

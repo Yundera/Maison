@@ -226,6 +226,8 @@ func (s *Server) managedValue(name string) string {
 		v = st.Feedback
 	case "onboarding":
 		v = st.Onboarding
+	case "capabilities":
+		v = st.Capabilities
 	}
 	b, _ := json.Marshal(v)
 	return string(b)

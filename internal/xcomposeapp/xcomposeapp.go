@@ -68,8 +68,15 @@ type App struct {
 	Screenshots   []string  `yaml:"screenshots,omitempty"`
 	Thumbnail     string    `yaml:"thumbnail,omitempty"`
 	Architectures []string  `yaml:"architectures,omitempty"`
-	// MinMemory is the memory the app needs, in MB. Advisory, shown in the store.
+	// MinMemory is the memory the app needs, in MB. Superseded by
+	// resources.min.memory, into which Parse folds it.
 	MinMemory int `yaml:"min_memory,omitempty"`
+	// Requires are the host capabilities the app cannot work without, and
+	// Resources the quantities below which it runs badly — see requirements.go.
+	// Neither raises SchemaVersion: a build that predates them lists and installs
+	// the app as it always did.
+	Requires  []string   `yaml:"requires,omitempty"`
+	Resources *Resources `yaml:"resources,omitempty"`
 
 	// Legacy is set when this App was translated from an x-casaos block (see
 	// composefile.Resolve) and carries the one thing that block says which the
@@ -190,8 +197,9 @@ type App struct {
 	// block and the app still installs and runs; only the popup is missing.
 	Credentials []Credential `yaml:"credentials,omitempty"`
 
-	// Problems are the declarations Parse refused and dropped — today, user-facing
-	// strings that are not a locale map with an en_us entry (see localized.go).
+	// Problems are the declarations Parse refused and dropped: user-facing strings
+	// that are not a locale map with an en_us entry (see localized.go), and
+	// requirements it cannot read (see requirements.go).
 	// Never read from or written to YAML.
 	Problems []string `yaml:"-"`
 }
@@ -770,6 +778,8 @@ func Parse(ext map[string]any) (*App, error) {
 		return nil, ErrNoExtension
 	}
 	ext, problems := checkLocalized(ext)
+	ext, reqProblems := checkRequirements(ext)
+	problems = append(problems, reqProblems...)
 	b, err := yaml.Marshal(ext)
 	if err != nil {
 		return nil, err
@@ -782,6 +792,7 @@ func Parse(ext map[string]any) (*App, error) {
 		return nil, ErrUnsupportedVersion
 	}
 	a.Problems = problems
+	a.foldMinMemory()
 	return &a, nil
 }
 

@@ -35,6 +35,7 @@ Both Maison-owned files are written atomically (temp file + rename).
 | `smtp` | `{host, port, user, pass, from, to, security}` | `pass` may be a secret reference. Empty `from`/`to` fall back to `noreply@APP_DOMAIN` / `APP_EMAIL`. |
 | `routing` | `{renderer, bind, url-host, port-range, dialect, domains, url-template}` | How apps are reached: see [`routing.md`](./routing.md). Same validation as the dashboard's editor. A change republishes every app. |
 | `feedback` | `{url, token}` | `token` should be a secret reference. Never user-editable. |
+| `capabilities` | `{"public-ip": "yes", …}` | What the box offers apps, overriding detection: capability name (`public-ip`, `gpu-nvidia`, `gpu-dri`) → `auto` \| `yes` \| `no`; absent is `auto`. The store hides apps that require a capability the box effectively lacks. See [Capabilities](#capabilities). |
 | `onboarding` | `{check_url, token}` | While set, every browser navigation asks `check_url` whether setup is owed, and is redirected to the deployment's setup page when it is. `token` is optional and may be a secret reference. Never user-editable. See [The onboarding check](#the-onboarding-check). |
 
 On disk each of these is wrapped:
@@ -51,7 +52,8 @@ with `"managed": false`; those still read, and are written back plain.)
 Over the HTTP API settings stay flat, plus `"managed": {"<setting>": "<owner>"}`.
 `PUT /api/settings` silently drops a managed field (the dashboard sends its whole settings
 object on every change), and never sets `feedback` or `onboarding` at all.
-`PUT /api/settings/routing` answers 409 while routing is managed. (Before the routing
+`PUT /api/settings/routing` and `PUT /api/settings/capabilities` answer 409 while their setting
+is managed, and `PUT /api/settings` never sets `capabilities`. (Before the routing
 setting, `domains` was the managed name for its list of additional domains; a stored one
 is migrated into `routing` on the first start, keeping its owner.)
 
@@ -60,6 +62,26 @@ an empty `check_url`, and that means off. `settings set onboarding` refuses it.
 
 Stores are not managed: they are the user's list. A deployment only makes sure its own
 store is on it (`maison stores ensure`).
+
+## Capabilities
+
+What the box offers apps, for the store's requirement checks (an app's `requires`,
+`resources` and `architectures` — see [`x-compose-app.md`](./x-compose-app.md#requirements)).
+`GET /api/settings/capabilities` (`?refresh=1` probes again) returns the architecture, core
+count, total memory and free disk on the data volume, and for every capability what was
+detected and why, the override, and the effective value:
+
+| Capability | Detected as *yes* when |
+|---|---|
+| `public-ip` | the address in `APP_PUBLIC_IPV4` / `_IPV6` / `APP_PUBLIC_IP` is on a host interface (needs `HOST_PROC`). Not on one means NAT or the tunnel: *no*. No address or no host `/proc`: unknown |
+| `gpu-nvidia` | the Docker daemon has the `nvidia` runtime |
+| `gpu-dri` | `/sys/class/drm` lists a `renderD*` node (sysfs shows the host's devices) |
+
+Unknown never hides an app. Detection is cached for a minute.
+
+A deployment that knows the answer manages the setting —
+`echo '{"public-ip":"yes"}' | maison settings set capabilities --owner yundera` — and the
+card in Settings › App stores becomes read-only.
 
 ## The onboarding check
 

@@ -1,5 +1,15 @@
 <script lang="ts">
-  import { fetchStoreBackups, installApp, type Backup, type BackupEngine } from '../../stores/store'
+  import {
+    fetchStoreBackups,
+    installApp,
+    needsAck,
+    type Backup,
+    type BackupEngine,
+    type Compat,
+  } from '../../stores/store'
+  import { ApiError } from '../../api/client'
+  import { confirmInstall } from '../../stores/ui'
+  import { compatSummary } from '../../requirements'
   import { apps, appProgress } from '../../stores/apps'
   import { engineLabel, renderStamp } from '../../stores/backups'
   import { sanitizeProject } from '../../project'
@@ -12,10 +22,18 @@
     installed = false,
     size = 'small',
     offerBackups = false,
+    compat,
+    name = '',
   }: {
     ref: StoreRef
     installed?: boolean
     size?: 'small' | 'normal'
+    /** How the app fits this box. An app it falls short of asks for an
+     *  acknowledgement before installing; one built for another architecture
+     *  cannot be installed at all. */
+    compat?: Compat
+    /** The app's name, for the acknowledgement dialog. */
+    name?: string
     /** Offer to reinstall on top of a backup instead of installing straight away.
      *
      *  Only the app page does. In the catalog grid a click installs, full stop: looking
@@ -48,6 +66,7 @@
   let lookup: AbortController | null = null
 
   const hasBackups = $derived(engines.some((e) => e.backups.length > 0))
+  const blocked = $derived(!!compat?.blocked)
 
   const projectId = $derived(sanitizeProject(ref.id))
   const entry = $derived($apps.find((a) => a.id === projectId))
@@ -80,7 +99,7 @@
       closePicker()
       return
     }
-    if (isInstalled || busy) return
+    if (isInstalled || busy || blocked) return
     if (!offerBackups) {
       void install()
       return
@@ -122,15 +141,31 @@
 
   async function install(from?: { name: string; engine?: string }) {
     closePicker()
+    let accept = false
+    if (needsAck(compat)) {
+      if (!(await confirmInstall(name || ref.id, compat!))) return
+      accept = true
+    }
     starting = true
     error = ''
     try {
       // The reference pins the install to the store *and folder* this app was
       // shown from — without it a duplicate id in an earlier store would win the
       // merged-catalog lookup.
-      await installApp(ref, from)
+      await installApp(ref, from, accept)
     } catch (err) {
-      error = String(err)
+      // The box changed between the listing and the click (a capability override, a
+      // fuller disk): the server's verdict is the one to confirm against.
+      const fresh = err instanceof ApiError ? (err.body?.requirements as Compat | undefined) : undefined
+      if (fresh && !fresh.blocked && !accept && (await confirmInstall(name || ref.id, fresh))) {
+        try {
+          await installApp(ref, from, true)
+          return
+        } catch (again) {
+          err = again
+        }
+      }
+      error = err instanceof Error ? err.message : String(err)
       starting = false
     }
   }
@@ -200,11 +235,12 @@
       class:done={isInstalled}
       class:failed={!!failed || !!error}
       class:normal={size === 'normal'}
-      disabled={isInstalled}
+      class:warn={!isInstalled && !blocked && needsAck(compat)}
+      disabled={isInstalled || blocked}
       {onclick}
-      title={failed || error}
+      title={failed || error || compatSummary(compat, $t)}
     >
-      {isInstalled ? $t('installed') : $t('install')}
+      {isInstalled ? $t('installed') : blocked ? $t('req_not_available') : $t('install')}
     </button>
 
     {#if picking}
@@ -356,6 +392,16 @@
   .pill.failed {
     background: hsla(6, 78%, 57%, 0.14);
     color: hsl(6, 60%, 45%);
+  }
+  /* The amber of AppDetail's unlisted-store warning: installable, after a question. */
+  .pill.warn {
+    background: hsla(45, 100%, 51%, 0.18);
+    color: hsl(38, 62%, 28%);
+  }
+  .pill:disabled:not(.done) {
+    background: hsla(208, 16%, 94%, 1);
+    color: var(--text-subtle);
+    cursor: default;
   }
   .installing {
     background: hsla(216, 90%, 54%, 0.1);

@@ -141,9 +141,10 @@ func maskSecret(v string) string {
 // already stored; an emptied one deletes it. Managed fields are left for the store
 // to drop (usersettings.Set), and their secrets are not touched here.
 func (s *Server) prepareUserEdit(in *usersettings.Settings) error {
-	// Routing has its own endpoint, which recreates every app; SeenHost is Maison's
-	// own record. Neither rides the generic PUT.
-	in.Feedback, in.Onboarding, in.Managed, in.Routing, in.SeenHost = nil, nil, nil, nil, ""
+	// Routing has its own endpoint, which recreates every app, and capabilities
+	// has its own, which validates; SeenHost is Maison's own record. None rides the
+	// generic PUT.
+	in.Feedback, in.Onboarding, in.Managed, in.Routing, in.SeenHost, in.Capabilities = nil, nil, nil, nil, "", nil
 	cur := s.settings.Get()
 	if in.SMTP == nil {
 		return nil

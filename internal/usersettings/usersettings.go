@@ -4,15 +4,19 @@ package usersettings
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/yundera/maison/internal/notify"
+	"github.com/yundera/maison/internal/requirements"
 	"github.com/yundera/maison/internal/routing"
 	"github.com/yundera/maison/internal/secrets"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // Settings is the persisted preference set.
@@ -81,6 +85,13 @@ type Settings struct {
 	// "not supplied", so a plain bool could be turned on and then never off again —
 	// `false` would be indistinguishable from an absent field. See merge.
 	MetricsHistory *bool `json:"metrics_history,omitempty"`
+
+	// Capabilities overrides what Maison detects about the box, by capability name
+	// (public-ip, gpu-nvidia, gpu-dri) → auto | yes | no. Absent means auto. The
+	// store hides an app whose `requires` the box effectively lacks, so this is how
+	// an operator who forwarded ports says "yes, inbound connections reach me" — and
+	// a deployment that knows (Yundera) can manage it. See internal/requirements.
+	Capabilities map[string]string `json:"capabilities,omitempty"`
 
 	// Feedback and Onboarding are the deployment's: set only through Manage (see
 	// managed.go), never by a user edit. Nil is the normal state of a standalone box.
@@ -200,6 +211,40 @@ func (s *Store) SetRouting(r *routing.Setting) error {
 		return err
 	}
 	s.cur = next
+	return nil
+}
+
+// SetCapabilities replaces the capability overrides — nil goes back to auto for
+// every capability. Like SetRouting it refuses an edit of a managed setting.
+func (s *Store) SetCapabilities(c map[string]string) error {
+	if err := ValidateCapabilities(c); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, managed := s.cur.Managed["capabilities"]; managed {
+		return ErrManaged
+	}
+	next := s.cur
+	next.Capabilities = c
+	if err := s.write(next); err != nil {
+		return err
+	}
+	s.cur = next
+	return nil
+}
+
+// ValidateCapabilities checks every key is a known capability and every value an
+// override requirements understands.
+func ValidateCapabilities(c map[string]string) error {
+	for k, v := range c {
+		if !xcomposeapp.KnownCapability(k) {
+			return fmt.Errorf("capabilities: unknown capability %q (known: %s)", k, strings.Join(xcomposeapp.Capabilities, ", "))
+		}
+		if !requirements.ValidOverride(v) {
+			return fmt.Errorf("capabilities: %s: %q is not auto, yes or no", k, v)
+		}
+	}
 	return nil
 }
 
@@ -324,6 +369,9 @@ func merge(base, in Settings) Settings {
 	}
 	if in.SMTP != nil {
 		base.SMTP = in.SMTP
+	}
+	if in.Capabilities != nil {
+		base.Capabilities = in.Capabilities
 	}
 	if in.Feedback != nil {
 		base.Feedback = in.Feedback

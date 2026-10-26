@@ -102,13 +102,17 @@ const (
 	// KindAppAddress is a running app that publishes a port on a host address the box
 	// does not carry: a VPN that is down, or a typo in the override. One per app,
 	// "app.address:<app>".
-	KindAppAddress   = "app.address"
-	KindAppInstall   = "app.install"
-	KindAppUninstall = "app.uninstall"
-	KindAppUpdate    = "app.update"
-	KindAppStackup   = "app.stackup"
-	KindStoreSource  = "store.source"
-	KindTest         = "test.notification"
+	KindAppAddress = "app.address"
+	// KindAppRequirement is an installed app that requires a capability (public-ip,
+	// a GPU) the box effectively lacks — detection changed, or the operator set an
+	// override to no. One per app, "app.requirement:<app>".
+	KindAppRequirement = "app.requirement"
+	KindAppInstall     = "app.install"
+	KindAppUninstall   = "app.uninstall"
+	KindAppUpdate      = "app.update"
+	KindAppStackup     = "app.stackup"
+	KindStoreSource    = "store.source"
+	KindTest           = "test.notification"
 
 	// Sustained resource starvation, judged over recorded history (server/resources
 	// detectors). One each per box: "host.cpu", "host.memory", "disk.trend".

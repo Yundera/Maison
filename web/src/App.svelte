@@ -10,6 +10,7 @@
   import CredentialsModal from './lib/components/CredentialsModal.svelte'
   import MonitorPanel from './lib/components/MonitorPanel.svelte'
   import UninstallDialog from './lib/components/UninstallDialog.svelte'
+  import InstallConfirmDialog from './lib/components/store/InstallConfirmDialog.svelte'
   import InstallHelpModal from './lib/components/InstallHelpModal.svelte'
   import FeedbackModal from './lib/components/FeedbackModal.svelte'
   import { get } from 'svelte/store'
@@ -23,6 +24,7 @@
     tipsApp,
     credentialsApp,
     uninstallTarget,
+    installConfirm,
     monitorOpen,
   } from './lib/stores/ui'
   import { installHelp } from './lib/stores/pwa'
@@ -122,6 +124,10 @@
 
 {#if $uninstallTarget}
   <UninstallDialog target={$uninstallTarget} />
+{/if}
+
+{#if $installConfirm}
+  <InstallConfirmDialog target={$installConfirm} />
 {/if}
 
 {#if $installHelp}

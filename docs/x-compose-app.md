@@ -95,8 +95,10 @@ with **every** field below set once, to show what a fully loaded block looks lik
 | `developer` | string | no | Store attribution. | `developer`, else `author` |
 | `screenshots` | path[] \| url[] | no | Store gallery. See [Assets](#assets). | `screenshot_link` |
 | `thumbnail` | path \| url | no | Store card image. See [Assets](#assets). | `thumbnail` |
-| `architectures` | string[] | no | e.g. `[amd64, arm64]`. Advisory: parsed, but not currently shown or checked. | `architectures` |
-| `min_memory` | int (MB) | no | Memory the app needs. Advisory, shown in the store. | `min_memory` |
+| **`architectures`** | string[] | no (empty: any) | e.g. `[amd64, arm64]`. The store refuses to install the app on a box of another architecture. See [Requirements](#requirements). | `architectures` |
+| **`requires`** | string[] | no | Capabilities the app cannot work without: `public-ip`, `gpu-nvidia`, `gpu-dri`. The store hides the app on a box that lacks one. See [Requirements](#requirements). | tag `needs-public-ip` → `[public-ip]` |
+| **`resources`** | object | no | `{ min?, recommended? }`, each `{ cpu?, memory?, disk? }`. Below `min` installing asks for an acknowledgement; below `recommended` the store shows a note. See [Requirements](#requirements). | — |
+| `min_memory` | int (MB) | no | Superseded by `resources.min.memory`, into which it is folded when that is absent. | `min_memory` |
 | **`webui-host`** | string | **yes\*** | The web UI's **host** — the final URL host, templated exactly like the app's Caddy route (e.g. `jellyfin-${domain}`). Omit for headless apps. | `hostname` |
 | `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). Without a `webui-host` it names a port on the box's own address (the host the dashboard was opened on), which is how a CasaOS app with no `hostname` opens. | `port_map` (dropped when it is the scheme's default port) |
 | `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` (CasaOS default `http`) |
@@ -354,6 +356,67 @@ route's port is in its service's `expose:`. `routes` does not raise
 unreachable there but otherwise intact.
 
 ---
+
+## Requirements
+
+What an app needs from the box it runs on. Two kinds, and they behave differently on purpose:
+
+```yaml
+x-compose-app:
+  architectures: [amd64, arm64]
+  requires: [public-ip]              # public-ip | gpu-nvidia | gpu-dri
+  resources:
+    min:         { cpu: 2, memory: 2G, disk: 10G }
+    recommended: { cpu: 4, memory: 8G }
+```
+
+| Kind | Means | In the store | Installing |
+|---|---|---|---|
+| **architecture** not listed | the images do not run here | hidden | refused, always |
+| **capability** in `requires` the box lacks | the app installs and starts, then **cannot work** — a game server nobody can join | hidden (shown greyed with *Show all*, or when searched for) | after an explicit acknowledgement |
+| **resource** below `min` | it works badly, or not at all under load | greyed, with the reason | after the same acknowledgement |
+| **resource** below `recommended` | it works, slower | a note on the card | as usual |
+
+**Capabilities.**
+
+- `public-ip` — inbound connections from the internet reach the box directly, so a
+  published raw TCP/UDP port (BitTorrent, WireGuard, a game server, a libp2p swarm) can be dialled.
+  A box behind NAT, a CGNAT or the mesh tunnel gets its HTTPS routes from the gateway but has no
+  such address. Any app that **publishes a host port on every address** needs it; `maison lint`
+  says so (a port bound to one named address — a VPN's — is not for the internet and is exempt).
+- `gpu-nvidia` — the Docker daemon has the `nvidia` runtime, so a `deploy.resources.reservations.devices`
+  GPU request can be honoured. Without it such a container does not start at all.
+- `gpu-dri` — the host has a render node (`/dev/dri/renderD*`) to hand an app for video
+  acceleration. An app that merely runs *better* with one (a media server transcoding on the CPU
+  otherwise) should not list it: `requires` is for what the app cannot work without.
+
+**Resources.**
+
+- `cpu` is a number of cores, compared to the host's logical core count.
+- `memory` is compared to the box's total memory. The OS reports a little under the nominal
+  size, so a box within 10% of the figure is not called short.
+- `disk` is the free space on the data volume at install time.
+- Sizes are written with a unit, binary as in a compose memory limit: `512M`, `2G`, `1.5GiB`.
+  A bare number is refused, since `memory: 2` is far more likely a forgotten unit than two bytes.
+- State `recommended` when you know what the app wants. State `min` only for a floor the app
+  really has — below it, installing asks the operator to confirm.
+
+**How the box is judged.** Maison detects every capability and the operator can override each one
+(*auto / yes / no*) in **Settings › App stores** — see [`config.md`](./config.md#capabilities).
+`public-ip` is *yes* when the address the deployment states (`APP_PUBLIC_IP`) is carried by a host
+interface, as on a VPS, and *no* when it is not, as behind a home router or the tunnel. A home
+server with forwarded ports is the case the *yes* override is for. A capability Maison could not
+determine **never hides an app**: a store that silently empties because a probe failed is worse than
+one that shows the app with a note.
+
+**Updates are never refused** for a requirement, not even an architecture: the app is already
+running on this box, and an architecture list is the maintainer's claim, not a manifest check. The
+update carries a warning instead. An installed app that requires a capability the box no longer has
+raises the `app.requirement` incident (see [`incidents.md`](./incidents.md)).
+
+Neither key raises `schema_version`: a build that predates them lists and installs the app as it
+always did. `x-casaos` has no such keys; a translated CasaOS block reads its `needs-public-ip` tag as
+`requires: [public-ip]`.
 
 ## Reserved keys Maison writes
 

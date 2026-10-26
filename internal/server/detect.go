@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,9 +14,12 @@ import (
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/backup"
 	"github.com/yundera/maison/internal/backupconfig"
+	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/incident"
+	"github.com/yundera/maison/internal/requirements"
 	"github.com/yundera/maison/internal/system"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // The polled half of the incident register.
@@ -639,6 +644,7 @@ func (s *Server) checkApps(ctx context.Context, d *detector) {
 	}
 
 	s.checkAddresses(ctx, d, list)
+	s.checkAppRequirements(ctx, d, list)
 
 	// An app that has been uninstalled takes its incidents with it. Otherwise the badge
 	// outlives the app and nothing will ever clear it.
@@ -649,7 +655,7 @@ func (s *Server) checkApps(ctx context.Context, d *detector) {
 	for _, inc := range s.incidents.Snapshot().Open {
 		switch inc.Kind {
 		case incident.KindAppUnhealthy, incident.KindAppPartial, incident.KindAppStackup, incident.KindAppUpdate,
-			incident.KindAppAddress, incident.KindAppOOM:
+			incident.KindAppAddress, incident.KindAppOOM, incident.KindAppRequirement:
 			if _, app, ok := strings.Cut(inc.ID, ":"); ok && !live[app] {
 				s.incidents.Resolve(inc.ID)
 			}
@@ -834,6 +840,54 @@ func (s *Server) checkCrashLoop(ctx context.Context, d *detector, a apps.App) {
 			a.Name, total-prev, service, why, advice),
 		Args: map[string]string{"app": a.Name},
 	})
+}
+
+// checkAppRequirements reports an installed app that requires a capability the box
+// no longer has — the box moved behind a tunnel, a GPU driver went away, or the
+// operator set an override to no. Capabilities only: a resource below an app's
+// minimum was acknowledged at install, and a box does not shrink on its own.
+//
+// Like checkAddresses it is a configuration fact, so it is not gated on HasReached.
+// A capability Maison cannot determine is not held against the app.
+func (s *Server) checkAppRequirements(ctx context.Context, d *detector, list []apps.App) {
+	h := s.host(ctx)
+	for _, a := range list {
+		if a.Installing || a.Busy {
+			continue
+		}
+		var missing []string
+		if app := s.installedApp(a.ID); app != nil {
+			for _, name := range app.Requires {
+				if h.Has(name) == requirements.No {
+					missing = append(missing, name)
+				}
+			}
+		}
+		s.appCondition(d, incident.KindAppRequirement+":"+a.ID, len(missing) > 0, incident.Report{
+			Kind: incident.KindAppRequirement, Severity: incident.Warning,
+			Title:  a.Name + " needs what this box does not have",
+			Detail: a.Name + " requires " + strings.Join(missing, ", ") + ", which this box does not offer now. It may install and run, but not work as intended — a game server nobody can join, a VPN nobody can reach.\n\nSettings › App stores says how the box was judged, and lets you correct it if the detection is wrong.",
+			Args:   map[string]string{"app": a.Name, "requires": strings.Join(missing, ", ")},
+		})
+	}
+}
+
+// installedApp is the x-compose-app an installed app runs from (x-casaos
+// translated), nil when there is none to read.
+func (s *Server) installedApp(id string) *xcomposeapp.App {
+	b, err := os.ReadFile(filepath.Join(s.cfg.AppsDir(), id, "docker-compose.yml"))
+	if err != nil {
+		return nil
+	}
+	f, err := composefile.Parse(b)
+	if err != nil {
+		return nil
+	}
+	app, err := f.App()
+	if err != nil {
+		return nil
+	}
+	return app
 }
 
 // appCondition is settle-then-report for one app-level condition. The ID is filled in

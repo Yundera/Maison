@@ -20,6 +20,12 @@ export interface StoreApp {
   parent?: string
   developer: string
   min_memory?: number
+  /** What the app needs from the box (x-compose-app architectures / requires /
+   *  resources), and how this box measures up (`compat`). See requirements.ts. */
+  architectures?: string[]
+  requires?: string[]
+  resources?: Resources
+  compat?: Compat
   store: string
   apps_path?: string
   /** What the store calls itself (store.json), falling back to its URL. */
@@ -41,6 +47,81 @@ export interface StoreData {
   /** The configured stores, in the order the box has them, each named as it names
    *  itself in store.json (falling back to its URL). The grouping follows this. */
   sources?: StoreSource[]
+  /** What this box offers apps. Absent on an older server. */
+  host?: Host
+}
+
+/** One tier of an app's `resources`; sizes are bytes, cpu is cores. */
+export interface ResourceSet {
+  cpu?: number
+  memory?: number
+  disk?: number
+}
+
+export interface Resources {
+  min?: ResourceSet
+  recommended?: ResourceSet
+}
+
+/** One requirement the box does not meet. `code` is a capability name, or
+ *  arch / cpu / memory / disk; need and have are display values. */
+export interface Reason {
+  code: string
+  need?: string
+  have?: string
+}
+
+/** How an app fits this box. Absent fields mean nothing short. */
+export interface Compat {
+  /** Built for other architectures: never installable here. */
+  blocked?: boolean
+  /** Capabilities the box lacks (and the architecture, when blocked). */
+  unsupported?: Reason[]
+  below_min?: Reason[]
+  below_recommended?: Reason[]
+  /** Required capabilities Maison could not determine. */
+  uncertain?: string[]
+}
+
+export type Tri = 'yes' | 'no' | 'unknown'
+
+export interface Capability {
+  name: string
+  detected: { value: Tri; source?: string }
+  setting: 'auto' | 'yes' | 'no'
+  effective: Tri
+}
+
+export interface Host {
+  arch: string
+  cpu: number
+  memory: number
+  disk_free: number
+  capabilities: Capability[]
+}
+
+/** The store hides an app the box cannot run, unless "show all" is on. */
+export function isHidden(c?: Compat): boolean {
+  return !!c && (!!c.blocked || (c.unsupported?.length ?? 0) > 0)
+}
+
+/** Installing takes an explicit acknowledgement. */
+export function needsAck(c?: Compat): boolean {
+  return !!c && ((c.unsupported?.length ?? 0) > 0 || (c.below_min?.length ?? 0) > 0)
+}
+
+/** Settings › App stores › Capabilities. */
+export interface CapabilitiesView extends Host {
+  managedBy?: string
+}
+
+export function fetchCapabilities(refresh = false): Promise<CapabilitiesView> {
+  return api.get<CapabilitiesView>('/api/settings/capabilities' + (refresh ? '?refresh=1' : ''))
+}
+
+/** Replaces the overrides; `auto` (or absent) is no override. */
+export function saveCapabilities(overrides: Record<string, string>): Promise<CapabilitiesView> {
+  return api.put<CapabilitiesView>('/api/settings/capabilities', overrides)
 }
 
 export function fetchStore(): Promise<StoreData> {
@@ -112,10 +193,17 @@ export function fetchStoreBackups(
 export function installApp(
   ref: StoreRef,
   from?: { name: string; engine?: string },
+  acceptRequirements = false,
 ): Promise<{ status: string; id: string }> {
+  const body: Record<string, unknown> = {}
+  if (from) {
+    body.from_backup = from.name
+    body.engine = from.engine ?? ''
+  }
+  if (acceptRequirements) body.accept_requirements = true
   return api.post<{ status: string; id: string }>(
     `/api/store/${encodeURIComponent(ref.id)}/install${refQuery(ref)}`,
-    from ? { from_backup: from.name, engine: from.engine ?? '' } : undefined,
+    Object.keys(body).length ? body : undefined,
   )
 }
 

@@ -6,6 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/xcomposeapp"
@@ -67,6 +70,7 @@ func lintFile(path string) []string {
 			out = append(out, missingFile(dir, "step "+s.Name, s.Script)...)
 		}
 		out = append(out, lintCredentials(dir, f.XComposeApp, a.Credentials)...)
+		out = append(out, lintPublishedPorts(f, a)...)
 	}
 	if d, err := f.Data(); err != nil {
 		out = append(out, err.Error())
@@ -76,6 +80,78 @@ func lintFile(path string) []string {
 		}
 	}
 	return out
+}
+
+// lintPublishedPorts reports a service that publishes a host port on every address
+// while the app does not say it needs a public IP. A published port is a raw TCP/UDP
+// listener — an HTTP UI goes through `expose:` and the proxy — and a box behind NAT
+// or the mesh tunnel has no address the internet can dial it on. Without
+// `requires: [public-ip]` the store offers the app to exactly those boxes.
+//
+// A port published on one named address (`10.9.0.1:445:445`, a VPN's) is not for
+// the internet and is left alone.
+func lintPublishedPorts(f *composefile.File, a *xcomposeapp.App) []string {
+	if slices.Contains(a.Requires, xcomposeapp.CapPublicIP) {
+		return nil
+	}
+	names := make([]string, 0, len(f.Services))
+	for n := range f.Services {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var out []string
+	for _, n := range names {
+		var public []string
+		for _, p := range f.Services[n].Ports {
+			if spec, ok := publicPort(p); ok {
+				public = append(public, spec)
+			}
+		}
+		if len(public) > 0 {
+			out = append(out, fmt.Sprintf("service %s publishes %s on every address, but requires has no public-ip: add requires: [public-ip], or bind the port to one address", n, strings.Join(public, ", ")))
+		}
+	}
+	return out
+}
+
+// publicPort reports whether one `ports:` entry is published on every host
+// address, and how to name it.
+func publicPort(p any) (string, bool) {
+	switch v := p.(type) {
+	case map[string]any:
+		host := fmt.Sprint(v["host_ip"])
+		if v["host_ip"] != nil && !wildcardAddr(host) {
+			return "", false
+		}
+		if v["published"] == nil {
+			return "", false // container port only: Docker picks an ephemeral one
+		}
+		spec := fmt.Sprint(v["published"])
+		if proto, _ := v["protocol"].(string); proto != "" {
+			spec += "/" + proto
+		}
+		return spec, true
+	case string:
+		spec, _, _ := strings.Cut(v, "/")
+		parts := strings.Split(spec, ":")
+		if len(parts) < 2 {
+			return "", false // container port only
+		}
+		if len(parts) >= 3 && !wildcardAddr(strings.Join(parts[:len(parts)-2], ":")) {
+			return "", false
+		}
+		return v, true
+	default:
+		s := fmt.Sprint(v)
+		return s, s != "" // a bare number: a host port published on every address
+	}
+}
+
+// wildcardAddr reports whether a host address in a ports entry means "every
+// address". A variable counts as every address: its default usually is.
+func wildcardAddr(a string) bool {
+	a = strings.Trim(strings.TrimSpace(a), "[]")
+	return a == "" || a == "0.0.0.0" || a == "::" || strings.HasPrefix(a, "$")
 }
 
 // lintCredentials reports a `change` block Maison would drop: on a box the

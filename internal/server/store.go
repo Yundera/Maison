@@ -15,6 +15,7 @@ import (
 	"github.com/yundera/maison/internal/apps"
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/installer"
+	"github.com/yundera/maison/internal/requirements"
 )
 
 type storeResponse struct {
@@ -26,9 +27,21 @@ type storeResponse struct {
 	// Deriving either from Apps would lose the order and, for a store that ships no
 	// app at all, the store.
 	Sources []appstore.Source `json:"sources"`
+	// Host is what this box offers apps, so the panel can say why an app is greyed
+	// out (each app's own verdict is its Compat).
+	Host requirements.Host `json:"host"`
 }
 
-func (s *Server) handleStore(w http.ResponseWriter, _ *http.Request) {
+// withCompat returns copies of apps carrying this box's verdict on each.
+func (s *Server) withCompat(h requirements.Host, apps []*appstore.CatalogApp) []*appstore.CatalogApp {
+	out := make([]*appstore.CatalogApp, 0, len(apps))
+	for _, a := range apps {
+		out = append(out, a.WithCompat(requirements.Check(a.Needs(), h)))
+	}
+	return out
+}
+
+func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
@@ -45,11 +58,13 @@ func (s *Server) handleStore(w http.ResponseWriter, _ *http.Request) {
 	// than an empty grid, because the throw happens mid-render and the loading
 	// branch never gets replaced. Having no apps is a normal state (a fresh box, an
 	// unreachable origin), so it is expressed as an empty list, not another type.
+	h := s.host(r.Context())
 	writeJSON(w, http.StatusOK, storeResponse{
-		Apps:       orEmpty(s.store.CatalogAll()),
+		Apps:       s.withCompat(h, s.store.CatalogAll()),
 		Categories: orEmpty(s.store.Categories()),
 		Recommend:  orEmpty(s.store.Recommend()),
 		Sources:    orEmpty(s.store.Sources()),
+		Host:       h,
 	})
 }
 
@@ -311,7 +326,7 @@ func (s *Server) handleStoreApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, app)
+	writeJSON(w, http.StatusOK, app.WithCompat(s.checkRequirements(r.Context(), app.Needs())))
 }
 
 // handleStoreAsset serves one file out of a store app's folder — its icon,
@@ -444,6 +459,10 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		FromBackup string `json:"from_backup"`
 		Engine     string `json:"engine"`
+		// AcceptRequirements installs an app this box falls short of — a missing
+		// capability, a resource under the app's minimum — after the operator was
+		// told. An architecture the app does not ship stays refused.
+		AcceptRequirements bool `json:"accept_requirements"`
 	}
 	// A body is optional here: a plain install posts nothing at all.
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -452,9 +471,14 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		Name:   strings.TrimSpace(body.FromBackup),
 		Engine: strings.TrimSpace(body.Engine),
 	}
-	project, err := s.installer.StartInstall(r.Context(), storeRef(r), from)
+	project, err := s.installer.StartInstall(r.Context(), storeRef(r), from, body.AcceptRequirements)
 	if errors.Is(err, installer.ErrPlatformOwned) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	var unmet *requirements.Error
+	if errors.As(err, &unmet) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "requirements": unmet.Result})
 		return
 	}
 	if err != nil {

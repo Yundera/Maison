@@ -41,6 +41,16 @@ func TestStoreEndpointsServeEmptyListsNotNull(t *testing.T) {
 			t.Fatalf("GET %s: %v (body %q)", path, err, rec.Body.String())
 		}
 		for field, v := range got {
+			// host is the one object: what the box offers, whose own list must
+			// still never be null.
+			if field == "host" {
+				if h, ok := v.(map[string]any); !ok {
+					t.Errorf("GET %s: host is %T, want an object", path, v)
+				} else if _, ok := h["capabilities"].([]any); !ok {
+					t.Errorf("GET %s: host.capabilities is %T, want a list", path, h["capabilities"])
+				}
+				continue
+			}
 			if v == nil {
 				t.Errorf("GET %s: field %q is null, want []", path, field)
 				continue

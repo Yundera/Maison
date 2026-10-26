@@ -12,6 +12,7 @@ import (
 
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/requirements"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
@@ -94,6 +95,8 @@ type AppUpdate struct {
 	// Suggestion is set only for an untracked app with one unambiguous match.
 	Suggestion *Suggestion `json:"suggestion,omitempty"`
 	Error      string      `json:"error,omitempty"`
+	// Requirements: see UpdateStatus.Requirements.
+	Requirements *requirements.Result `json:"requirements,omitempty"`
 	DataPlan
 }
 
@@ -221,6 +224,7 @@ func (in *Installer) CheckAll(ctx context.Context, targets []CheckTarget) []AppU
 		}
 		out[i].DataPlan, out[i].State, out[i].Error = describeData(filepath.Join(in.cfg.AppsDir(), targets[i].ID), newBase)
 		out[i].Images = imageChanges(current[i], newBase)
+		out[i].Requirements = in.requirementsOf(ctx, app.Needs())
 	}
 
 	if untracked {

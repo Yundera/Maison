@@ -24,6 +24,7 @@ import (
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
 	"github.com/yundera/maison/internal/incident"
+	"github.com/yundera/maison/internal/requirements"
 	"github.com/yundera/maison/internal/stackup"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
@@ -84,6 +85,11 @@ type Installer struct {
 	// Announce queues an activity notice for a successful install, which the register
 	// only mails when the owner has switched that kind on. Nil means nobody is listening.
 	Announce func(r incident.Report)
+
+	// Requirements measures an app against this box (internal/requirements). An
+	// install the box falls short of needs the operator's acknowledgement; an
+	// update only carries a warning. Nil checks nothing.
+	Requirements func(ctx context.Context, app *xcomposeapp.App) requirements.Result
 
 	// OnUpdate, if set, is called whenever a tracked install's progress changes
 	// so the server can rebroadcast the app list (making the tile's progress bars
@@ -207,7 +213,11 @@ func (in *Installer) ProjectFor(ctx context.Context, ref appstore.Ref) (string, 
 // from the merged catalog — the store need not be a configured source. The whole
 // reference is recorded as the app's update reference, so later updates keep
 // coming from the same store *and* the same folder inside it.
-func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from BackupRef) (string, error) {
+//
+// An app this box falls short of (see Requirements) is refused with a
+// *requirements.Error unless accept is set; one built for another architecture
+// is refused whatever accept says.
+func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from BackupRef, accept bool) (string, error) {
 	app, raw, err := in.store.GetFrom(ctx, ref)
 	if err != nil {
 		return "", err
@@ -219,6 +229,11 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from Ba
 	project := projectName(f.Name, ref.ID)
 	if err := in.refusePlatformOwned(project); err != nil {
 		return "", err
+	}
+	if in.Requirements != nil {
+		if r := in.Requirements(ctx, app.Needs()); r.Blocked || (r.NeedsAck() && !accept) {
+			return "", &requirements.Error{Result: r}
+		}
 	}
 
 	in.mu.Lock()

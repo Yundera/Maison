@@ -26,6 +26,9 @@ type Service struct {
 	Image string `yaml:"image,omitempty"`
 	// Expose is the service's `expose:` list, each entry as written (`80`, `"80/tcp"`).
 	Expose []string `yaml:"expose,omitempty"`
+	// Ports is the service's `ports:` list, each entry as written: a short-syntax
+	// string (`"51820:51820/udp"`) or a long-syntax mapping. Read by `maison lint`.
+	Ports []any `yaml:"ports,omitempty"`
 }
 
 // Exposed maps every service to the ports it lists under `expose:` — what route

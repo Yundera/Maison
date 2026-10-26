@@ -17,6 +17,7 @@ import (
 	"github.com/yundera/maison/internal/appstore"
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/incident"
+	"github.com/yundera/maison/internal/requirements"
 	"github.com/yundera/maison/internal/stackup"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
@@ -44,6 +45,9 @@ type UpdateStatus struct {
 	// Blocked is set, and Available still true, when reaching the store's version
 	// crosses a manual data migration; DataPlan carries what the update would run.
 	DataPlan
+	// Requirements is how the store's version measures up against this box, nil
+	// when it fits. Informational: an update is never refused for it.
+	Requirements *requirements.Result `json:"requirements,omitempty"`
 	// Error carries a non-fatal lookup failure (store unreachable, app pulled from
 	// the catalog, …) so the UI can explain why a check couldn't complete.
 	Error string `json:"error,omitempty"`
@@ -66,7 +70,7 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 	}
 	st := statusOf(ref)
 
-	newBase, err := in.store.AppComposeFrom(ctx, ref)
+	app, newBase, err := in.store.AppSyncedFrom(ctx, ref)
 	if err != nil {
 		st.Error = err.Error()
 		return st, nil
@@ -75,6 +79,7 @@ func (in *Installer) CheckUpdate(ctx context.Context, project string) (UpdateSta
 	if st.Available {
 		// Available stays the byte comparison; Blocked or Error say why it would be refused.
 		st.DataPlan, _, st.Error = describeData(dir, newBase)
+		st.Requirements = in.requirementsOf(ctx, app.Needs())
 	}
 	return st, nil
 }
@@ -188,6 +193,13 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 	if err != nil {
 		return res, err
 	}
+
+	// A version that needs more than the box has is applied with a warning, never
+	// refused — not even for an architecture it no longer lists: the app is already
+	// running here, so its images evidently do run, and a store's architecture list
+	// is the maintainer's claim, not a manifest check. Refusing would strand the
+	// app on its old version for good.
+	reqWarn := in.requirementsWarning(ctx, app.Needs())
 
 	// Refused before the image pull, so an app no destination can take a backup of
 	// costs a size walk, not a download followed by a refusal. The walk is stat-only,
@@ -319,9 +331,41 @@ func (in *Installer) ApplyUpdate(ctx context.Context, project string, opts Updat
 		return in.rollBack(ctx, project, res, err)
 	}
 	res.Applied = true
+	if reqWarn != "" {
+		if res.Warning != "" {
+			res.Warning += "; "
+		}
+		res.Warning += reqWarn
+	}
 	// A working update clears whatever the last one left behind.
 	in.resolve("app.update:" + project)
 	return res, nil
+}
+
+// requirementsWarning says what the box lacks for app, or "" when it lacks nothing
+// that matters (a below-recommended resource is not worth a warning on an update).
+func (in *Installer) requirementsWarning(ctx context.Context, app *xcomposeapp.App) string {
+	if in.Requirements == nil {
+		return ""
+	}
+	r := in.Requirements(ctx, app)
+	if !r.NeedsAck() {
+		return ""
+	}
+	return "this version needs what this box lacks (" + strings.Join(r.Codes(), ", ") + "): the app may not work as intended"
+}
+
+// requirementsOf is the requirement verdict an update check reports, nil when the
+// app fits.
+func (in *Installer) requirementsOf(ctx context.Context, app *xcomposeapp.App) *requirements.Result {
+	if in.Requirements == nil {
+		return nil
+	}
+	r := in.Requirements(ctx, app)
+	if r.Fits() {
+		return nil
+	}
+	return &r
 }
 
 // rollBack puts the app back after a failed update, by restoring the backup taken

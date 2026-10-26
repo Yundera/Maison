@@ -11,7 +11,8 @@
   import { refOf, type StoreRef } from '../../storeref'
   import { apps } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
-  import { openStoreApp } from '../../route'
+  import { openSettings, openStoreApp } from '../../route'
+  import { compatSummary, requirementName, resourcesText } from '../../requirements'
 
   let {
     ref,
@@ -75,6 +76,14 @@
   )
   const parentName = $derived($loc(parent?.title, parent?.name) || app?.parent || '')
   const parentInstalled = $derived(!!app?.parent && installedIds.has(sanitizeProject(app.parent)))
+
+  // How the app fits this box — the banner under the header. Amber when installing
+  // takes an acknowledgement (or is impossible), quiet when it is only a note.
+  const fit = $derived(compatSummary(app?.compat, $t))
+  const fitWarn = $derived(
+    !!app?.compat &&
+      (!!app.compat.blocked || (app.compat.unsupported?.length ?? 0) > 0 || (app.compat.below_min?.length ?? 0) > 0),
+  )
 </script>
 
 <div class="detail">
@@ -101,9 +110,29 @@
         <p class="tagline">{$loc(app.tagline)}</p>
         <!-- The one place that offers to reinstall onto a backup: the catalog grid
              installs in a single click, and someone after their old data comes here. -->
-        <InstallButton ref={refOf(app)} {installed} size="normal" offerBackups />
+        <InstallButton
+          ref={refOf(app)}
+          {installed}
+          size="normal"
+          offerBackups
+          compat={app.compat}
+          name={$loc(app.title, app.name)}
+        />
       </div>
     </header>
+
+    {#if fit}
+      <div class="warning" class:soft={!fitWarn} role={fitWarn ? 'alert' : undefined}>
+        <span class="sign">{fitWarn ? '⚠' : 'ℹ'}</span>
+        <div>
+          <strong>{fit}</strong>
+          <p class="hint">
+            {$t('req_detail_hint')}
+            <button class="link" onclick={() => openSettings('store')}>{$t('app_stores_manage')} →</button>
+          </p>
+        </div>
+      </div>
+    {/if}
 
     <nav class="info">
       <div class="item">
@@ -124,10 +153,28 @@
           {/if}
         </div>
       {/if}
-      {#if app.min_memory}
+      {#if app.requires?.length}
         <div class="item">
-          <span class="label">Require memory</span>
-          <span class="value">{app.min_memory} MB</span>
+          <span class="label">{$t('req_requires')}</span>
+          <span class="value">{app.requires.map((r) => requirementName(r, $t)).join(', ')}</span>
+        </div>
+      {/if}
+      {#if app.resources?.min}
+        <div class="item">
+          <span class="label">{$t('req_minimum')}</span>
+          <span class="value">{resourcesText(app.resources.min, $t)}</span>
+        </div>
+      {/if}
+      {#if app.resources?.recommended}
+        <div class="item">
+          <span class="label">{$t('req_recommended')}</span>
+          <span class="value">{resourcesText(app.resources.recommended, $t)}</span>
+        </div>
+      {/if}
+      {#if app.architectures?.length}
+        <div class="item">
+          <span class="label">{$t('req_architectures')}</span>
+          <span class="value">{app.architectures.join(', ')}</span>
         </div>
       {/if}
     </nav>
@@ -269,6 +316,24 @@
   .warning .hint {
     margin: 0.15rem 0 0;
     color: hsl(38, 35%, 35%);
+  }
+  /* The same banner for a requirement that only informs (below recommended, a
+     capability Maison could not determine): grey, not amber. */
+  .warning.soft {
+    background: hsla(208, 16%, 94%, 1);
+    border-color: hsla(208, 16%, 80%, 1);
+    color: var(--grey-800);
+  }
+  .warning.soft .hint {
+    color: var(--text-subtle);
+  }
+  .warning .link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--primary);
+    cursor: pointer;
   }
   .app-header {
     display: flex;

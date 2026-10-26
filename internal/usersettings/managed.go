@@ -40,7 +40,7 @@ import (
 // Settings.Managed, so nothing that reads a setting's value had to change.
 
 // ManagedNames are the settings a deployment may own, in a stable order.
-var ManagedNames = []string{"feedback", "onboarding", "routing", "smtp"}
+var ManagedNames = []string{"capabilities", "feedback", "onboarding", "routing", "smtp"}
 
 // ErrUnknownSetting is a name that is not in ManagedNames.
 var ErrUnknownSetting = errors.New("unknown setting")
@@ -170,6 +170,15 @@ func decodeManaged(name string, raw json.RawMessage) (func(*Settings), error) {
 			return nil, fmt.Errorf("routing: %w", err)
 		}
 		return func(st *Settings) { st.Routing = &v }, nil
+	case "capabilities":
+		var v map[string]string
+		if err := strictDecode(raw, &v); err != nil {
+			return nil, err
+		}
+		if err := ValidateCapabilities(v); err != nil {
+			return nil, err
+		}
+		return func(st *Settings) { st.Capabilities = v }, nil
 	case "feedback":
 		var v Feedback
 		if err := strictDecode(raw, &v); err != nil {
@@ -243,6 +252,8 @@ func clearField(st *Settings, name string) {
 		st.Feedback = nil
 	case "onboarding":
 		st.Onboarding = nil
+	case "capabilities":
+		st.Capabilities = nil
 	}
 }
 
@@ -389,6 +400,8 @@ func setRaw(st *Settings, name string, raw json.RawMessage) error {
 		return json.Unmarshal(raw, &st.Feedback)
 	case "onboarding":
 		return json.Unmarshal(raw, &st.Onboarding)
+	case "capabilities":
+		return json.Unmarshal(raw, &st.Capabilities)
 	}
 	return nil
 }
@@ -399,7 +412,7 @@ func encodeFile(st Settings) ([]byte, error) {
 	owners := st.Managed
 	flat := st
 	flat.Managed = nil
-	flat.SMTP, flat.Routing, flat.Feedback, flat.Onboarding = nil, nil, nil, nil
+	flat.SMTP, flat.Routing, flat.Feedback, flat.Onboarding, flat.Capabilities = nil, nil, nil, nil, nil
 	b, err := json.Marshal(flat)
 	if err != nil {
 		return nil, err
@@ -420,6 +433,9 @@ func encodeFile(st Settings) ([]byte, error) {
 	}
 	if st.Onboarding != nil {
 		values["onboarding"] = st.Onboarding
+	}
+	if st.Capabilities != nil {
+		values["capabilities"] = st.Capabilities
 	}
 	names := append([]string(nil), ManagedNames...)
 	sort.Strings(names)

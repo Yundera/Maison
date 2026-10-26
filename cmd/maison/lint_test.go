@@ -123,3 +123,51 @@ x-compose-app:
 		}
 	}
 }
+
+// A published host port means a listener the internet must dial, which a box behind
+// NAT or the tunnel does not have: the app has to say so with requires. A port bound
+// to one named address is not for the internet.
+func TestLintPublishedPortsNeedPublicIP(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte(body), 0o644)
+		return p
+	}
+	head := "x-compose-app:\n  title: {en_us: App}\n"
+	short := write("short.yml", "services: {wg: {image: a:1, ports: [\"51820:51820/udp\"]}}\n"+head)
+	long := write("long.yml", "services: {db: {image: a:1, ports: [{target: 6881, published: 6881, protocol: tcp}]}}\n"+head)
+	declared := write("declared.yml", "services: {wg: {image: a:1, ports: [\"51820:51820/udp\"]}}\n"+head+"  requires: [public-ip]\n")
+	bound := write("bound.yml", "services: {smb: {image: a:1, ports: [\"10.9.0.1:445:445\", {target: 139, published: 139, host_ip: 10.9.0.1}, \"8080\"]}}\n"+head)
+	casaos := write("casaos.yml", "services: {wg: {image: a:1, ports: [\"51820:51820/udp\"]}}\nx-casaos:\n  title: {en_us: App}\n  tags: [needs-public-ip]\n")
+
+	var out, errOut bytes.Buffer
+	runCLI([]string{"lint", short, long, declared, bound, casaos}, nil, &out, &errOut)
+	for _, want := range []string{
+		short + ": service wg publishes 51820:51820/udp on every address",
+		long + ": service db publishes 6881/tcp on every address",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	for _, clean := range []string{declared, bound, casaos} {
+		if strings.Contains(out.String(), clean+":") {
+			t.Errorf("%s reported:\n%s", clean, out.String())
+		}
+	}
+}
+
+func TestLintRequirements(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "docker-compose.yml")
+	os.WriteFile(p, []byte("services: {app: {image: a:1}}\nx-compose-app:\n  title: {en_us: App}\n  requires: [gpu]\n  resources: {min: {memory: 4}}\n"), 0o644)
+	var out, errOut bytes.Buffer
+	if code := runCLI([]string{"lint", p}, nil, &out, &errOut); code != 1 {
+		t.Fatalf("code = %d", code)
+	}
+	for _, want := range []string{"requires[0]: unknown capability gpu", "resources.min.memory: must be a size"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+}

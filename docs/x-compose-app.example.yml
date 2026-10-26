@@ -91,8 +91,13 @@ x-compose-app:
     - screenshots/1.png
     - screenshots/2.png
   thumbnail: thumbnail.png
-  architectures: [amd64, arm64]            # parsed, not used yet
-  min_memory: 1024                         # MB, shown in the store
+
+  # ── What the app needs from the box (see "Requirements") ──────────────────
+  architectures: [amd64, arm64]            # other boxes cannot install it
+  requires: [public-ip]                    # public-ip | gpu-nvidia | gpu-dri — hidden where absent
+  resources:
+    min: { memory: 1G }                    # below: install asks to confirm
+    recommended: { cpu: 2, memory: 2G }    # below: a note in the store
 
   # ── Dashboard placement ───────────────────────────────────────────────────
   view: apps                               # apps | service | system

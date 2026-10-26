@@ -21,6 +21,7 @@
   } from '../../stores/store'
   import { t } from '../../i18n'
   import { autofocus } from '../../actions'
+  import CapabilitiesCard from './CapabilitiesCard.svelte'
 
   let sources = $state<StoreSource[]>([])
   // Apps per store URL, from the catalog — every store's own copy, including the
@@ -256,6 +257,9 @@
     {#if error}<p class="err">{error}</p>{/if}
   {/if}
 </section>
+
+<!-- What the box offers apps, which decides what the store above lists. -->
+<CapabilitiesCard />
 
 <style>
   .card {

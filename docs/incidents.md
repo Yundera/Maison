@@ -143,6 +143,7 @@ immediately would find half of them unhealthy every time Maison restarted.
 | `app.partial:<app>` | `app.partial` | Some containers up, some down, two passes running |
 | `app.crashloop:<app>` | `app.crashloop` | Docker's restart counter moved between two passes |
 | `app.address:<app>` | `app.address` | A running container publishes a port on a host address the box does not carry, three passes running. Needs `HOST_PROC`; not gated on `HasReached` |
+| `app.requirement:<app>` | `app.requirement` | An installed app requires a capability (`public-ip`, a GPU) the box effectively lacks — detection changed, or the operator set an override to *no* — two passes running. Capabilities only, never resources; an unknown capability is not held against the app. Not gated on `HasReached` |
 | `host.cpu` | `host.cpu` | CPU pressure (PSI `some`) ≥ 25% averaged over 24h, and the last 6h not calm. Without PSI: CPU busy ≥ 90%. Clears when the 6h average is under 10% (busy: 75%). Needs resource history |
 | `host.memory` | `host.memory` | Memory pressure ≥ 10% over 1h, or memory in use (cache excluded) ≥ 90% over 6h. Critical when memory pressure `full` ≥ 10% over 1h. Clears under 2% pressure and 85% in use. Needs resource history |
 | `disk.trend` | `disk.trend` | A line through the last week of the data disk (≥ 3 days of it) reaches 100% within 7 days, and the disk is ≥ 50% full. Clears past 14 days or when it stops growing. Not raised while a `disk.full` is open. Needs resource history |

@@ -31,6 +31,7 @@ import (
 
 	"github.com/yundera/maison/internal/asset"
 	"github.com/yundera/maison/internal/composefile"
+	"github.com/yundera/maison/internal/requirements"
 	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
@@ -55,7 +56,15 @@ type CatalogApp struct {
 	Parent    string `json:"parent,omitempty"`
 	Developer string `json:"developer"`
 	MinMemory int    `json:"min_memory,omitempty"`
-	StoreURL  string `json:"store"`
+	// Architectures, Requires and Resources are what the app needs from the box
+	// (see internal/requirements). Compat is how this box measures up against them —
+	// never set in the cache, which every box-independent reader shares; the server
+	// fills it on the copy it serves (WithCompat).
+	Architectures []string               `json:"architectures,omitempty"`
+	Requires      []string               `json:"requires,omitempty"`
+	Resources     *xcomposeapp.Resources `json:"resources,omitempty"`
+	Compat        *requirements.Result   `json:"compat,omitempty"`
+	StoreURL      string                 `json:"store"`
 	// AppsPath is the folder inside the archive this app was found in. It rides
 	// back to the client so a pinned install goes to the same place the app was
 	// read from, rather than to whatever the default happens to be.
@@ -78,6 +87,18 @@ type CatalogApp struct {
 	// reading bytes already on this disk, and the copy has to survive the store the
 	// URL points into being refreshed or removed.
 	iconRel string
+}
+
+// Needs is the part of the app's x-compose-app the requirement checks read.
+func (a *CatalogApp) Needs() *xcomposeapp.App {
+	return &xcomposeapp.App{Architectures: a.Architectures, Requires: a.Requires, Resources: a.Resources}
+}
+
+// WithCompat returns a copy of a carrying r. The cached entry is left alone.
+func (a *CatalogApp) WithCompat(r requirements.Result) *CatalogApp {
+	c := *a
+	c.Compat = &r
+	return &c
 }
 
 // Dir is the app's folder inside the extracted store — the directory holding its
@@ -969,23 +990,26 @@ func catalogApp(id string, ca *xcomposeapp.App, composePath, storeURL, appsPath,
 		name = id
 	}
 	app := &CatalogApp{
-		ID:          id,
-		Name:        name,
-		Title:       ca.Title,
-		Tagline:     ca.Tagline,
-		Description: ca.Description,
-		Icon:        ca.Icon,
-		Thumbnail:   ca.Thumbnail,
-		Screenshots: ca.Screenshots,
-		Category:    ca.Category,
-		Parent:      strings.TrimSpace(ca.Parent),
-		Developer:   ca.Developer,
-		MinMemory:   ca.MinMemory,
-		StoreURL:    storeURL,
-		AppsPath:    appsPath,
-		StoreName:   storeName,
-		composePath: composePath,
-		problems:    ca.Problems,
+		ID:            id,
+		Name:          name,
+		Title:         ca.Title,
+		Tagline:       ca.Tagline,
+		Description:   ca.Description,
+		Icon:          ca.Icon,
+		Thumbnail:     ca.Thumbnail,
+		Screenshots:   ca.Screenshots,
+		Category:      ca.Category,
+		Parent:        strings.TrimSpace(ca.Parent),
+		Developer:     ca.Developer,
+		MinMemory:     ca.MinMemory,
+		Architectures: ca.Architectures,
+		Requires:      ca.Requires,
+		Resources:     ca.Resources,
+		StoreURL:      storeURL,
+		AppsPath:      appsPath,
+		StoreName:     storeName,
+		composePath:   composePath,
+		problems:      ca.Problems,
 	}
 	app.resolveAssets(NewRef(storeURL, appsPath, id))
 	return app

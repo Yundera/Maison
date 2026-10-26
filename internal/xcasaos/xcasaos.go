@@ -41,6 +41,7 @@ type StoreInfo struct {
 	Main           string                 `yaml:"main,omitempty" json:"main,omitempty"`
 	MinMemory      int                    `yaml:"min_memory,omitempty" json:"min_memory,omitempty"`
 	Architectures  []string               `yaml:"architectures,omitempty" json:"architectures,omitempty"`
+	Tags           []string               `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Tips           Tips                   `yaml:"tips,omitempty" json:"tips,omitempty"`
 	Apps           map[string]ServiceInfo `yaml:"apps,omitempty" json:"apps,omitempty"`
 
@@ -155,6 +156,13 @@ func (s *StoreInfo) ComposeApp() map[string]any {
 	if s.MinMemory > 0 {
 		m["min_memory"] = s.MinMemory
 	}
+	// Tags are topical, except the store's one functional tag, which is the
+	// CasaOS spelling of `requires: [public-ip]`.
+	for _, t := range s.Tags {
+		if strings.TrimSpace(t) == NeedsPublicIPTag {
+			m["requires"] = []any{"public-ip"}
+		}
+	}
 	if t := s.tips(); len(t) > 0 {
 		m["tips"] = t
 	}
@@ -185,6 +193,10 @@ func (s *StoreInfo) ComposeApp() map[string]any {
 	}
 	return m
 }
+
+// NeedsPublicIPTag is the x-casaos tag the official stores use for an app that
+// needs inbound connections to reach the host.
+const NeedsPublicIPTag = "needs-public-ip"
 
 // The names the translated CasaOS install commands run under — and so the names
 // of their `once` markers.

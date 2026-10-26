@@ -529,3 +529,17 @@ func (c *Client) WatchContainers(ctx context.Context, onEvent func(ContainerEven
 		}
 	}
 }
+
+// Runtimes lists the container runtimes the daemon has registered (runc, and
+// nvidia where nvidia-container-toolkit is installed).
+func (c *Client) Runtimes(ctx context.Context) ([]string, error) {
+	info, err := c.cli.Info(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(info.Runtimes))
+	for name := range info.Runtimes {
+		out = append(out, name)
+	}
+	return out, nil
+}

@@ -24,3 +24,15 @@ func TestTipsTranslateToALocaleMap(t *testing.T) {
 		}
 	}
 }
+
+// The CasaOS needs-public-ip tag is the translated block's `requires`; other
+// tags are topical and translate to nothing.
+func TestNeedsPublicIPTagTranslatesToRequires(t *testing.T) {
+	m := (&StoreInfo{Tags: []string{"games", "needs-public-ip"}}).ComposeApp()
+	if !reflect.DeepEqual(m["requires"], []any{"public-ip"}) {
+		t.Errorf("requires = %v", m["requires"])
+	}
+	if m := (&StoreInfo{Tags: []string{"games"}}).ComposeApp(); m["requires"] != nil {
+		t.Errorf("topical tag translated: %v", m["requires"])
+	}
+}

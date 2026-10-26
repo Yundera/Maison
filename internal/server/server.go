@@ -64,6 +64,10 @@ type Server struct {
 	installer  *installer.Installer
 	settings   *usersettings.Store
 
+	// hostInfo caches what the box offers apps, for the store's requirement
+	// checks (capabilities.go).
+	hostInfo hostCache
+
 	// incidents is the box's register of what is currently wrong. Unlike the backup
 	// group below it is never nil: a box with no Docker can still fill its disk, and
 	// reporting that must not depend on a daemon being reachable.
@@ -339,6 +343,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 	s.installer.Report = s.incidents.Report
 	s.installer.Resolve = s.incidents.Resolve
 	s.installer.Announce = s.incidents.Announce
+	s.installer.Requirements = s.checkRequirements
 	if s.apps != nil {
 		// An update rewrites the app's compose and brings the stack back up — the one
 		// destructive change Maison makes on the user's behalf — so it backs the app up
@@ -608,6 +613,8 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 
 		r.Get("/settings", s.handleGetSettings)
 		r.Put("/settings", s.handlePutSettings)
+		r.Get("/settings/capabilities", s.handleGetCapabilities)
+		r.Put("/settings/capabilities", s.handlePutCapabilities)
 		r.Get("/settings/routing", s.handleGetRouting)
 		r.Put("/settings/routing", s.handlePutRouting)
 		r.Post("/settings/routing/preview", s.handlePreviewRouting)

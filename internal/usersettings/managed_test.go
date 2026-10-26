@@ -148,6 +148,8 @@ func TestManageRefusesBadInput(t *testing.T) {
 		{"onboarding", "yundera", `{"url":"https://admin-box.example/"}`, hasAll},
 		{"onboarding", "yundera", `{"check_url":"http://admin-app/api/onboarding/check","token":"${secret:onboarding_token}"}`, none},
 		{"domains", "yundera", `[{"name":"a","domain":"x"},{"name":"b","domain":"x"}]`, hasAll},
+		{"capabilities", "yundera", `{"tpu":"yes"}`, hasAll},
+		{"capabilities", "yundera", `{"public-ip":"maybe"}`, hasAll},
 	}
 	for _, c := range cases {
 		if err := s.Manage(c.name, c.owner, json.RawMessage(c.raw), c.has); err == nil {
@@ -270,5 +272,41 @@ func TestOnboardingTokenIsASecretRef(t *testing.T) {
 	}
 	if len(refs) != 1 || refs[0] != "onboarding_token" {
 		t.Fatalf("release returned %v, want [onboarding_token]", refs)
+	}
+}
+
+// The capability overrides: a user edit through the dedicated setter, refused once
+// the deployment manages the setting, and the managed value surviving a reload.
+func TestCapabilitiesSetAndManaged(t *testing.T) {
+	s := newStore(t)
+	if err := s.SetCapabilities(map[string]string{"public-ip": "yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCapabilities(map[string]string{"public-ip": "perhaps"}); err == nil {
+		t.Fatal("bad override accepted")
+	}
+	if got := s.Get().Capabilities["public-ip"]; got != "yes" {
+		t.Fatalf("public-ip = %q", got)
+	}
+	if err := s.Manage("capabilities", "yundera", json.RawMessage(`{"public-ip":"no"}`), hasAll); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCapabilities(nil); !errors.Is(err, ErrManaged) {
+		t.Fatalf("edit of managed capabilities: %v", err)
+	}
+	edit := s.Get()
+	edit.Capabilities = map[string]string{"public-ip": "yes"}
+	if err := s.Set(edit); err != nil {
+		t.Fatal(err)
+	}
+	re := New(s.path).Get()
+	if re.Capabilities["public-ip"] != "no" {
+		t.Fatalf("managed capabilities lost: %v", re.Capabilities)
+	}
+	if o, ok := re.IsManaged("capabilities"); !ok || o != "yundera" {
+		t.Fatalf("owner lost: %v", re.Managed)
+	}
+	if _, err := s.Release("capabilities"); err != nil || s.Get().Capabilities != nil {
+		t.Fatalf("release: %v %v", err, s.Get().Capabilities)
 	}
 }

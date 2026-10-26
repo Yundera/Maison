@@ -3,7 +3,8 @@
   import { storeApp } from '../../stores/ui'
   import { backToCatalog, closeStore, openSettings, openStoreApp } from '../../route'
   import { bare, refOf, refPath } from '../../storeref'
-  import { fetchStore, type StoreApp, type StoreData } from '../../stores/store'
+  import { fetchStore, isHidden, type StoreApp, type StoreData } from '../../stores/store'
+  import { compatSummary } from '../../requirements'
   import { apps } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
   import { loc, t } from '../../i18n'
@@ -17,6 +18,25 @@
   let developer = $state('All')
   let store = $state('All')
   let search = $state('')
+  // Whether apps this box cannot run (a missing capability, another architecture)
+  // are listed, greyed out. Off by default: a store full of game servers a tunnelled
+  // box cannot host is noise. Per viewer, so localStorage — and a convenience, so a
+  // storage that throws only costs remembering it.
+  let showAll = $state(readShowAll())
+  function readShowAll(): boolean {
+    try {
+      return localStorage.getItem('maison.store.showAll') === '1'
+    } catch {
+      return false
+    }
+  }
+  $effect(() => {
+    try {
+      localStorage.setItem('maison.store.showAll', showAll ? '1' : '0')
+    } catch {
+      /* not remembered, still applied */
+    }
+  })
   // Which app's detail page is showing lives in the URL (/store/<app>), not here:
   // the route owns it so deep links, Back and the in-panel back arrow all agree.
   const selected = $derived($storeApp)
@@ -101,7 +121,12 @@
   // instead — but only while browsing. Once something is typed the person is
   // looking for a named app, and a search that cannot find an installable app
   // because of a presentation rule is a search that is simply wrong.
-  const filtered = $derived.by(() => {
+  //
+  // An app this box cannot run is left out too, unless "show all" is on — and,
+  // for the same reason as extensions, never from a search: someone typing
+  // "minecraft" on a tunnelled box should find it greyed out with the reason, not
+  // conclude the store has no such app.
+  const matching = $derived.by(() => {
     const q = search.trim().toLowerCase()
     return (data?.apps ?? []).filter((a) => {
       if (!q && isExtension(a)) return false
@@ -111,6 +136,11 @@
       return true
     })
   })
+  const filtered = $derived(
+    showAll || search.trim() ? matching : matching.filter((a) => !isHidden(a.compat)),
+  )
+  /** How many apps the current filter leaves out for not fitting this box. */
+  const hiddenCount = $derived(matching.filter((a) => isHidden(a.compat)).length)
 
   // The browse, grouped by store rather than merged. Stores are never folded into
   // one another: an app shipped by two of them appears under each, with that
@@ -140,7 +170,7 @@
     const out: StoreApp[] = []
     for (const id of data?.recommend ?? []) {
       const a = byId.get(id.toLowerCase())
-      if (a && !seen.has(a.id)) {
+      if (a && !seen.has(a.id) && (showAll || !isHidden(a.compat))) {
         seen.add(a.id)
         out.push(a)
       }
@@ -211,6 +241,12 @@
           {/if}
           <input class="search" placeholder={$t('search_apps')} bind:value={search} />
           <div class="spacer"></div>
+          {#if hiddenCount > 0 || showAll}
+            <label class="show-all" title={$t('store_show_all_hint')}>
+              <input type="checkbox" bind:checked={showAll} />
+              {$t('store_show_all', { count: String(hiddenCount) })}
+            </label>
+          {/if}
           <span class="count-all">{$t('store_apps_count', { count: String((data?.apps ?? []).length) })}</span>
           <!-- Managing sources is box configuration, not browsing: it lives in
                settings, and this is the way there. openSettings navigates, which
@@ -244,13 +280,18 @@
         <span class="name one-line">{$loc(app.title, app.name)}</span>
         <span class="tag one-line">{$loc(app.tagline)}</span>
       </div>
-      <InstallButton ref={refOf(app)} installed={isInstalled(app)} />
+      <InstallButton ref={refOf(app)} installed={isInstalled(app)} compat={app.compat} name={$loc(app.title, app.name)} />
     </div>
   </div>
 {/snippet}
 
 {#snippet card(app: StoreApp)}
-  <div class="app-item" onclick={() => openStoreApp(refOf(app))} role="presentation">
+  <div
+    class="app-item"
+    class:unsupported={isHidden(app.compat)}
+    onclick={() => openStoreApp(refOf(app))}
+    role="presentation"
+  >
     <div class="row1">
       <img class="plate" src={app.icon} alt="" loading="lazy" />
       <div class="meta">
@@ -261,10 +302,15 @@
     <div class="row2">
       <span class="cat">{app.category}</span>
     </div>
+    {#if compatSummary(app.compat, $t)}
+      <p class="req" class:short={isHidden(app.compat) || (app.compat?.below_min?.length ?? 0) > 0}>
+        {compatSummary(app.compat, $t)}
+      </p>
+    {/if}
     <!-- Install pill sits on its own row below the app; while installing it
          shows a compact progress pill (the two-bar detail lives on the tile). -->
     <div class="installbar">
-      <InstallButton ref={refOf(app)} installed={isInstalled(app)} />
+      <InstallButton ref={refOf(app)} installed={isInstalled(app)} compat={app.compat} name={$loc(app.title, app.name)} />
     </div>
   </div>
 {/snippet}
@@ -476,6 +522,31 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+  }
+  /* An app this box cannot run, listed because "show all" is on or it was searched
+     for: still clickable — its page says why — but plainly not one of the offers. */
+  .app-item.unsupported .row1,
+  .app-item.unsupported .row2 {
+    opacity: 0.45;
+    filter: grayscale(0.8);
+  }
+  .req {
+    margin: 0.35rem 0 0 calc(64px + 1rem);
+    font-size: 0.72rem;
+    line-height: 1rem;
+    color: var(--text-subtle);
+  }
+  .req.short {
+    color: hsl(38, 62%, 32%);
+  }
+  .show-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.8rem;
+    color: var(--text-subtle);
+    cursor: pointer;
+    white-space: nowrap;
   }
   .row2 {
     display: flex;

@@ -2,6 +2,7 @@ import { writable } from 'svelte/store'
 
 import type { StoreRef } from '../storeref'
 import type { App } from './apps'
+import type { Compat } from './store'
 
 // Whether the App Store modal is open. StorePanel (M3) renders when true.
 export const storeOpen = writable(false)
@@ -52,3 +53,25 @@ export const uninstallTarget = writable<{ id: string; name: string } | null>(nul
 // drop still fires a trailing `click` on the tile, which would otherwise open the
 // app; tiles consult this flag in their click handler so a reorder never opens.
 export const tileDragging = writable(false)
+
+// The install waiting on the operator's acknowledgement that this box falls short of
+// the app's requirements (null = no dialog). confirmInstall opens it and resolves
+// with the answer; InstallConfirmDialog is what answers.
+export const installConfirm = writable<{
+  name: string
+  compat: Compat
+  resolve: (ok: boolean) => void
+} | null>(null)
+
+export function confirmInstall(name: string, compat: Compat): Promise<boolean> {
+  return new Promise((resolve) => {
+    installConfirm.set({
+      name,
+      compat,
+      resolve: (ok) => {
+        installConfirm.set(null)
+        resolve(ok)
+      },
+    })
+  })
+}

@@ -9,7 +9,7 @@
 #   cert.pem / key.pem the leaf served by Caddy (mounted at /certs).
 #
 # SANs cover *.localhost + localhost (the default DOMAIN=app.localhost) plus the
-# 127-0-0-1.nip.io fallback. If you use a different DOMAIN, add its SANs below.
+# 127-0-0-1.sslip.io fallback. If you use a different DOMAIN, add its SANs below.
 set -euo pipefail
 cd "$(dirname "$0")/certs" 2>/dev/null || { mkdir -p "$(dirname "$0")/certs"; cd "$(dirname "$0")/certs"; }
 
@@ -25,7 +25,7 @@ openssl req -newkey rsa:2048 -nodes -keyout key.pem -out leaf.csr \
   -subj "/CN=*.localhost"
 
 cat > san.ext <<'EOF'
-subjectAltName=DNS:localhost,DNS:*.localhost,DNS:*.127-0-0-1.nip.io,DNS:127-0-0-1.nip.io
+subjectAltName=DNS:localhost,DNS:*.localhost,DNS:*.127-0-0-1.sslip.io,DNS:127-0-0-1.sslip.io
 extendedKeyUsage=serverAuth
 EOF
 

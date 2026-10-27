@@ -84,7 +84,7 @@ PCS the certs are publicly trusted so it doesn't arise.
 ## Changing `DOMAIN`
 
 `app.localhost` is the zero-config default. If you switch to something else
-(e.g. a `nip.io` form for LAN access), update **three** places to keep them in
+(e.g. an `sslip.io` form for LAN access), update **three** places to keep them in
 sync: `DOMAIN` in `.env.dev`, the `issuer:` line in `dev/dex/config.yaml`, and
 the cert SANs (`./gen-certs.sh --force` after editing its `san.ext` block).
 

@@ -162,8 +162,8 @@ func appRoutes(project string, base []byte) []routing.Route {
 // base variables, then the app's own .env), with the deployment's .env.app beneath
 // the app's .env — on a first install the app's .env may not carry a domain
 // variable yet. Host identity is decided on the resolved host: without it a route
-// written as `${PUBLIC_IP_DASH}.nip.io` reads as a different host from a domain
-// configured as `{name}-${APP_PUBLIC_IP_DASH}.nip.io`, and the app is published
+// written as `${PUBLIC_IP_DASH}.sslip.io` reads as a different host from a domain
+// configured as `{name}-${APP_PUBLIC_IP_DASH}.sslip.io`, and the app is published
 // twice on one name.
 func resolver(cfg config.Config, project string, appEnv []byte) routing.Resolver {
 	var layered bytes.Buffer

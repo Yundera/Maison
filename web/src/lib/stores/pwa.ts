@@ -93,7 +93,8 @@ export const installHost = location.host
 /**
  * Whether this is one of the fallback addresses rather than the box's own domain.
  *
- * A PCS answers on its domain plus nip.io and sslip.io addresses derived from its
+ * A PCS answers on its domain plus IP-encoded addresses (<ip>.<IP_ZONE>, sslip.io,
+ * nip.io on a box without an IP zone) derived from its
  * current public IP (see internal/server/onboarding.go's requestOrigin). An
  * installed app is pinned to the exact origin it was installed from, so installing
  * from a fallback produces a home-screen icon that dies the day the IP changes —
@@ -102,7 +103,9 @@ export const installHost = location.host
  *
  * Not a hard block: a box that has no domain yet has nothing else to offer.
  */
-export const isFallbackHost = /\.(nip|sslip)\.io$/.test(location.hostname)
+export const isFallbackHost =
+  /\.(nip|sslip)\.io$/.test(location.hostname) ||
+  /(^|-)\d{1,3}(-\d{1,3}){3}\./.test(location.hostname)
 
 /**
  * The Chromium-only install event. Neither it nor its two window events are in

@@ -65,7 +65,7 @@ func isNavigation(r *http.Request) bool {
 // the far side can send the browser back where it started.
 //
 // Taken from the request rather than from configuration on purpose: a box
-// answers on several hostnames at once — its domain plus the nip.io and
+// answers on several hostnames at once — its domain plus the ip.<zone> and
 // sslip.io fallbacks — and only the browser knows which one the owner actually
 // typed. A fixed value in the setting would bounce them onto a different host at
 // the end of setup, possibly one their current session does not cover.

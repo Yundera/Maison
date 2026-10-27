@@ -71,9 +71,9 @@ const (
 //
 // It exists because "is this host already routed?" cannot be answered on the
 // written text. A compose may reach the same host through different spellings of
-// the same variable: Maison's own stack writes `maison-${PUBLIC_IP_DASH}.nip.io`
-// while a configured domain is `{name}-${APP_PUBLIC_IP_DASH}.nip.io`, and both are
-// `maison-<ip>.nip.io` by the time Caddy sees them.
+// the same variable: Maison's own stack writes `maison-${PUBLIC_IP_DASH}.sslip.io`
+// while a configured domain is `{name}-${APP_PUBLIC_IP_DASH}.sslip.io`, and both are
+// `maison-<ip>.sslip.io` by the time Caddy sees them.
 //
 // A reference it cannot resolve is left as written, so two genuinely unknown
 // hosts never collapse into each other.

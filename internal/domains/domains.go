@@ -54,8 +54,8 @@ const NamePlaceholder = "{name}"
 
 // Template is d's host template with the name placeholder guaranteed: a host
 // written without one is read as `{name}-<host>`, the shape every domain had before
-// the placeholder existed (`${APP_PUBLIC_IP_DASH}.nip.io` meant
-// `<app>-${APP_PUBLIC_IP_DASH}.nip.io`).
+// the placeholder existed (`${APP_PUBLIC_IP_DASH}.sslip.io` meant
+// `<app>-${APP_PUBLIC_IP_DASH}.sslip.io`).
 func (d Domain) Template() string {
 	if strings.Contains(d.Domain, NamePlaceholder) {
 		return d.Domain
@@ -80,7 +80,7 @@ func (d Domain) NameOf(host string) (string, bool) {
 }
 
 // Suffix is what every host on this domain ends with: the template after its name
-// (`-${APP_PUBLIC_IP_DASH}.nip.io`). Used to recognise a route on this domain that a
+// (`-${APP_PUBLIC_IP_DASH}.sslip.io`). Used to recognise a route on this domain that a
 // manifest no longer lists.
 func (d Domain) Suffix() string {
 	_, suf, _ := strings.Cut(d.Template(), NamePlaceholder)

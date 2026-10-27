@@ -30,7 +30,7 @@ import (
 // on, every request is treated as the dashboard (the gate is inert).
 //
 // The dashboard is reached at `maison` (and the legacy `casaos`) on every domain of
-// the routing setting — the nip.io and sslip.io names as well as the gateway one —
+// the routing setting — the ip.<zone> and sslip.io names as well as the gateway one —
 // and at the bare primary domain.
 func (s *Server) isDashboardHost(hostport string) bool {
 	eff := s.cfg.Routing()

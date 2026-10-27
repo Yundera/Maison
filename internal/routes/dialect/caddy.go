@@ -65,7 +65,7 @@ func (caddy) Render(index int, host string, up Upstream, domainLabels map[string
 }
 
 // Clone copies the whole group — a hand-written route may be an entire handle_path
-// tree — except its TLS keys, which are the domain's to state: the gateway and nip.io
+// tree — except its TLS keys, which are the domain's to state: the gateway and ip.<zone>
 // hosts carry the deployment's own CA, while sslip.io deliberately carries nothing
 // and falls through to Let's Encrypt. That absence is something the domain means, so
 // the strip cannot depend on the domain having labels of its own.

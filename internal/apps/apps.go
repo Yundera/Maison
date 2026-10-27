@@ -758,7 +758,7 @@ func (r *Registry) FindByHost(ctx context.Context, host, refDomain string) (App,
 			return a, true
 		}
 		// Every domain the app is published on, not only the primary: a stopped
-		// app's nip.io and sslip.io hosts reach the wake page too.
+		// app's IP-name (ip.<zone>, sslip.io) hosts reach the wake page too.
 		if hosts != nil {
 			for _, h := range hosts(a.ID) {
 				if h == host {

@@ -32,7 +32,7 @@ route is the web UI: the tile opens it and the app's `APP_URL` comes from it.
   "domains": [
     { "name": "gateway", "domain": "{name}-${APP_DOMAIN}",
       "labels": { "import": "gateway_tls" } },
-    { "name": "nip",     "domain": "{name}-${APP_PUBLIC_IP_DASH}.nip.io",
+    { "name": "ip",      "domain": "{name}-${APP_PUBLIC_IP_DASH}.${APP_IP_ZONE}",
       "labels": { "import": "gateway_tls" } },
     { "name": "sslip",   "domain": "{name}-${APP_PUBLIC_IP_DASH}.sslip.io" }
   ]
@@ -56,7 +56,7 @@ follows the box when its IP changes. A host written without `{name}` reads as
 
 A domain's `labels` are added to every route on it, and win on a key collision; an
 **empty value deletes the key**. TLS lives here, not in the app: on a Yundera PCS the
-gateway and nip.io hosts carry `import: gateway_tls` (the deployment's own CA), while
+gateway and ip-zone hosts carry `import: gateway_tls` (the deployment's own CA), while
 sslip.io carries nothing and falls through to Let's Encrypt. A response header that
 belongs to every host — HSTS — goes here too.
 
@@ -98,8 +98,8 @@ services:
       caddy_0: outline-${APP_DOMAIN}
       caddy_0.import: gateway_tls
       caddy_0.reverse_proxy: "{{upstreams 80}}"
-      # Maison: route outline on nip
-      caddy_1: outline-${APP_PUBLIC_IP_DASH}.nip.io
+      # Maison: route outline on ip
+      caddy_1: outline-${APP_PUBLIC_IP_DASH}.ip.nsl.sh
       …
 ```
 
@@ -173,7 +173,7 @@ on every start, before `files` and steps render, so a listing writes
 | `ROUTE_<NAME>_URL`, `_HOST` | each further route (`ROUTE_OUTLINE_AUTH_URL`) | same |
 | `APP_URLS`, `APP_HOSTS` | the first route on every domain, primary first, comma-separated | the one published port |
 | `ROUTE_<NAME>_URLS`, `_HOSTS` | the same for each further route | same |
-| `APP_HOST_SUFFIXES` | what follows `<name>-` on each domain: `alice.nsl.sh,203-0-113-10.nip.io,…` | — |
+| `APP_HOST_SUFFIXES` | what follows `<name>-` on each domain: `alice.nsl.sh,203-0-113-10.ip.nsl.sh,…` | — |
 | `APP_BIND`, `APP_PORT_<NAME>` | — | what the `ports:` entries read |
 
 The lists are for an app's allow-lists of its own addresses — CORS and CSRF origins,

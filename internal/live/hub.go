@@ -273,7 +273,33 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	go c.writePump(ctx)
+	go c.pingPump(ctx)
 	c.readPump(ctx, h)
+}
+
+// pingInterval keeps an idle socket under Cloudflare's ~100s idle timeout, which
+// otherwise cuts every quiet tab and leaves it reconnecting in a loop.
+const pingInterval = 30 * time.Second
+
+// pingPump pings until the client goes away; a missed pong closes the socket.
+// coder/websocket reads the pong in readPump's Read, so the two run side by side.
+func (c *client) pingPump(ctx context.Context) {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := c.conn.Ping(pctx)
+			cancel()
+			if err != nil {
+				_ = c.conn.Close(websocket.StatusGoingAway, "ping timeout")
+				return
+			}
+		}
+	}
 }
 
 func (c *client) readPump(ctx context.Context, h *Hub) {

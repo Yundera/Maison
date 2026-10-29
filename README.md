@@ -70,6 +70,31 @@ MIT licensed
 
 ## Getting started
 
+<!-- Insert in Yundera/Maison README.md, directly under the opening paragraph
+     ("It ships as one container: ... No database, no file manager, no login.")
+     and before "## Quick start". -->
+
+> ### Security model: where the login lives
+>
+> Maison has no login screen of its own **on purpose**. It is one piece of a
+> larger stack, and sign-in is handled once, in front of it, rather than
+> re-implemented in every component.
+>
+> On an NSL.SH box or a Yundera server, Maison runs behind:
+>
+> - **AppShield**, a gate that every request to Maison and to each installed
+>   app passes through. Nothing is reachable without a valid session.
+> - **Single sign-on** (Dex + Authelia): one account for the dashboard and
+>   every app, with TOTP two-factor authentication. A new box has no default
+>   password: its owner account stays disabled until claimed.
+> - **Caddy** with automatic HTTPS, reached through the NSL.SH tunnel, so
+>   the box needs no open inbound port.
+>
+> All of this is deployed and kept up to date by
+> [mesh-router-template-root](https://github.com/Yundera/mesh-router-template-root)
+> (see its `stacks/auth` and `stacks/maison` READMEs).
+>
+> 
 ### Before you install
 
 - A Linux host with **Docker Engine** and the **Compose plugin** (`docker compose version`).

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yundera/maison/internal/composecmd"
 	"github.com/yundera/maison/internal/incident"
 )
 
@@ -487,27 +488,25 @@ func (r *Registry) uninstallApp(ctx context.Context, id string, uo *UninstallOpt
 	return name, nil
 }
 
-// removeContainers stops and removes the project's containers, ticking the Remove
-// track once per container. done is what the earlier tracks are already at, so the bar
-// does not appear to restart the operation.
+// removeContainers takes the app down with `docker compose -p <id> down`, the mirror
+// of the `compose up` that installed it: containers and the networks compose created
+// for it. Removing containers by hand used to leave those networks behind, each one
+// holding a subnet until the daemon's address pools ran out and every install on the
+// box failed. earlier is what the earlier tracks are already at, so the bar does not
+// appear to restart the operation.
 //
-// Its Docker error is swallowed by every caller, which is why it returns none: by the
-// time it runs the data is already safe, and an app whose containers will not go away
-// must still lose its tile or the operator has no way to be rid of it.
+// Its error is logged, not returned: by the time it runs the data is already safe, and
+// an app whose containers will not go away must still lose its tile or the operator
+// has no way to be rid of it.
 func (r *Registry) removeContainers(ctx context.Context, id string, emit func(UninstallEvent), earlier float64) {
 	if r.dx == nil {
 		return
 	}
-	_ = r.dx.RemoveProject(ctx, id, func(done, total int) {
-		p := 100.0
-		if total > 0 {
-			p = float64(done) / float64(total) * 100
-		}
-		emit(UninstallEvent{
-			Phase: PhaseRemove, Message: "Removing containers",
-			Backup: earlier, Archive: earlier, Remove: p,
-		})
-	})
+	emit(UninstallEvent{Phase: PhaseRemove, Message: "Removing containers", Backup: earlier, Archive: earlier})
+	if err := composecmd.Down(ctx, id); err != nil {
+		log.Printf("uninstall %s: %v", id, err)
+	}
+	emit(UninstallEvent{Phase: PhaseRemove, Message: "Removing containers", Backup: earlier, Archive: earlier, Remove: 100})
 }
 
 // rollBackArchives removes the archives a failed uninstall attempt already wrote, so a

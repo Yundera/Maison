@@ -217,9 +217,9 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	return err
 }
 
-// RemoveContainer stops and removes one container with its anonymous volumes — what
-// an uninstall does to each of an app's containers (see RemoveProject). Bind-mounted
-// data under the data root is not a volume and is left alone.
+// RemoveContainer stops and removes one container with its anonymous volumes — the
+// Settings cleanup's removal of an orphaned container. Bind-mounted data under the
+// data root is not a volume and is left alone.
 func (c *Client) RemoveContainer(ctx context.Context, id string) error {
 	_ = c.cli.ContainerStop(ctx, id, container.StopOptions{})
 	return c.cli.ContainerRemove(ctx, id, container.RemoveOptions{RemoveVolumes: true, Force: true})

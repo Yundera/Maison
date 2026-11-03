@@ -171,3 +171,46 @@ func TestLintRequirements(t *testing.T) {
 		}
 	}
 }
+
+func TestLintInputs(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "docker-compose.yml")
+	os.WriteFile(p, []byte(`services:
+  app:
+    image: a:1
+    environment:
+      USER: ${FOUNDRY_USERNAME:-}
+      KEY: $LICENSE
+x-compose-app:
+  title: {en_us: App}
+  cost: pricey
+  secrets: {ADMIN_PASSWORD: "alnum:24"}
+  inputs:
+    - env: FOUNDRY_USERNAME
+      label: {en_us: Username}
+    - env: LICENSE
+      label: {en_us: Licence}
+    - env: ORPHAN
+      label: {en_us: Nobody reads me}
+    - env: ADMIN_PASSWORD
+      label: {en_us: Admin password}
+`), 0o644)
+	var out, errOut bytes.Buffer
+	if code := runCLI([]string{"lint", p}, nil, &out, &errOut); code != 1 {
+		t.Fatalf("code = %d", code)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"cost: unknown value pricey",
+		"inputs[2].env: nothing in the compose reads ${ORPHAN}",
+		"inputs[3].env: ADMIN_PASSWORD is also under secrets",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output lacks %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"${FOUNDRY_USERNAME}", "${LICENSE}"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a read input was reported (%s):\n%s", unwanted, got)
+		}
+	}
+}

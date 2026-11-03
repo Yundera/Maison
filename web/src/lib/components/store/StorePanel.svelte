@@ -3,7 +3,8 @@
   import { storeApp } from '../../stores/ui'
   import { backToCatalog, closeStore, openSettings, openStoreApp } from '../../route'
   import { bare, refOf, refPath } from '../../storeref'
-  import { fetchStore, isHidden, type StoreApp, type StoreData } from '../../stores/store'
+  import { fetchStore, hiddenByAudience, isHidden, type StoreApp, type StoreData } from '../../stores/store'
+  import { settings } from '../../stores/settings'
   import { compatSummary } from '../../requirements'
   import { apps } from '../../stores/apps'
   import { sanitizeProject } from '../../project'
@@ -136,11 +137,15 @@
       return true
     })
   })
+  /** Left out of the default browse: an app this box cannot run, or a technical
+   *  app the operator has not asked to see. Both come back under "Show all" and
+   *  in search results, greyed. */
+  const hidden = (a: StoreApp) => isHidden(a.compat) || hiddenByAudience(a, $settings.show_technical_apps)
   const filtered = $derived(
-    showAll || search.trim() ? matching : matching.filter((a) => !isHidden(a.compat)),
+    showAll || search.trim() ? matching : matching.filter((a) => !hidden(a)),
   )
-  /** How many apps the current filter leaves out for not fitting this box. */
-  const hiddenCount = $derived(matching.filter((a) => isHidden(a.compat)).length)
+  /** How many apps the current filter leaves out. */
+  const hiddenCount = $derived(matching.filter(hidden).length)
 
   // The browse, grouped by store rather than merged. Stores are never folded into
   // one another: an app shipped by two of them appears under each, with that
@@ -170,7 +175,7 @@
     const out: StoreApp[] = []
     for (const id of data?.recommend ?? []) {
       const a = byId.get(id.toLowerCase())
-      if (a && !seen.has(a.id) && (showAll || !isHidden(a.compat))) {
+      if (a && !seen.has(a.id) && (showAll || !hidden(a))) {
         seen.add(a.id)
         out.push(a)
       }
@@ -280,7 +285,7 @@
         <span class="name one-line">{$loc(app.title, app.name)}</span>
         <span class="tag one-line">{$loc(app.tagline)}</span>
       </div>
-      <InstallButton ref={refOf(app)} installed={isInstalled(app)} compat={app.compat} name={$loc(app.title, app.name)} />
+      <InstallButton ref={refOf(app)} installed={isInstalled(app)} compat={app.compat} name={$loc(app.title, app.name)} needs={app} />
     </div>
   </div>
 {/snippet}
@@ -288,7 +293,7 @@
 {#snippet card(app: StoreApp)}
   <div
     class="app-item"
-    class:unsupported={isHidden(app.compat)}
+    class:unsupported={hidden(app)}
     onclick={() => openStoreApp(refOf(app))}
     role="presentation"
   >
@@ -301,6 +306,19 @@
     </div>
     <div class="row2">
       <span class="cat">{app.category}</span>
+      {#if app.cost === 'paid' || app.cost === 'freemium' || app.accounts?.length || app.audience === 'technical'}
+        <span class="badges">
+          {#if app.cost === 'paid' || app.cost === 'freemium'}
+            <span class="badge" class:paid={app.cost === 'paid'}>{$t(`cost_${app.cost}`)}</span>
+          {/if}
+          {#each app.accounts ?? [] as acc (acc.provider)}
+            <span class="badge" title={$t('needs_account', { provider: acc.provider })}>{acc.provider}</span>
+          {/each}
+          {#if app.audience === 'technical'}
+            <span class="badge">{$t('technical_app')}</span>
+          {/if}
+        </span>
+      {/if}
     </div>
     {#if compatSummary(app.compat, $t)}
       <p class="req" class:short={isHidden(app.compat) || (app.compat?.below_min?.length ?? 0) > 0}>
@@ -310,7 +328,7 @@
     <!-- Install pill sits on its own row below the app; while installing it
          shows a compact progress pill (the two-bar detail lives on the tile). -->
     <div class="installbar">
-      <InstallButton ref={refOf(app)} installed={isInstalled(app)} compat={app.compat} name={$loc(app.title, app.name)} />
+      <InstallButton ref={refOf(app)} installed={isInstalled(app)} compat={app.compat} name={$loc(app.title, app.name)} needs={app} />
     </div>
   </div>
 {/snippet}
@@ -585,6 +603,25 @@
   .cat {
     font-size: 0.75rem;
     color: hsl(0, 0%, 71%);
+  }
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.25rem;
+  }
+  .badge {
+    font-size: 0.68rem;
+    line-height: 1.1rem;
+    padding: 0 0.45rem;
+    border-radius: 9999px;
+    background: var(--surface-2, hsl(0, 0%, 94%));
+    color: var(--text-subtle);
+    white-space: nowrap;
+  }
+  .badge.paid {
+    background: hsl(38, 92%, 90%);
+    color: hsl(30, 80%, 30%);
   }
   .muted {
     color: var(--text-subtle);

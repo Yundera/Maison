@@ -117,6 +117,7 @@
           offerBackups
           compat={app.compat}
           name={$loc(app.title, app.name)}
+          needs={app}
         />
       </div>
     </header>
@@ -128,6 +129,19 @@
           <strong>{fit}</strong>
           <p class="hint">
             {$t('req_detail_hint')}
+            <button class="link" onclick={() => openSettings('store')}>{$t('app_stores_manage')} →</button>
+          </p>
+        </div>
+      </div>
+    {/if}
+
+    {#if app.audience === 'technical'}
+      <div class="warning soft">
+        <span class="sign">ℹ</span>
+        <div>
+          <strong>{$t('technical_app_banner')}</strong>
+          <p class="hint">
+            {$t('technical_app_hint')}
             <button class="link" onclick={() => openSettings('store')}>{$t('app_stores_manage')} →</button>
           </p>
         </div>
@@ -177,6 +191,20 @@
           <span class="value">{app.architectures.join(', ')}</span>
         </div>
       {/if}
+      {#if app.cost === 'paid' || app.cost === 'freemium'}
+        <div class="item">
+          <span class="label">{$t('cost')}</span>
+          <span class="value">{$t(`cost_${app.cost}_long`)}</span>
+        </div>
+      {/if}
+      {#if app.accounts?.length}
+        <div class="item">
+          <span class="label">{$t('accounts')}</span>
+          <span class="value">
+            {#each app.accounts as acc, i (acc.provider)}{#if i}, {/if}{#if acc.url}<a href={acc.url} target="_blank" rel="noopener noreferrer">{acc.provider}</a>{:else}{acc.provider}{/if}{/each}
+          </span>
+        </div>
+      {/if}
     </nav>
 
     {#if app.screenshots?.length}
@@ -201,7 +229,7 @@
               <span class="ext-name one-line">{$loc(ext.title, ext.name)}</span>
               <span class="ext-tag one-line">{$loc(ext.tagline)}</span>
             </button>
-            <InstallButton ref={refOf(ext)} installed={installedIds.has(sanitizeProject(ext.id))} />
+            <InstallButton ref={refOf(ext)} installed={installedIds.has(sanitizeProject(ext.id))} needs={ext} />
           </div>
         {/each}
       </section>

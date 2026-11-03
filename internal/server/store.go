@@ -463,6 +463,9 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		// capability, a resource under the app's minimum — after the operator was
 		// told. An architecture the app does not ship stays refused.
 		AcceptRequirements bool `json:"accept_requirements"`
+		// Inputs are the values typed for the app's declared inputs, by variable
+		// name. Optional: skipped ones are asked for later by the tile.
+		Inputs map[string]string `json:"inputs"`
 	}
 	// A body is optional here: a plain install posts nothing at all.
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -471,7 +474,13 @@ func (s *Server) handleInstall(w http.ResponseWriter, r *http.Request) {
 		Name:   strings.TrimSpace(body.FromBackup),
 		Engine: strings.TrimSpace(body.Engine),
 	}
-	project, err := s.installer.StartInstall(r.Context(), storeRef(r), from, body.AcceptRequirements)
+	project, err := s.installer.StartInstall(r.Context(), storeRef(r), installer.Options{
+		From: from, AcceptRequirements: body.AcceptRequirements, Inputs: body.Inputs,
+	})
+	if errors.Is(err, installer.ErrBadInput) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if errors.Is(err, installer.ErrPlatformOwned) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return

@@ -64,7 +64,14 @@ type CatalogApp struct {
 	Requires      []string               `json:"requires,omitempty"`
 	Resources     *xcomposeapp.Resources `json:"resources,omitempty"`
 	Compat        *requirements.Result   `json:"compat,omitempty"`
-	StoreURL      string                 `json:"store"`
+	// Cost, Accounts, Inputs and Audience are what the user must bring (see
+	// xcomposeapp/disclosure.go). Information for the store UI; only Audience
+	// changes what it shows, and only on the client, against a user setting.
+	Cost     string                `json:"cost,omitempty"`
+	Accounts []xcomposeapp.Account `json:"accounts,omitempty"`
+	Inputs   []xcomposeapp.Input   `json:"inputs,omitempty"`
+	Audience string                `json:"audience,omitempty"`
+	StoreURL string                `json:"store"`
 	// AppsPath is the folder inside the archive this app was found in. It rides
 	// back to the client so a pinned install goes to the same place the app was
 	// read from, rather than to whatever the default happens to be.
@@ -1005,6 +1012,10 @@ func catalogApp(id string, ca *xcomposeapp.App, composePath, storeURL, appsPath,
 		Architectures: ca.Architectures,
 		Requires:      ca.Requires,
 		Resources:     ca.Resources,
+		Cost:          ca.Cost,
+		Accounts:      ca.Accounts,
+		Inputs:        ca.Inputs,
+		Audience:      ca.Audience,
 		StoreURL:      storeURL,
 		AppsPath:      appsPath,
 		StoreName:     storeName,

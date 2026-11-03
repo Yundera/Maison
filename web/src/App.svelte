@@ -11,6 +11,8 @@
   import MonitorPanel from './lib/components/MonitorPanel.svelte'
   import UninstallDialog from './lib/components/UninstallDialog.svelte'
   import InstallConfirmDialog from './lib/components/store/InstallConfirmDialog.svelte'
+  import InstallInputsDialog from './lib/components/store/InstallInputsDialog.svelte'
+  import SetupModal from './lib/components/SetupModal.svelte'
   import InstallHelpModal from './lib/components/InstallHelpModal.svelte'
   import FeedbackModal from './lib/components/FeedbackModal.svelte'
   import { get } from 'svelte/store'
@@ -25,6 +27,8 @@
     credentialsApp,
     uninstallTarget,
     installConfirm,
+    installInputs,
+    setupApp,
     monitorOpen,
   } from './lib/stores/ui'
   import { installHelp } from './lib/stores/pwa'
@@ -128,6 +132,14 @@
 
 {#if $installConfirm}
   <InstallConfirmDialog target={$installConfirm} />
+{/if}
+
+{#if $installInputs}
+  <InstallInputsDialog target={$installInputs} />
+{/if}
+
+{#if $setupApp}
+  <SetupModal target={$setupApp} />
 {/if}
 
 {#if $installHelp}

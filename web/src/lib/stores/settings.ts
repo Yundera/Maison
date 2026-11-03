@@ -83,6 +83,10 @@ export interface Settings {
    *  Opening in place is what makes the browser's Back button return to the
    *  dashboard instead of leaving a tab behind per app. */
   open_in_new_tab: boolean
+  /** List store apps declaring `audience: technical` (root shells, host-level and
+   *  agent tooling) like any other. Off by default: they are hidden the way an app
+   *  the box cannot run is — under "Show all", and found by searching for them. */
+  show_technical_apps: boolean
   /** Mail transport. It lived under the backup configuration until it moved here,
    *  because it is a property of the box rather than of the backup schedule. */
   smtp?: SmtpConfig
@@ -102,6 +106,7 @@ const DEFAULTS: Settings = {
   widgets: { clock: true, system: true, storage: true },
   metrics_history: true,
   open_in_new_tab: true,
+  show_technical_apps: false,
 }
 
 export const settings = writable<Settings>({ ...DEFAULTS })

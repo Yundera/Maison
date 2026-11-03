@@ -3,6 +3,7 @@ import { live } from '../live/ws'
 import { api } from '../api/client'
 import { settings } from './settings'
 import { locale, pick, type Localized } from '../i18n'
+import type { Input } from './store'
 
 export interface App {
   id: string
@@ -35,6 +36,11 @@ export interface App {
    *  (it is cached in localStorage); showCredentials fetches them on demand. */
   has_credentials?: boolean
   credentials_pending?: boolean
+  /** A required input (x-compose-app.inputs) has no value yet: the tile opens the
+   *  setup form instead of an app that cannot work without it. */
+  setup_pending?: boolean
+  /** The app declares inputs: the tile menu offers the setup form. */
+  has_inputs?: boolean
   /** The app's effective tips are non-empty: the tile menu offers Tips only then
    *  (they are still edited, or written from scratch, in Settings). */
   has_tips?: boolean
@@ -443,6 +449,23 @@ export interface AppCredential {
 
 /** Fetch the app's initial credentials. A POST so the secrets never sit behind
  *  a navigable URL (history, prefetch). */
+/** One declared input with what the app's .env holds: the value of a plain one,
+ *  and only whether a secret one is set (its value never leaves the server). */
+export interface InputState extends Input {
+  value?: string
+  set: boolean
+}
+
+export async function fetchInputs(id: string): Promise<InputState[]> {
+  const r = await api.get<{ inputs: InputState[] }>(`/api/apps/${encodeURIComponent(id)}/inputs`)
+  return r.inputs ?? []
+}
+
+/** Saves the setup form and recreates the app. A secret sent blank keeps its value. */
+export async function saveInputs(id: string, values: Record<string, string>): Promise<void> {
+  await api.put(`/api/apps/${encodeURIComponent(id)}/inputs`, { values })
+}
+
 export async function showCredentials(id: string): Promise<{ credentials: AppCredential[]; dismissed: boolean }> {
   return api.post(`/api/apps/${encodeURIComponent(id)}/credentials/show`)
 }

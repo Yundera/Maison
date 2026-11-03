@@ -54,6 +54,13 @@ func (p envPolicy) locked(k string) bool {
 func (r *Registry) envPolicyFor(id string, keys []string) envPolicy {
 	p := envPolicy{sources: appenv.KeySources(r.cfg), masked: map[string]bool{}}
 	if _, ca, err := r.mergedApp(id); err == nil && ca != nil {
+		// A secret input is the user's own value (an auth key, a vendor password):
+		// masked, but never locked — the Env tab is one of the places to change it.
+		for _, in := range ca.Inputs {
+			if in.Secret {
+				p.masked[in.Env] = true
+			}
+		}
 		for k := range ca.Secrets {
 			p.sources[k] = appenv.SourceSecret
 		}

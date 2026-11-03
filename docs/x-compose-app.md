@@ -98,6 +98,10 @@ with **every** field below set once, to show what a fully loaded block looks lik
 | **`architectures`** | string[] | no (empty: any) | e.g. `[amd64, arm64]`. The store refuses to install the app on a box of another architecture. See [Requirements](#requirements). | `architectures` |
 | **`requires`** | string[] | no | Capabilities the app cannot work without: `public-ip`, `gpu-nvidia`, `gpu-dri`. The store hides the app on a box that lacks one. See [Requirements](#requirements). | tag `needs-public-ip` → `[public-ip]` |
 | **`resources`** | object | no | `{ min?, recommended? }`, each `{ cpu?, memory?, disk? }`. Below `min` installing asks for an acknowledgement; below `recommended` the store shows a note. See [Requirements](#requirements). | — |
+| **`cost`** | `free` \| `freemium` \| `paid` | no (default `free`) | Whether the app, or what it is useless without, has to be paid for. Information only: a store badge and a line in the install dialog. See [What the user brings](#what-the-user-brings). | — |
+| **`accounts`** | object[] | no | Third-party accounts the user must hold: `{ provider, url? }`. Information only. See [What the user brings](#what-the-user-brings). | — |
+| **`inputs`** | object[] | no | Values only the user can provide: `{ env, label, description?, secret?, required? }`. Asked at install; a required one left empty makes the tile show *Setup needed*. See [What the user brings](#what-the-user-brings). | — |
+| **`audience`** | `everyone` \| `technical` | no (default `everyone`) | A technical app is hidden in the store unless the operator turned on *Show technical apps*. See [What the user brings](#what-the-user-brings). | — |
 | `min_memory` | int (MB) | no | Superseded by `resources.min.memory`, into which it is folded when that is absent. | `min_memory` |
 | **`webui-host`** | string | **yes\*** | The web UI's **host** — the final URL host, templated exactly like the app's Caddy route (e.g. `jellyfin-${domain}`). Omit for headless apps. | `hostname` |
 | `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). Without a `webui-host` it names a port on the box's own address (the host the dashboard was opened on), which is how a CasaOS app with no `hostname` opens. | `port_map` (dropped when it is the scheme's default port) |
@@ -417,6 +421,65 @@ raises the `app.requirement` incident (see [`incidents.md`](./incidents.md)).
 Neither key raises `schema_version`: a build that predates them lists and installs the app as it
 always did. `x-casaos` has no such keys; a translated CasaOS block reads its `needs-public-ip` tag as
 `requires: [public-ip]`.
+
+## What the user brings
+
+[Requirements](#requirements) say what the **box** must have. These four fields say what the **user**
+must bring, and they are independent of each other and of `requires`:
+
+```yaml
+x-compose-app:
+  cost: paid                      # free (default) | freemium | paid
+  accounts:
+    - provider: foundryvtt.com    # as a user would recognise it
+      url: https://foundryvtt.com/
+  inputs:
+    - env: FOUNDRY_USERNAME
+      label: { en_us: "foundryvtt.com username" }
+      required: true
+    - env: FOUNDRY_PASSWORD
+      label: { en_us: "foundryvtt.com password" }
+      description: { en_us: "Only used to download the release and fetch the licence." }
+      secret: true
+      required: true
+  audience: technical             # everyone (default) | technical
+```
+
+| Field | In the store | Installing | Installed |
+|---|---|---|---|
+| `cost` | a **Paid** / **Free + paid options** badge, and a row on the app page | stated in the install dialog | — |
+| `accounts` | a badge per provider, and a linked row on the app page | stated in the install dialog | — |
+| `inputs` | — | asked in the install dialog, which can be skipped | a required input still empty makes the tile show **Setup needed** and open a form instead of the app; the tile menu offers **Set up…** at any time |
+| `audience: technical` | hidden, the way an app this box cannot run is (greyed under *Show all*, found by searching) unless **Settings › App stores › Show technical apps** is on | as usual | — |
+
+**`cost` and `accounts` are information only.** They never hide an app or gate an install: someone
+who already holds a Plex Pass or a Foundry licence must be able to install as easily as anyone. `freemium`
+is an app that is useful for free and sells extras (Plex Pass); `paid` is one that is not useful until
+something is bought (a Foundry licence, an AI provider's subscription or API credit).
+
+**`inputs`** are written into the app's `.env` under their `env` name, so the compose reads them as
+`${FOUNDRY_USERNAME}` like any other variable. On every up Maison makes sure each one has a line in
+`.env` — empty until the user fills it — so the **Env** tab always shows it; a value already there is
+never touched. A `secret: true` input is masked in the form and in the Env tab, but not locked: it is
+the user's value, and the Env tab is one of the places to change it. Use `inputs` for what only the user
+has (an account, a key a vendor issued them); anything Maison can generate is a
+[`secrets`](#secrets-and-variables) entry instead — `maison lint` flags a key that is both. A label is a
+[localized string](#localized-strings); an input without one falls back to its variable name.
+
+The setup form is `GET` / `PUT /api/apps/{id}/inputs`: the declared inputs with the value of each plain
+one and only whether each secret one is set, and a save that writes the declared keys (a secret sent
+blank keeps its value) and recreates the app. A restore from backup brings its own `.env` back, so only
+a fresh install asks.
+
+**`audience: technical`** is for root- or host-level apps (a root shell, a host-root file browser, a
+host-network VPN) and developer or AI-agent tooling. It is about who the app is for, not about risk: an
+app that mounts a broad slice of `/DATA` — a file browser, a media player — is an everyday app. The
+switch is a preference of the person using the box (`show_technical_apps` in `/api/settings`),
+box-wide while a box has one account. It only changes what the store lists: an installed technical app
+stays on the dashboard.
+
+None of these raises `schema_version`: an older build ignores them and lists and installs the app as it
+always did. `x-casaos` has no equivalent keys.
 
 ## Reserved keys Maison writes
 

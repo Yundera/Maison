@@ -27,6 +27,7 @@ services:
       SECRET_KEY: ${SECRET_KEY}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       PUBLIC_URL: ${WIKINEST_URL}
+      EXAMPLE_API_KEY: ${EXAMPLE_API_KEY:-}    # an input: the user's own key
       SEARCH_TOKEN: ${SEARCH_TOKEN}
     volumes:
       - ${DATA_ROOT:-/DATA}/AppData/${AppID}/config:/config
@@ -98,6 +99,18 @@ x-compose-app:
   resources:
     min: { memory: 1G }                    # below: install asks to confirm
     recommended: { cpu: 2, memory: 2G }    # below: a note in the store
+
+  # ── What the user must bring (see "What the user brings") ─────────────────
+  cost: freemium                           # free | freemium | paid — a store badge only
+  accounts:                                # third-party accounts — a store badge only
+    - provider: example.com
+      url: https://example.com/signup
+  inputs:                                  # asked at install; empty + required → "Setup needed"
+    - env: EXAMPLE_API_KEY
+      label: { en_us: "example.com API key" }
+      secret: true
+      required: true
+  audience: everyone                       # technical → hidden unless "Show technical apps"
 
   # ── Dashboard placement ───────────────────────────────────────────────────
   view: apps                               # apps | service | system

@@ -22,6 +22,7 @@
   import { t } from '../../i18n'
   import { autofocus } from '../../actions'
   import CapabilitiesCard from './CapabilitiesCard.svelte'
+  import TechnicalAppsCard from './TechnicalAppsCard.svelte'
 
   let sources = $state<StoreSource[]>([])
   // Apps per store URL, from the catalog — every store's own copy, including the
@@ -260,6 +261,9 @@
 
 <!-- What the box offers apps, which decides what the store above lists. -->
 <CapabilitiesCard />
+
+<!-- Who the store is for: technical apps are listed only on request. -->
+<TechnicalAppsCard />
 
 <style>
   .card {

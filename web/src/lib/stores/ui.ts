@@ -2,7 +2,7 @@ import { writable } from 'svelte/store'
 
 import type { StoreRef } from '../storeref'
 import type { App } from './apps'
-import type { Compat } from './store'
+import type { Account, Compat, Cost, Input } from './store'
 
 // Whether the App Store modal is open. StorePanel (M3) renders when true.
 export const storeOpen = writable(false)
@@ -62,6 +62,38 @@ export const installConfirm = writable<{
   compat: Compat
   resolve: (ok: boolean) => void
 } | null>(null)
+
+// The install waiting on the values only the user can give the app (its declared
+// inputs), with what it costs and the accounts it needs (null = no dialog).
+// askInstallInputs resolves with the values typed, {} when the operator chose to
+// set the app up later, or null when they cancelled the install.
+export interface InstallNeeds {
+  inputs?: Input[]
+  cost?: Cost
+  accounts?: Account[]
+}
+export const installInputs = writable<{
+  name: string
+  needs: InstallNeeds
+  resolve: (values: Record<string, string> | null) => void
+} | null>(null)
+
+export function askInstallInputs(name: string, needs: InstallNeeds): Promise<Record<string, string> | null> {
+  return new Promise((resolve) => {
+    installInputs.set({
+      name,
+      needs,
+      resolve: (values) => {
+        installInputs.set(null)
+        resolve(values)
+      },
+    })
+  })
+}
+
+// The installed app whose required inputs are still empty, being set up from its
+// tile (null = no dialog). launch opens the app once the values are saved.
+export const setupApp = writable<{ app: App; launch: boolean } | null>(null)
 
 export function confirmInstall(name: string, compat: Compat): Promise<boolean> {
   return new Promise((resolve) => {

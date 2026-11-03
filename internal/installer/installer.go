@@ -23,6 +23,7 @@ import (
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/dockerx"
+	"github.com/yundera/maison/internal/envinject"
 	"github.com/yundera/maison/internal/incident"
 	"github.com/yundera/maison/internal/requirements"
 	"github.com/yundera/maison/internal/stackup"
@@ -217,7 +218,8 @@ func (in *Installer) ProjectFor(ctx context.Context, ref appstore.Ref) (string, 
 // An app this box falls short of (see Requirements) is refused with a
 // *requirements.Error unless accept is set; one built for another architecture
 // is refused whatever accept says.
-func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from BackupRef, accept bool) (string, error) {
+func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, opts Options) (string, error) {
+	from, accept := opts.From, opts.AcceptRequirements
 	app, raw, err := in.store.GetFrom(ctx, ref)
 	if err != nil {
 		return "", err
@@ -235,6 +237,9 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from Ba
 			return "", &requirements.Error{Result: r}
 		}
 	}
+	if err := checkInputs(app.Inputs, opts.Inputs); err != nil {
+		return "", err
+	}
 
 	in.mu.Lock()
 	if _, running := in.installs[project]; running {
@@ -251,7 +256,7 @@ func (in *Installer) StartInstall(ctx context.Context, ref appstore.Ref, from Ba
 
 	go func() {
 		// Deliberately not the caller's ctx: the install must outlive the request.
-		err := in.Install(context.Background(), ref, from, func(ev Event) {
+		err := in.Install(context.Background(), ref, opts, func(ev Event) {
 			in.mu.Lock()
 			if st := in.installs[project]; st != nil {
 				st.Phase, st.Message, st.Download, st.Start = ev.Phase, ev.Message, ev.Download, ev.Start
@@ -385,7 +390,8 @@ func (in *Installer) notify() {
 //
 // from, when set, restores that backup as the app's folder first (see StartInstall).
 // A reference carrying a locator pins the app to that store.
-func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupRef, emit func(Event)) error {
+func (in *Installer) Install(ctx context.Context, ref appstore.Ref, opts Options, emit func(Event)) error {
+	from := opts.From
 	if emit == nil {
 		emit = func(Event) {}
 	}
@@ -493,6 +499,14 @@ func (in *Installer) Install(ctx context.Context, ref appstore.Ref, from BackupR
 	prior, _ := os.ReadFile(filepath.Join(appDir, ".env"))
 	if err := appenv.Sync(in.cfg, project, appDir); err != nil {
 		return err
+	}
+	// What the operator typed into the install dialog for the app's declared
+	// inputs. Written before the first up, so the app starts with them; a value
+	// left blank is not written, so a restored archive keeps the one it holds.
+	if vals := filledInputs(opts.Inputs); len(vals) > 0 {
+		if err := envinject.EnsureVars(filepath.Join(appDir, ".env"), vals); err != nil {
+			return fmt.Errorf("write inputs: %w", err)
+		}
 	}
 
 	// Record where this app came from so the per-app Update tab can pull a fresher

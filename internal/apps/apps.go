@@ -95,6 +95,13 @@ type App struct {
 	// served on demand by POST /api/apps/{id}/credentials/show.
 	HasCredentials     bool `json:"has_credentials,omitempty"`
 	CredentialsPending bool `json:"credentials_pending,omitempty"`
+	// SetupPending says a required x-compose-app input has no value yet: the tile
+	// asks for it (PUT /api/apps/{id}/inputs) instead of opening an app that
+	// cannot work without it. See setup.go.
+	SetupPending bool `json:"setup_pending,omitempty"`
+	// HasInputs says the app declares inputs at all, so the tile menu offers the
+	// setup form even once every required one is filled.
+	HasInputs bool `json:"has_inputs,omitempty"`
 	// HasTips says the app's effective tips (store's, or the operator's override)
 	// are non-empty. The tile menu offers Tips only then; editing stays in Settings.
 	HasTips bool `json:"has_tips,omitempty"`
@@ -375,14 +382,15 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 	for _, name := range r.managedDirs() {
 		ps := projects[name]
 		var app App
+		var ca *xcomposeapp.App
 		if ps != nil {
-			ca := r.metaFor(name, ps.workingDir)
+			ca = r.metaFor(name, ps.workingDir)
 			app = buildApp(name, ca, r.cfg.AppDomain(), true, statusOf(ps.running, ps.total), ps.svcPorts)
 			r.applyRoutes(&app, name, ca, ps.svcPorts)
 			app.Health = ps.health()
 		} else {
 			// Installed but down (or Docker didn't answer): greyed, stopped tile.
-			ca := r.metaFor(name, "")
+			ca = r.metaFor(name, "")
 			app = buildApp(name, ca, r.cfg.AppDomain(), true, StatusStopped, nil)
 			r.applyRoutes(&app, name, ca, nil)
 		}
@@ -393,6 +401,7 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 			app.Icon = u
 		}
 		app.CredentialsPending = app.HasCredentials && !r.CredentialsDismissed(name)
+		app.SetupPending = setupPending(filepath.Join(r.cfg.AppsDir(), name), ca)
 		app.Busy = r.isBusy(name)
 		out = append(out, app)
 		seen[name] = true
@@ -616,6 +625,7 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 		// Managed only: the credentials endpoint renders from the app's own folder.
 		app.HasCredentials = managed && declaresCredentials(ca)
 		app.HasTips = managed && strings.TrimSpace(ca.Tips.Value()) != ""
+		app.HasInputs = managed && len(ca.Inputs) > 0
 	}
 	app.View = deriveView(ca, svcPorts)
 	lc := lifecycleOf(ca)

@@ -518,6 +518,8 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		r.Get("/apps/{id}/effective", s.handleEffectiveConfig)
 		r.Get("/apps/{id}/env", s.handleGetEnv)
 		r.Put("/apps/{id}/env", s.handlePutEnv)
+		r.Get("/apps/{id}/inputs", s.handleGetInputs)
+		r.Put("/apps/{id}/inputs", s.handlePutInputs)
 		r.Put("/apps/{id}/webui", s.handlePutWebUI)
 		r.Get("/apps/{id}/tips", s.handleRenderTips)
 		r.Put("/apps/{id}/tips", s.handlePutTips)

@@ -78,6 +78,14 @@ type App struct {
 	Requires  []string   `yaml:"requires,omitempty"`
 	Resources *Resources `yaml:"resources,omitempty"`
 
+	// Cost, Accounts, Inputs and Audience say what the *user* must bring, where
+	// Requires says what the box must have — see disclosure.go. None raises
+	// SchemaVersion: an older build ignores them and the app installs as before.
+	Cost     string    `yaml:"cost,omitempty"`
+	Accounts []Account `yaml:"accounts,omitempty"`
+	Inputs   []Input   `yaml:"inputs,omitempty"`
+	Audience string    `yaml:"audience,omitempty"`
+
 	// Legacy is set when this App was translated from an x-casaos block (see
 	// composefile.Resolve) and carries the one thing that block says which the
 	// native schema has no key for. Never read from or written to YAML.
@@ -198,8 +206,9 @@ type App struct {
 	Credentials []Credential `yaml:"credentials,omitempty"`
 
 	// Problems are the declarations Parse refused and dropped: user-facing strings
-	// that are not a locale map with an en_us entry (see localized.go), and
-	// requirements it cannot read (see requirements.go).
+	// that are not a locale map with an en_us entry (see localized.go),
+	// requirements it cannot read (see requirements.go), and cost / accounts /
+	// inputs / audience values it does not know (see disclosure.go).
 	// Never read from or written to YAML.
 	Problems []string `yaml:"-"`
 }
@@ -780,6 +789,8 @@ func Parse(ext map[string]any) (*App, error) {
 	ext, problems := checkLocalized(ext)
 	ext, reqProblems := checkRequirements(ext)
 	problems = append(problems, reqProblems...)
+	ext, discProblems := checkDisclosure(ext)
+	problems = append(problems, discProblems...)
 	b, err := yaml.Marshal(ext)
 	if err != nil {
 		return nil, err

@@ -27,6 +27,7 @@ var localizedLists = []struct {
 }{
 	{"credentials", []string{"label", "note"}},
 	{"links", []string{"name"}},
+	{"inputs", []string{"label", "description"}},
 }
 
 // localizedProblem is the one refusal message, so `maison lint` and the logs say

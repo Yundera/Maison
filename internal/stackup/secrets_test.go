@@ -257,3 +257,26 @@ func TestRenderersAcceptTheCaptureOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An input gets an empty row to fill in; a value the user already gave — even an
+// empty one they cleared on purpose — is left exactly as it is.
+func TestEnsureInputRowsAddsOnlyMissingKeys(t *testing.T) {
+	dir := appDir(t, "FOUNDRY_USERNAME=gm\nFOUNDRY_LICENSE_KEY=\nCUSTOM=mine\n")
+	err := EnsureInputRows(dir, []xcomposeapp.Input{
+		{Env: "FOUNDRY_USERNAME"}, {Env: "FOUNDRY_PASSWORD"}, {Env: "FOUNDRY_LICENSE_KEY"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := envVars(t, dir)
+	if vars["FOUNDRY_USERNAME"] != "gm" || vars["CUSTOM"] != "mine" {
+		t.Fatalf("an existing value changed: %v", vars)
+	}
+	if v, ok := vars["FOUNDRY_PASSWORD"]; !ok || v != "" {
+		t.Fatalf("missing input row not added empty: %q %v", v, ok)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	if strings.Count(string(raw), "FOUNDRY_LICENSE_KEY=") != 1 {
+		t.Fatalf("an existing empty row was duplicated:\n%s", raw)
+	}
+}

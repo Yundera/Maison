@@ -26,6 +26,13 @@ export interface StoreApp {
   requires?: string[]
   resources?: Resources
   compat?: Compat
+  /** What the user must bring (x-compose-app cost / accounts / inputs / audience).
+   *  cost and accounts are information only; audience: technical hides the app
+   *  unless Settings › App stores › Show technical apps is on (hiddenByAudience). */
+  cost?: Cost
+  accounts?: Account[]
+  inputs?: Input[]
+  audience?: 'everyone' | 'technical'
   store: string
   apps_path?: string
   /** What the store calls itself (store.json), falling back to its URL. */
@@ -34,6 +41,29 @@ export interface StoreApp {
    *  folder and only one of them wins that; the others are still in the payload,
    *  found by naming their store. Absent means primary (an older server). */
   primary?: boolean
+}
+
+export type Cost = 'free' | 'freemium' | 'paid'
+
+/** A third-party account the user must hold: plex.tv, foundryvtt.com. */
+export interface Account {
+  provider: string
+  url?: string
+}
+
+/** A value only the user can give the app, written to its .env under `env`. */
+export interface Input {
+  env: string
+  label?: Localized
+  description?: Localized
+  secret?: boolean
+  required?: boolean
+}
+
+/** A technical app the operator has not asked to see. Kept apart from `compat`,
+ *  which is about the box: this is about who the app is for. */
+export function hiddenByAudience(app: Pick<StoreApp, 'audience'>, showTechnical: boolean): boolean {
+  return app.audience === 'technical' && !showTechnical
 }
 
 export interface StoreData {
@@ -194,6 +224,7 @@ export function installApp(
   ref: StoreRef,
   from?: { name: string; engine?: string },
   acceptRequirements = false,
+  inputs?: Record<string, string>,
 ): Promise<{ status: string; id: string }> {
   const body: Record<string, unknown> = {}
   if (from) {
@@ -201,6 +232,7 @@ export function installApp(
     body.engine = from.engine ?? ''
   }
   if (acceptRequirements) body.accept_requirements = true
+  if (inputs && Object.keys(inputs).length) body.inputs = inputs
   return api.post<{ status: string; id: string }>(
     `/api/store/${encodeURIComponent(ref.id)}/install${refQuery(ref)}`,
     Object.keys(body).length ? body : undefined,

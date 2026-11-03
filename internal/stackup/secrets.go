@@ -125,6 +125,30 @@ func EnsureVariables(cfg config.Config, project, dir string, vars xcomposeapp.St
 	return nil
 }
 
+// EnsureInputRows gives every declared input a line in the app's .env, empty
+// when the user has not provided it yet, so the Env tab always shows the row to
+// fill in. A value already there — typed at install, in the setup form or in the
+// Env tab — is never touched: only missing keys are added.
+func EnsureInputRows(dir string, inputs []xcomposeapp.Input) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	have := envinject.EnvFileVars(readEnvFile(dir))
+	missing := map[string]string{}
+	for _, in := range inputs {
+		if _, ok := have[in.Env]; !ok {
+			missing[in.Env] = ""
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	if err := envinject.EnsureVars(filepath.Join(dir, ".env"), missing); err != nil {
+		return fmt.Errorf("write input rows to .env: %w", err)
+	}
+	return nil
+}
+
 // sortedKeys gives a map a stable order, so a fresh .env is deterministic and a
 // failure reports the same key every time rather than whichever Go's map order
 // reached first.

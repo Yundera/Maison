@@ -33,6 +33,7 @@ type Spec struct {
 	Folders   []xcomposeapp.Folder
 	Secrets   xcomposeapp.StringMap
 	Variables xcomposeapp.StringMap
+	Inputs    []xcomposeapp.Input
 	Files     []xcomposeapp.File
 	Steps     []xcomposeapp.Step
 }
@@ -54,6 +55,7 @@ func Load(files []string) Spec {
 	if ca, err := composefile.Resolve(fs...); err == nil && ca != nil {
 		spec.Folders = ca.Folders
 		spec.Secrets, spec.Variables, spec.Files, spec.Steps = ca.Secrets, ca.Variables, ca.Files, ca.Steps
+		spec.Inputs = ca.Inputs
 	}
 	return spec
 }
@@ -223,6 +225,9 @@ func converge(ctx context.Context, cfg config.Config, project, dir string, spec 
 		return nil, err
 	}
 	if err := EnsureVariables(cfg, project, dir, spec.Variables, captures); err != nil {
+		return nil, err
+	}
+	if err := EnsureInputRows(dir, spec.Inputs); err != nil {
 		return nil, err
 	}
 	if migrate != nil {

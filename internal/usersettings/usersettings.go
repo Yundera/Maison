@@ -77,6 +77,14 @@ type Settings struct {
 	// "not supplied", so a plain bool could be turned off and never on again.
 	OpenInNewTab *bool `json:"open_in_new_tab,omitempty"`
 
+	// ShowTechnicalApps lists store apps that declare `audience: technical` —
+	// root shells, host-level tools, agent tooling — like any other. Off (the
+	// default), the store hides them the way it hides an app the box cannot run:
+	// greyed under "Show all", and found by searching for them. A preference of
+	// the person using the box, not a fact about it; box-wide while a box has one
+	// account. A POINTER for the same merge reason as OpenInNewTab.
+	ShowTechnicalApps *bool `json:"show_technical_apps,omitempty"`
+
 	// MetricsHistory switches the resource-history sampler on and off. It is the
 	// one thing Maison measures when nobody is looking at the dashboard, so it is
 	// the one thing worth being able to turn off.
@@ -366,6 +374,9 @@ func merge(base, in Settings) Settings {
 	}
 	if in.OpenInNewTab != nil {
 		base.OpenInNewTab = in.OpenInNewTab
+	}
+	if in.ShowTechnicalApps != nil {
+		base.ShowTechnicalApps = in.ShowTechnicalApps
 	}
 	if in.SMTP != nil {
 		base.SMTP = in.SMTP

@@ -12,7 +12,7 @@
   } from '../stores/apps'
   import { renderDuration, renderRate, renderSize } from '../format'
   import { removeLink, type Link } from '../stores/links'
-  import { credentialsApp, settingsApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
+  import { credentialsApp, settingsApp, setupApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
   import { openStore } from '../route'
   import { t } from '../i18n'
 
@@ -112,6 +112,13 @@
       // Credentials not yet dismissed: show them first. The modal's "Open app"
       // opens the app from its own click, so the popup blocker never sees a
       // window opened after an await.
+      // A required input is still empty: the app cannot work yet, so ask for it
+      // rather than opening an error page. Before credentials, which belong to an
+      // app that can start.
+      if (tile.app.setup_pending) {
+        setupApp.set({ app: tile.app, launch: true })
+        return
+      }
       if (tile.app.credentials_pending) {
         credentialsApp.set({ app: tile.app, launch: true })
         return
@@ -201,6 +208,14 @@
             }}>{$t('tips')}</button
           >
         {/if}
+        {#if tile.app.has_inputs}
+          <button
+            onclick={() => {
+              menuOpen = false
+              if (tile.kind === 'app') setupApp.set({ app: tile.app, launch: false })
+            }}>{$t('setup_menu')}</button
+          >
+        {/if}
         {#if tile.app.has_credentials}
           <button
             onclick={() => {
@@ -287,6 +302,9 @@
 
   {#if tile.kind === 'app' && !tile.app.managed && !progressing}
     <span class="badge">{$t('unmanaged')}</span>
+  {/if}
+  {#if tile.kind === 'app' && tile.app.managed && tile.app.setup_pending && !progressing}
+    <span class="badge setup">{$t('setup_needed')}</span>
   {/if}
   <!-- The one status marker a tile has, top-left, clear of the burger: red when an
        install or uninstall failed (the burger's menu carries why), otherwise health. -->
@@ -664,6 +682,10 @@
     padding: 0 0.3rem;
     text-transform: uppercase;
     letter-spacing: 0.03em;
+  }
+  .badge.setup {
+    background: hsl(30, 85%, 45%);
+    color: #fff;
   }
   .dot {
     position: absolute;

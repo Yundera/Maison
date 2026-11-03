@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -214,6 +215,46 @@ func (s *Server) handlePutAppSettings(w http.ResponseWriter, r *http.Request) {
 	err := s.apps.SaveSettings(r.Context(), chi.URLParam(r, "id"), apps.SettingsChange{
 		Override: body.Override, Form: body.Form, Env: body.Env,
 	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.broadcastApps()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleGetInputs serves the setup form: the app's declared inputs and what each
+// holds (secret ones only say whether they are set).
+func (s *Server) handleGetInputs(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	in, err := s.apps.Inputs(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"inputs": in})
+}
+
+// handlePutInputs saves the setup form — values for the app's declared
+// x-compose-app inputs — and recreates the app.
+func (s *Server) handlePutInputs(w http.ResponseWriter, r *http.Request) {
+	if !s.requireApps(w) {
+		return
+	}
+	var body struct {
+		Values map[string]string `json:"values"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	err := s.apps.SetInputs(r.Context(), chi.URLParam(r, "id"), body.Values)
+	if errors.Is(err, apps.ErrBadInput) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

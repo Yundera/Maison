@@ -8,7 +8,7 @@
     type Compat,
   } from '../../stores/store'
   import { ApiError } from '../../api/client'
-  import { confirmInstall } from '../../stores/ui'
+  import { askInstallInputs, confirmInstall, type InstallNeeds } from '../../stores/ui'
   import { compatSummary } from '../../requirements'
   import { apps, appProgress } from '../../stores/apps'
   import { engineLabel, renderStamp } from '../../stores/backups'
@@ -24,6 +24,7 @@
     offerBackups = false,
     compat,
     name = '',
+    needs,
   }: {
     ref: StoreRef
     installed?: boolean
@@ -34,6 +35,10 @@
     compat?: Compat
     /** The app's name, for the acknowledgement dialog. */
     name?: string
+    /** What the user must bring (inputs, cost, accounts). An app with inputs asks
+     *  for them before installing; the dialog can be skipped and the tile asks
+     *  again later. */
+    needs?: InstallNeeds
     /** Offer to reinstall on top of a backup instead of installing straight away.
      *
      *  Only the app page does. In the catalog grid a click installs, full stop: looking
@@ -146,20 +151,28 @@
       if (!(await confirmInstall(name || ref.id, compat!))) return
       accept = true
     }
+    // A backup brings its own .env back, values and all, so only a fresh install
+    // asks for the app's inputs.
+    let values: Record<string, string> | undefined
+    if (!from && needs?.inputs?.length) {
+      const got = await askInstallInputs(name || ref.id, needs)
+      if (got === null) return
+      values = got
+    }
     starting = true
     error = ''
     try {
       // The reference pins the install to the store *and folder* this app was
       // shown from — without it a duplicate id in an earlier store would win the
       // merged-catalog lookup.
-      await installApp(ref, from, accept)
+      await installApp(ref, from, accept, values)
     } catch (err) {
       // The box changed between the listing and the click (a capability override, a
       // fuller disk): the server's verdict is the one to confirm against.
       const fresh = err instanceof ApiError ? (err.body?.requirements as Compat | undefined) : undefined
       if (fresh && !fresh.blocked && !accept && (await confirmInstall(name || ref.id, fresh))) {
         try {
-          await installApp(ref, from, true)
+          await installApp(ref, from, true, values)
           return
         } catch (again) {
           err = again

@@ -255,6 +255,22 @@ export interface StoreSource {
   /** True when `name` is the operator's own, set in settings, rather than the
    *  store's self-declared one. Absent means it is the store's. */
   custom?: boolean
+  /** False for a store that is only *effective*: not on the source list, but named
+   *  by an installed app's store-ref, so its updates still fetch it. Absent (an
+   *  older server) means configured. */
+  configured?: boolean
+  /** The apps folder the referencing apps read, when it is not the default. */
+  apps_path?: string
+  /** Effective-only, and adding it as a source would list its apps. */
+  addable?: boolean
+  /** Installed apps whose store-ref names this store. */
+  used_by?: StoreSourceUse[]
+}
+
+export interface StoreSourceUse {
+  id: string
+  name: string
+  managed: boolean
 }
 
 export interface StoreSources {

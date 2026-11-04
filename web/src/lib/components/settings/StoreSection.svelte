@@ -18,11 +18,13 @@
     refreshStoreSource,
     renameStoreSource,
     type StoreSource,
+    type StoreSourceUse,
   } from '../../stores/store'
   import { t } from '../../i18n'
   import { autofocus } from '../../actions'
+  import { settingsApp } from '../../stores/ui'
   import CapabilitiesCard from './CapabilitiesCard.svelte'
-  import TechnicalAppsCard from './TechnicalAppsCard.svelte'
+  import StoreListingCard from './StoreListingCard.svelte'
 
   let sources = $state<StoreSource[]>([])
   // Apps per store URL, from the catalog — every store's own copy, including the
@@ -65,28 +67,71 @@
   }
 
   onMount(async () => {
+    await loadSources()
+    loading = false
+    await loadCounts()
+  })
+
+  async function loadSources() {
     try {
       sources = (await fetchStoreSources()).sources
     } catch (e) {
       error = message(e)
-    } finally {
-      loading = false
     }
-    await loadCounts()
+  }
+
+  // The list is configured ∪ effective: a store an installed app's store-ref
+  // names is listed even when it is not a source, because every update check of
+  // that app fetches it (see server.sourceRows). An older server sends no
+  // `configured`, and everything it lists is configured.
+  const isConfigured = (s: StoreSource) => s.configured !== false
+  const configuredCount = $derived(sources.filter(isConfigured).length)
+
+  // An app name in a row opens that app's Update tab, over this page — where its
+  // store-ref is retargeted. Re-read the list when the modal closes, so a store
+  // the app no longer uses drops out without a reload.
+  function openUpdateTab(u: StoreSourceUse) {
+    settingsApp.set({ id: u.id, name: u.name, managed: u.managed, tab: 'update' })
+  }
+  let modalWasOpen = false
+  $effect(() => {
+    const open = !!$settingsApp
+    if (modalWasOpen && !open) void loadSources()
+    modalWasOpen = open
   })
+
+  // Up to USAGE_SHOWN app names are listed; past that the line says how many and
+  // expands on click. Keyed by the row (url + apps folder).
+  const USAGE_SHOWN = 3
+  let expanded = $state<Record<string, boolean>>({})
+  const rowKey = (s: StoreSource) => s.url + '\u0000' + (s.apps_path ?? '')
+
+  /** A translated line around a list of app names: the text before and after
+   *  `{apps}`, so the names in between can be buttons. */
+  function around(key: string): [string, string] {
+    const raw = $t(key)
+    const i = raw.indexOf('{apps}')
+    return i < 0 ? [raw + ' ', ''] : [raw.slice(0, i), raw.slice(i + '{apps}'.length)]
+  }
 
   async function add() {
     if (!url.trim()) return
+    await addURL(url.trim(), true)
+  }
+
+  /** Add a source. `typed` is true for the input field: on success it is
+   *  cleared, on a warning it keeps what was typed. */
+  async function addURL(u: string, typed = false) {
     busy = true
     error = ''
     try {
-      const res = await addStoreSource(url.trim())
+      const res = await addStoreSource(u)
       sources = res.sources
       // The source is saved either way; a warning means it couldn't be fetched, so
       // keep the message up and keep what was typed rather than clearing the input
       // on what looks like a success.
       error = res.warning ?? ''
-      if (!res.warning) url = ''
+      if (typed && !res.warning) url = ''
       await loadCounts()
     } catch (e) {
       error = message(e)
@@ -179,15 +224,17 @@
     <p class="hint">{$t('loading')}</p>
   {:else}
     <ul class="rows">
-      {#each sources as s (s.url)}
-        <li class="row">
+      {#each sources as s (rowKey(s))}
+        <li class="row" class:effective={!isConfigured(s)}>
           <div class="meta">
             <!-- The operator's name for the store if they set one, else the name the
                  store gives itself in store.json; a store that has never been read
                  successfully is listed by its address instead. Click to rename —
                  the address below is what actually identifies it, and it does not
                  change. -->
-            {#if editing === s.url}
+            {#if !isConfigured(s)}
+              <span class="name static">{label(s)}</span>
+            {:else if editing === s.url}
               <input
                 class="rename"
                 aria-label={$t('store_name')}
@@ -215,26 +262,64 @@
                 onclick={() => startEdit(s)}>{label(s)}</button
               >
             {/if}
-            <code class="url">{bare(s.url)}</code>
+            <code class="url"
+              >{bare(s.url)}{#if s.apps_path}<span class="folder"
+                  > · {$t('store_apps_folder', { path: s.apps_path })}</span
+                >{/if}</code
+            >
+            {#if s.used_by?.length}
+              {@const used = s.used_by}
+              {@const [pre, post] = around(isConfigured(s) ? 'store_used_by' : 'store_from_apps')}
+              {@const open = expanded[rowKey(s)] || used.length <= USAGE_SHOWN}
+              <span class="usage" title={used.map((u) => u.name).join(', ')}>
+                {#if open}
+                  {pre}{#each used as u, i (u.id)}{#if i > 0},
+                    {/if}<button
+                      class="app-link"
+                      title={$t('store_open_update_tab', { app: u.name })}
+                      onclick={() => openUpdateTab(u)}>{u.name}</button
+                    >{/each}{post}
+                {:else}
+                  <button class="app-link" onclick={() => (expanded = { ...expanded, [rowKey(s)]: true })}
+                    >{$t('store_used_by_n', { count: String(used.length) })}</button
+                  >
+                {/if}
+              </span>
+            {/if}
+            {#if !isConfigured(s)}
+              <span class="usage note">{$t('store_effective_only_hint')}</span>
+            {/if}
           </div>
-          <span class="count">
-            {counts[s.url] === undefined ? '' : $t('store_apps_count', { count: String(counts[s.url]) })}
-          </span>
-          <button
-            class="reload"
-            class:spin={reloading === s.url}
-            title={$t('reload_store')}
-            aria-label={$t('reload_store')}
-            disabled={busy || reloading !== ''}
-            onclick={() => reload(s.url)}>⟳</button
-          >
-          <button
-            class="trash"
-            aria-label={$t('remove')}
-            title={sources.length <= 1 ? $t('store_last_source') : $t('remove')}
-            disabled={busy || sources.length <= 1}
-            onclick={() => remove(s.url)}>✕</button
-          >
+          {#if isConfigured(s)}
+            <span class="count">
+              {counts[s.url] === undefined ? '' : $t('store_apps_count', { count: String(counts[s.url]) })}
+            </span>
+            <button
+              class="reload"
+              class:spin={reloading === s.url}
+              title={$t('reload_store')}
+              aria-label={$t('reload_store')}
+              disabled={busy || reloading !== ''}
+              onclick={() => reload(s.url)}>⟳</button
+            >
+            <button
+              class="trash"
+              aria-label={$t('remove')}
+              title={configuredCount <= 1 ? $t('store_last_source') : $t('remove')}
+              disabled={busy || configuredCount <= 1}
+              onclick={() => remove(s.url)}>✕</button
+            >
+          {:else}
+            <!-- Not removable: an installed app's store-ref holds it. The way out
+                 is retargeting that app (its name above opens its Update tab);
+                 the way in, when its apps sit in the default folder, is adding it. -->
+            {#if s.addable}
+              <button class="add-effective" title={$t('store_add_effective')} disabled={busy} onclick={() => addURL(s.url)}
+                >{$t('add')}</button
+              >
+            {/if}
+            <span class="lock" title={$t('store_effective_locked')} aria-label={$t('store_effective_locked')}>🔒</span>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -262,8 +347,8 @@
 <!-- What the box offers apps, which decides what the store above lists. -->
 <CapabilitiesCard />
 
-<!-- Who the store is for: technical apps are listed only on request. -->
-<TechnicalAppsCard />
+<!-- What the browse leaves out: apps this box cannot run, technical apps. -->
+<StoreListingCard />
 
 <style>
   .card {
@@ -355,6 +440,55 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .row.effective {
+    background: none;
+    border-style: dashed;
+  }
+  .name.static {
+    cursor: default;
+  }
+  .folder {
+    color: var(--grey-600);
+  }
+  .usage {
+    font-size: 0.75rem;
+    color: var(--grey-600);
+    line-height: 1.4;
+  }
+  .usage.note {
+    font-style: italic;
+  }
+  .app-link {
+    border: none;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: var(--primary);
+    cursor: pointer;
+  }
+  .app-link:hover {
+    text-decoration: underline;
+  }
+  .add-effective {
+    border: 1px solid var(--primary);
+    background: none;
+    color: var(--primary);
+    border-radius: 6px;
+    padding: 0.15rem 0.6rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    flex: none;
+  }
+  .add-effective:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .lock {
+    flex: none;
+    font-size: 0.8rem;
+    opacity: 0.55;
+    cursor: help;
   }
   .count {
     font-size: 0.75rem;

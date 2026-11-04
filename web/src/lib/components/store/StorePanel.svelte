@@ -19,25 +19,6 @@
   let developer = $state('All')
   let store = $state('All')
   let search = $state('')
-  // Whether apps this box cannot run (a missing capability, another architecture)
-  // are listed, greyed out. Off by default: a store full of game servers a tunnelled
-  // box cannot host is noise. Per viewer, so localStorage — and a convenience, so a
-  // storage that throws only costs remembering it.
-  let showAll = $state(readShowAll())
-  function readShowAll(): boolean {
-    try {
-      return localStorage.getItem('maison.store.showAll') === '1'
-    } catch {
-      return false
-    }
-  }
-  $effect(() => {
-    try {
-      localStorage.setItem('maison.store.showAll', showAll ? '1' : '0')
-    } catch {
-      /* not remembered, still applied */
-    }
-  })
   // Which app's detail page is showing lives in the URL (/store/<app>), not here:
   // the route owns it so deep links, Back and the in-panel back arrow all agree.
   const selected = $derived($storeApp)
@@ -123,7 +104,8 @@
   // looking for a named app, and a search that cannot find an installable app
   // because of a presentation rule is a search that is simply wrong.
   //
-  // An app this box cannot run is left out too, unless "show all" is on — and,
+  // An app this box cannot run is left out too, unless Settings › App stores says
+  // to list them (show_unsupported_apps, a box setting) — and,
   // for the same reason as extensions, never from a search: someone typing
   // "minecraft" on a tunnelled box should find it greyed out with the reason, not
   // conclude the store has no such app.
@@ -138,12 +120,11 @@
     })
   })
   /** Left out of the default browse: an app this box cannot run, or a technical
-   *  app the operator has not asked to see. Both come back under "Show all" and
-   *  in search results, greyed. */
-  const hidden = (a: StoreApp) => isHidden(a.compat) || hiddenByAudience(a, $settings.show_technical_apps)
-  const filtered = $derived(
-    showAll || search.trim() ? matching : matching.filter((a) => !hidden(a)),
-  )
+   *  app the operator has not asked to see. Each comes back when its switch in
+   *  Settings › App stores is on, and always in search results, greyed. */
+  const hidden = (a: StoreApp) =>
+    (isHidden(a.compat) && !$settings.show_unsupported_apps) || hiddenByAudience(a, $settings.show_technical_apps)
+  const filtered = $derived(search.trim() ? matching : matching.filter((a) => !hidden(a)))
   /** How many apps the current filter leaves out. */
   const hiddenCount = $derived(matching.filter(hidden).length)
 
@@ -175,7 +156,7 @@
     const out: StoreApp[] = []
     for (const id of data?.recommend ?? []) {
       const a = byId.get(id.toLowerCase())
-      if (a && !seen.has(a.id) && (showAll || !hidden(a))) {
+      if (a && !seen.has(a.id) && !hidden(a)) {
         seen.add(a.id)
         out.push(a)
       }
@@ -246,11 +227,13 @@
           {/if}
           <input class="search" placeholder={$t('search_apps')} bind:value={search} />
           <div class="spacer"></div>
-          {#if hiddenCount > 0 || showAll}
-            <label class="show-all" title={$t('store_show_all_hint')}>
-              <input type="checkbox" bind:checked={showAll} />
-              {$t('store_show_all', { count: String(hiddenCount) })}
-            </label>
+          <!-- What the browse leaves out is a setting now, not a toolbar switch;
+               this says something is left out and leads there, so a missing app
+               is never a mystery. Not during a search: search lists everything. -->
+          {#if hiddenCount > 0 && !search.trim()}
+            <button class="hidden-link" title={$t('store_show_all_hint')} onclick={() => openSettings('store')}>
+              {$t('store_hidden_link', { count: String(hiddenCount) })}
+            </button>
           {/if}
           <span class="count-all">{$t('store_apps_count', { count: String((data?.apps ?? []).length) })}</span>
           <!-- Managing sources is box configuration, not browsing: it lives in
@@ -557,14 +540,17 @@
   .req.short {
     color: hsl(38, 62%, 32%);
   }
-  .show-all {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
+  .hidden-link {
+    border: none;
+    background: none;
+    padding: 0;
     font-size: 0.8rem;
     color: var(--text-subtle);
     cursor: pointer;
     white-space: nowrap;
+  }
+  .hidden-link:hover {
+    text-decoration: underline;
   }
   .row2 {
     display: flex;

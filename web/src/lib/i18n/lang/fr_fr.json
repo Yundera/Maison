@@ -694,7 +694,6 @@
   "req_minimum": "Minimum",
   "req_recommended": "Recommandé",
   "req_architectures": "Architecture",
-  "store_show_all": "Afficher les applications masquées ({count})",
   "store_show_all_hint": "Les applications qui nécessitent une IP publique, un GPU ou une autre architecture que celle de ce serveur sont masquées. La recherche les trouve toujours.",
   "caps_title": "Ce que ce serveur offre aux applications",
   "caps_hint": "Le magasin masque les applications qui nécessitent ce que ce serveur n'a pas, et demande confirmation avant d'installer une application en dessous de son minimum. Chaque capacité est détectée ; réglez-la sur oui ou non si la détection se trompe.",
@@ -732,5 +731,17 @@
   "setup_menu": "Configurer…",
   "setup_needed": "Configuration requise",
   "show_technical_apps": "Afficher les applications techniques",
-  "show_technical_apps_hint": "Lister les applications destinées aux utilisateurs techniques : shells root, outils au niveau de l'hôte, outils pour développeurs ou agents IA. Désactivé, elles restent masquées sauf si vous les recherchez."
+  "show_technical_apps_hint": "Lister les applications destinées aux utilisateurs techniques : shells root, outils au niveau de l'hôte, outils pour développeurs ou agents IA. Désactivé, elles restent masquées sauf si vous les recherchez.",
+  "store_listing_title": "Ce que le magasin affiche",
+  "show_unsupported_apps": "Afficher les applications que ce serveur ne peut pas exécuter",
+  "show_unsupported_apps_hint": "Lister, grisées avec la raison, les applications qui nécessitent une IP publique, un GPU ou une autre architecture que celle de ce serveur. Désactivé, elles restent masquées sauf si vous les recherchez.",
+  "store_hidden_link": "{count} masquées · Afficher dans les paramètres →",
+  "store_used_by": "Utilisé par {apps}",
+  "store_used_by_n": "Utilisé par {count} applications",
+  "store_from_apps": "Depuis les applications : {apps}",
+  "store_effective_only_hint": "Mises à jour uniquement, non listé dans le magasin",
+  "store_effective_locked": "Des applications installées se mettent à jour depuis ce magasin. Changez le magasin dans leur onglet Mise à jour pour le retirer.",
+  "store_apps_folder": "dossier d'applications {path}",
+  "store_open_update_tab": "Ouvrir l'onglet Mise à jour de {app}",
+  "store_add_effective": "L'ajouter comme magasin pour lister ses applications"
 }

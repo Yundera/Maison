@@ -694,7 +694,6 @@
   "req_minimum": "Minimum",
   "req_recommended": "Recommended",
   "req_architectures": "Architecture",
-  "store_show_all": "Show hidden apps ({count})",
   "store_show_all_hint": "Apps that need a public IP, a GPU or another architecture than this server has are hidden. Search always finds them.",
   "caps_title": "What this server offers apps",
   "caps_hint": "The store hides apps that need something this server lacks, and asks before installing one below its minimum. Each capability is detected; set it to yes or no if the detection is wrong.",
@@ -732,5 +731,17 @@
   "setup_menu": "Set up…",
   "setup_needed": "Setup needed",
   "show_technical_apps": "Show technical apps",
-  "show_technical_apps_hint": "List apps made for technical users, such as root shells, host-level tools and developer or AI-agent tooling. Off, they stay hidden from the store unless you search for them."
+  "show_technical_apps_hint": "List apps made for technical users, such as root shells, host-level tools and developer or AI-agent tooling. Off, they stay hidden from the store unless you search for them.",
+  "store_listing_title": "What the store lists",
+  "show_unsupported_apps": "Show apps this server can't run",
+  "show_unsupported_apps_hint": "List apps that need a public IP, a GPU or another architecture than this server has, greyed out with the reason. Off, they stay hidden unless you search for them.",
+  "store_hidden_link": "{count} hidden · Show in settings →",
+  "store_used_by": "Used by {apps}",
+  "store_used_by_n": "Used by {count} apps",
+  "store_from_apps": "From apps: {apps}",
+  "store_effective_only_hint": "Updates only, not listed in the store",
+  "store_effective_locked": "Installed apps update from this store. Change the store in their Update tab to remove it.",
+  "store_apps_folder": "apps folder {path}",
+  "store_open_update_tab": "Open the Update tab of {app}",
+  "store_add_effective": "Add it as a store so its apps are listed"
 }

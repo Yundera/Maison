@@ -85,6 +85,13 @@ type Settings struct {
 	// account. A POINTER for the same merge reason as OpenInNewTab.
 	ShowTechnicalApps *bool `json:"show_technical_apps,omitempty"`
 
+	// ShowUnsupportedApps lists store apps this box cannot run — a missing
+	// capability (public IP, GPU), another architecture — greyed out, instead of
+	// hiding them until searched for. It used to be a per-browser checkbox in the
+	// store toolbar; it sits beside ShowTechnicalApps now, as the same kind of
+	// preference. A POINTER for the same merge reason as OpenInNewTab.
+	ShowUnsupportedApps *bool `json:"show_unsupported_apps,omitempty"`
+
 	// MetricsHistory switches the resource-history sampler on and off. It is the
 	// one thing Maison measures when nobody is looking at the dashboard, so it is
 	// the one thing worth being able to turn off.
@@ -377,6 +384,9 @@ func merge(base, in Settings) Settings {
 	}
 	if in.ShowTechnicalApps != nil {
 		base.ShowTechnicalApps = in.ShowTechnicalApps
+	}
+	if in.ShowUnsupportedApps != nil {
+		base.ShowUnsupportedApps = in.ShowUnsupportedApps
 	}
 	if in.SMTP != nil {
 		base.SMTP = in.SMTP

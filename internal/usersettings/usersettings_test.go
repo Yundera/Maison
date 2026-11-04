@@ -216,3 +216,29 @@ func TestSeeHostKeepsTheFirst(t *testing.T) {
 		t.Fatalf("seen host = %q, want the first one", got)
 	}
 }
+
+// The store's "show apps this box cannot run" switch moved from a per-browser
+// checkbox to this file. It must go on, off and on again, and survive an edit
+// that does not mention it (the dashboard's own PUT carries other fields).
+func TestShowUnsupportedAppsToggles(t *testing.T) {
+	s := newStore(t)
+	shown := func() bool { v := s.Get().ShowUnsupportedApps; return v != nil && *v }
+	if shown() {
+		t.Fatal("unsupported apps should be hidden by default")
+	}
+	on, off := true, false
+	for i, v := range []*bool{&on, &off, &on} {
+		if err := s.Set(Settings{ShowUnsupportedApps: v}); err != nil {
+			t.Fatalf("Set #%d: %v", i, err)
+		}
+		if shown() != *v {
+			t.Fatalf("after Set #%d: shown = %v, want %v", i, shown(), *v)
+		}
+	}
+	if err := s.Set(Settings{Language: "fr_fr"}); err != nil {
+		t.Fatalf("Set language: %v", err)
+	}
+	if !shown() {
+		t.Fatal("an unrelated edit reset the switch")
+	}
+}

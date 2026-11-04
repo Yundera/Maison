@@ -587,7 +587,6 @@
   "req_minimum": "最低配置",
   "req_recommended": "推荐配置",
   "req_architectures": "架构",
-  "store_show_all": "显示隐藏的应用（{count}）",
   "store_show_all_hint": "需要公网 IP、显卡或其他架构的应用会被隐藏，但搜索时始终可见。",
   "caps_title": "此服务器为应用提供的能力",
   "caps_hint": "商店会隐藏需要此服务器所缺条件的应用，并在安装低于最低要求的应用前询问。每项能力均自动检测；如检测有误，可设为是或否。",
@@ -625,5 +624,17 @@
   "setup_menu": "设置…",
   "setup_needed": "需要设置",
   "show_technical_apps": "显示技术类应用",
-  "show_technical_apps_hint": "列出面向技术用户的应用，例如 root shell、主机级工具以及开发者或 AI 代理工具。关闭时，除非搜索，否则它们保持隐藏。"
+  "show_technical_apps_hint": "列出面向技术用户的应用，例如 root shell、主机级工具以及开发者或 AI 代理工具。关闭时，除非搜索，否则它们保持隐藏。",
+  "store_listing_title": "商店显示内容",
+  "show_unsupported_apps": "显示此服务器无法运行的应用",
+  "show_unsupported_apps_hint": "以灰色列出需要公网 IP、显卡或其他架构的应用，并注明原因。关闭时，除非搜索，否则它们保持隐藏。",
+  "store_hidden_link": "已隐藏 {count} 个 · 在设置中显示 →",
+  "store_used_by": "被 {apps} 使用",
+  "store_used_by_n": "被 {count} 个应用使用",
+  "store_from_apps": "来自应用：{apps}",
+  "store_effective_only_hint": "仅用于更新，不在商店中列出",
+  "store_effective_locked": "已安装的应用从此商店更新。请在其“更新”选项卡中更改商店后再移除。",
+  "store_apps_folder": "应用文件夹 {path}",
+  "store_open_update_tab": "打开 {app} 的“更新”选项卡",
+  "store_add_effective": "添加为商店以列出其应用"
 }

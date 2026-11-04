@@ -589,7 +589,6 @@
   "req_minimum": "Minimum",
   "req_recommended": "Empfohlen",
   "req_architectures": "Architektur",
-  "store_show_all": "Ausgeblendete Apps anzeigen ({count})",
   "store_show_all_hint": "Apps, die eine öffentliche IP, eine GPU oder eine andere Architektur als dieser Server brauchen, sind ausgeblendet. Die Suche findet sie immer.",
   "caps_title": "Was dieser Server Apps bietet",
   "caps_hint": "Der Store blendet Apps aus, die etwas brauchen, das diesem Server fehlt, und fragt nach, bevor eine App unter ihrem Minimum installiert wird. Jede Fähigkeit wird erkannt; stellen Sie sie auf Ja oder Nein, wenn die Erkennung falsch ist.",
@@ -627,5 +626,17 @@
   "setup_menu": "Einrichten…",
   "setup_needed": "Einrichtung nötig",
   "show_technical_apps": "Technische Apps anzeigen",
-  "show_technical_apps_hint": "Apps für technische Nutzer auflisten, etwa Root-Shells, Werkzeuge auf Host-Ebene und Entwickler- oder KI-Agenten-Tools. Ausgeschaltet bleiben sie ausgeblendet, außer Sie suchen nach ihnen."
+  "show_technical_apps_hint": "Apps für technische Nutzer auflisten, etwa Root-Shells, Werkzeuge auf Host-Ebene und Entwickler- oder KI-Agenten-Tools. Ausgeschaltet bleiben sie ausgeblendet, außer Sie suchen nach ihnen.",
+  "store_listing_title": "Was der Store anzeigt",
+  "show_unsupported_apps": "Apps anzeigen, die dieser Server nicht ausführen kann",
+  "show_unsupported_apps_hint": "Apps, die eine öffentliche IP, eine GPU oder eine andere Architektur als dieser Server brauchen, ausgegraut mit Begründung auflisten. Ausgeschaltet bleiben sie ausgeblendet, außer Sie suchen nach ihnen.",
+  "store_hidden_link": "{count} ausgeblendet · In den Einstellungen anzeigen →",
+  "store_used_by": "Verwendet von {apps}",
+  "store_used_by_n": "Verwendet von {count} Apps",
+  "store_from_apps": "Von Apps: {apps}",
+  "store_effective_only_hint": "Nur für Updates, nicht im Store aufgeführt",
+  "store_effective_locked": "Installierte Apps aktualisieren sich aus diesem Store. Ändern Sie den Store im Update-Tab der App, um ihn zu entfernen.",
+  "store_apps_folder": "App-Ordner {path}",
+  "store_open_update_tab": "Update-Tab von {app} öffnen",
+  "store_add_effective": "Als Store hinzufügen, damit seine Apps aufgeführt werden"
 }

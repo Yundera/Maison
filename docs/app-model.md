@@ -124,6 +124,17 @@ created and, for a single-service stack, by its image. It is a suggestion and no
 confirms it per app, it goes through the same `PUT`, and there is deliberately no way to
 link them all at once. See [`lifecycle.md`](./lifecycle.md) § *Update all*.
 
+An update fetches the store `store-ref` names **directly**, whether or not that store
+is on the configured source list. So the stores a box actually contacts are the
+configured sources plus every store an installed app's reference names: the
+**effective** stores. Settings → App stores lists both (`GET /api/store/sources`
+reports `configured`, `used_by` and, for a non-default apps folder, `apps_path` on
+each row). An effective-only store cannot be removed there, because the app's
+reference holds it; retargeting the app in its Update tab is what lets it go. It can
+be *added* when its apps sit in the default folder, which lists them in the store.
+Removing a configured source that apps still reference answers with a warning saying
+so, because the store stays effective.
+
 ### Editing the override — the Config tab
 
 Everything Compose runs for an app sits in one settings tab, **Config**, with one

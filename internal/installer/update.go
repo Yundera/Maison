@@ -462,6 +462,34 @@ func (in *Installer) readUpdateRef(project string) appstore.Ref {
 	return appstore.Ref{URL: ca.Store, AppsPath: ca.StoreAppsPath, ID: ca.StoreAppID}
 }
 
+// StoreRefs returns the store reference each installed app records, by project
+// id: the stores this box actually fetches from on an update check, whatever the
+// configured source list says (an update syncs the ref's own store — see
+// appstore.Manager.AppSyncedFrom). Apps with no reference, and merged-catalog
+// refs that name no store, are left out.
+//
+// Read from disk rather than from the Docker-backed app list, so it answers on a
+// box whose engine is unreachable too: a ref is a fact about the app's files.
+func (in *Installer) StoreRefs() map[string]appstore.Ref {
+	out := map[string]appstore.Ref{}
+	entries, err := os.ReadDir(in.cfg.AppsDir())
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		ref := in.readUpdateRef(e.Name())
+		if ref.ID == "" || ref.Merged() {
+			continue
+		}
+		ref.URL = appstore.CanonicalURL(ref.URL)
+		out[e.Name()] = ref
+	}
+	return out
+}
+
 // statusOf is the part of an UpdateStatus that is just the reference, rendered
 // both ways. One place, so the whole-locator form and the fields taken apart
 // cannot drift.

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,8 +82,109 @@ type sourcesResponse struct {
 	// URL. A name is never derived from the URL: "owner/repo" is one forge's path
 	// layout, it means nothing for a store served from anywhere else, and it
 	// collapses two refs of the same repository into the same label.
-	Sources []appstore.Source `json:"sources"`
-	Warning string            `json:"warning,omitempty"`
+	Sources []sourceRow `json:"sources"`
+	Warning string      `json:"warning,omitempty"`
+}
+
+// sourceRow is one store in Settings › App stores: a configured source, or a store
+// that is only *effective* — no longer (or never) on the list, but named by an
+// installed app's store-ref, so the box still fetches it on every update check.
+// Listing those is the point: removing a source does not stop its apps updating
+// from it, and a store nobody can see is a store nobody can reason about.
+//
+// The appstore.Source fields stay at the top level, so a client that only knows
+// url/name/custom reads this unchanged.
+type sourceRow struct {
+	appstore.Source
+	// Configured is false for an effective-only store. It cannot be removed here —
+	// the app's store-ref holds it, and retargeting the app is what lets it go.
+	Configured bool `json:"configured"`
+	// AppsPath is set when the referencing apps read a non-default apps folder. A
+	// configured source has no folder of its own (the catalog reads the default),
+	// so such a store is listed apart even when its URL is configured.
+	AppsPath string `json:"apps_path,omitempty"`
+	// Addable: effective-only on the default apps folder, so adding it as a source
+	// would list its apps in the store (the same rule ensureStoreSource applies).
+	Addable bool `json:"addable,omitempty"`
+	// UsedBy lists the installed apps whose store-ref names this store.
+	UsedBy []sourceUse `json:"used_by,omitempty"`
+}
+
+type sourceUse struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Managed bool   `json:"managed"`
+}
+
+// sourceRows is the configured sources, each with the apps that use it, followed
+// by the stores only installed apps' refs name (sorted by URL). An app list that
+// cannot be read costs the names, not the rows: refs are read from disk.
+func (s *Server) sourceRows(ctx context.Context) []sourceRow {
+	rows := []sourceRow{}
+	if s.store == nil {
+		return rows
+	}
+	index := map[string]int{} // storeKey → row
+	key := func(u, apps string) string { return u + "\x00" + apps }
+	for _, src := range s.store.Sources() {
+		index[key(src.URL, appstore.DefaultAppsPath)] = len(rows)
+		rows = append(rows, sourceRow{Source: src, Configured: true})
+	}
+	if s.installer == nil {
+		return rows
+	}
+
+	names := map[string]string{}
+	if s.apps != nil {
+		lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if list, err := s.apps.List(lctx); err == nil {
+			for _, a := range list {
+				names[a.ID] = a.Name
+			}
+		} else {
+			log.Printf("store sources: listing apps: %v", err)
+		}
+		cancel()
+	}
+
+	var extra []sourceRow
+	for id, ref := range s.installer.StoreRefs() {
+		use := sourceUse{ID: id, Name: names[id], Managed: true}
+		if use.Name == "" {
+			use.Name = id
+		}
+		k := key(ref.URL, ref.Apps())
+		if i, ok := index[k]; ok {
+			rows[i].UsedBy = append(rows[i].UsedBy, use)
+			continue
+		}
+		if i, ok := index["extra\x00"+k]; ok {
+			extra[i].UsedBy = append(extra[i].UsedBy, use)
+			continue
+		}
+		row := sourceRow{
+			Source:  appstore.Source{URL: ref.URL, Name: ref.URL},
+			Addable: ref.Apps() == appstore.DefaultAppsPath,
+			UsedBy:  []sourceUse{use},
+		}
+		if ref.Apps() != appstore.DefaultAppsPath {
+			row.AppsPath = ref.Apps()
+		}
+		index["extra\x00"+k] = len(extra)
+		extra = append(extra, row)
+	}
+	sort.Slice(extra, func(i, j int) bool {
+		if extra[i].URL != extra[j].URL {
+			return extra[i].URL < extra[j].URL
+		}
+		return extra[i].AppsPath < extra[j].AppsPath
+	})
+	rows = append(rows, extra...)
+	for i := range rows {
+		u := rows[i].UsedBy
+		sort.Slice(u, func(a, b int) bool { return strings.ToLower(u[a].Name) < strings.ToLower(u[b].Name) })
+	}
+	return rows
 }
 
 // storeSyncTimeout bounds one download+extract pass over every configured store.
@@ -96,12 +199,12 @@ func detachedStoreCtx(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(r.Context()), storeSyncTimeout)
 }
 
-func (s *Server) handleStoreSources(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleStoreSources(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "store unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, sourcesResponse{Sources: orEmpty(s.store.Sources())})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.sourceRows(r.Context())})
 }
 
 func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
@@ -112,11 +215,11 @@ func (s *Server) handleAddStoreSource(w http.ResponseWriter, r *http.Request) {
 	urls := s.store.URLs()
 	for _, u := range urls {
 		if u == url {
-			s.applySources(w, r, urls) // already present
+			s.applySources(w, r, urls, "") // already present
 			return
 		}
 	}
-	s.applySources(w, r, append(urls, url))
+	s.applySources(w, r, append(urls, url), "")
 }
 
 func (s *Server) handleRemoveStoreSource(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +237,7 @@ func (s *Server) handleRemoveStoreSource(w http.ResponseWriter, r *http.Request)
 			kept = append(kept, u)
 		}
 	}
-	s.applySources(w, r, kept)
+	s.applySources(w, r, kept, url)
 }
 
 // handleRefreshStoreSource force re-downloads a single store and rebuilds the
@@ -159,7 +262,7 @@ func (s *Server) handleRefreshStoreSource(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, sourcesResponse{Sources: orEmpty(s.store.Sources())})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.sourceRows(r.Context())})
 }
 
 // handleRenameStoreSource sets (or clears) the operator's own name for one store.
@@ -229,7 +332,7 @@ func (s *Server) handleRenameStoreSource(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, sourcesResponse{Sources: orEmpty(s.store.Sources())})
+	writeJSON(w, http.StatusOK, sourcesResponse{Sources: s.sourceRows(r.Context())})
 }
 
 // storeNameMax bounds a custom store name. Long enough for any label worth
@@ -261,7 +364,12 @@ func decodeURL(w http.ResponseWriter, r *http.Request) (string, bool) {
 // must not appear to fail because some *other* store is unreachable. It is still
 // reported — a freshly added URL that turns out to be a 404 used to look like it
 // had worked, leaving a permanently empty entry in the list with no explanation.
-func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []string) {
+//
+// removed names a source the call took off the list, or "". When installed apps
+// still reference it, the store stays effective — their updates keep fetching
+// it — and the warning says so, since "removed" would otherwise read as "no
+// longer used".
+func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []string, removed string) {
 	s.store.SetURLs(urls)
 	cur := s.settings.Get()
 	cur.StoreSources = urls
@@ -274,7 +382,22 @@ func (s *Server) applySources(w http.ResponseWriter, r *http.Request, urls []str
 	if err := s.store.Refresh(rc); err != nil {
 		resp.Warning = err.Error()
 	}
-	resp.Sources = orEmpty(s.store.Sources())
+	resp.Sources = s.sourceRows(rc)
+	if removed != "" {
+		for _, row := range resp.Sources {
+			if row.URL != removed || row.AppsPath != "" || len(row.UsedBy) == 0 {
+				continue
+			}
+			still := fmt.Sprintf("%d installed apps still update from this store, so it stays as their update source. Change the store in each app's Update tab to stop using it.", len(row.UsedBy))
+			if len(row.UsedBy) == 1 {
+				still = fmt.Sprintf("%s still updates from this store, so it stays as its update source. Change the store in its Update tab to stop using it.", row.UsedBy[0].Name)
+			}
+			if resp.Warning != "" {
+				still += " " + resp.Warning
+			}
+			resp.Warning = still
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

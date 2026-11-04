@@ -87,6 +87,10 @@ export interface Settings {
    *  agent tooling) like any other. Off by default: they are hidden the way an app
    *  the box cannot run is — under "Show all", and found by searching for them. */
   show_technical_apps: boolean
+  /** List store apps this box cannot run (a missing capability, another
+   *  architecture), greyed, instead of only finding them by searching. It used to
+   *  be a per-browser checkbox in the store toolbar. */
+  show_unsupported_apps: boolean
   /** Mail transport. It lived under the backup configuration until it moved here,
    *  because it is a property of the box rather than of the backup schedule. */
   smtp?: SmtpConfig
@@ -107,6 +111,7 @@ const DEFAULTS: Settings = {
   metrics_history: true,
   open_in_new_tab: true,
   show_technical_apps: false,
+  show_unsupported_apps: false,
 }
 
 export const settings = writable<Settings>({ ...DEFAULTS })

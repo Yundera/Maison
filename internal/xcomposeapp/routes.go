@@ -62,11 +62,15 @@ func ValidateRoutes(routes []Route, services map[string][]string) []error {
 		if r.Path != "" && !strings.HasPrefix(r.Path, "/") {
 			errs = append(errs, fmt.Errorf("%s: path must start with /", label))
 		}
+		// path is only where the tile opens, and a webui: false route is never opened.
+		if r.Path != "" && !r.IsWebUI() {
+			errs = append(errs, fmt.Errorf("%s: path has no effect on a webui: false route", label))
+		}
 	}
-	// The first route is the web UI; a port its service does not expose is almost
-	// always a typo, and the tile would open onto nothing.
-	if len(routes) > 0 {
-		r := routes[0]
+	// The first web-UI route is what the tile opens; a port its service does not
+	// expose is almost always a typo, and the tile would open onto nothing.
+	if i := firstWebUI(routes); i >= 0 {
+		r := routes[i]
 		svc := r.Service
 		if svc == "" && len(services) == 1 {
 			for k := range services {
@@ -74,10 +78,20 @@ func ValidateRoutes(routes []Route, services map[string][]string) []error {
 			}
 		}
 		if exposed, ok := services[svc]; ok && r.RoutePort() > 0 && !containsPort(exposed, r.RoutePort()) {
-			errs = append(errs, fmt.Errorf("the first route (the web UI) is on port %d, which service %q does not expose", r.RoutePort(), svc))
+			errs = append(errs, fmt.Errorf("the web UI route is on port %d, which service %q does not expose", r.RoutePort(), svc))
 		}
 	}
 	return errs
+}
+
+// firstWebUI is the index of the first route not marked `webui: false`, or -1.
+func firstWebUI(routes []Route) int {
+	for i, r := range routes {
+		if r.IsWebUI() {
+			return i
+		}
+	}
+	return -1
 }
 
 func containsPort(list []string, port int) bool {

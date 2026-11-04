@@ -18,6 +18,7 @@ type Route struct {
 	Scheme   string `json:"upstream-scheme"`    // "http" or "https": how the container serves it
 	Insecure bool   `json:"insecure,omitempty"` // the container's certificate is not to be verified
 	Path     string `json:"path"`               // where the web UI opens ("/")
+	WebUI    bool   `json:"webui"`              // a page a person opens; false for a public API
 }
 
 // Routes reads an app's routes: name defaults to the app id, service to the app's
@@ -39,6 +40,7 @@ func Routes(app *xcomposeapp.App, appID string, services []string) []Route {
 			Scheme:   "http",
 			Insecure: r.InsecureUpstream,
 			Path:     strings.TrimSpace(r.Path),
+			WebUI:    r.IsWebUI(),
 		}
 		if rt.Name == "" {
 			rt.Name = strings.ToLower(appID)
@@ -186,17 +188,30 @@ func EnvResolver(env map[string]string) Resolver {
 	}
 }
 
-// WebURL is the click URL of an app's first route under s: https on the primary
+// WebURL is the click URL of an app's first web-UI route under s: https on the primary
 // domain, the external template, or "" under the ports renderer — there the tile is
 // opened on the published port from the browser's own host.
 func WebURL(rts []Route, s Setting, resolve Resolver) string {
-	if len(rts) == 0 {
+	rt, ok := WebRoute(rts)
+	if !ok {
 		return ""
 	}
-	for _, e := range Table(rts[:1], s, resolve, nil) {
+	for _, e := range Table([]Route{rt}, s, resolve, nil) {
 		if e.Primary && e.URL != "" {
-			return e.URL + rts[0].Path
+			return e.URL + rt.Path
 		}
 	}
 	return ""
+}
+
+// WebRoute is the route the tile opens: the first one not marked `webui: false`.
+// An app whose every route is an API has none, and its tile has no click URL.
+// APP_URL is not this: it stays the first route, whatever it serves.
+func WebRoute(rts []Route) (Route, bool) {
+	for _, rt := range rts {
+		if rt.WebUI {
+			return rt, true
+		}
+	}
+	return Route{}, false
 }

@@ -107,7 +107,7 @@ with **every** field below set once, to show what a fully loaded block looks lik
 | `webui-port` | string | no (default `""`) | The **URL** port, appended as `:<port>`. **Not** the container port — it exists only to build the URL and is empty in the common gateway case (standard 443). Without a `webui-host` it names a port on the box's own address (the host the dashboard was opened on), which is how a CasaOS app with no `hostname` opens. | `port_map` (dropped when it is the scheme's default port) |
 | `webui-scheme` | `http` \| `https` | no (default `https`) | The URL scheme the **browser** uses. | `scheme` (CasaOS default `http`) |
 | `webui-path` | string | no (default `/`) | Path appended to the host; a missing leading `/` is added. May include a query string (e.g. `/?hash=$AUTH_HASH`). | `index` |
-| **`routes`** | object[] | no | The app's web endpoints, stated without a domain or a proxy: `{ service?, name?, upstream-port, path?, upstream-scheme?, insecure-upstream? }`. The box's routing setting decides how each is reached — proxy labels on its domains, a published port, or an external router — and Maison writes it. The first route is the web UI. Counts as a web UI for [`view`](#an-app-with-no-web-ui-is-a-service). See [Routes](#routes) and [`routing.md`](./routing.md). | — |
+| **`routes`** | object[] | no | The app's web endpoints, stated without a domain or a proxy: `{ service?, name?, upstream-port, path?, upstream-scheme?, insecure-upstream?, webui? }`. The box's routing setting decides how each is reached — proxy labels on its domains, a published port, or an external router — and Maison writes it. The first route gives `APP_URL`; the first one not marked `webui: false` is what the tile opens. Such a route counts as a web UI for [`view`](#an-app-with-no-web-ui-is-a-service). See [Routes](#routes) and [`routing.md`](./routing.md). | — |
 | `links` | object[] | no | Extra buttons on the detail view: `{ name, url, icon? }` with an **absolute** `url` and a localized `name`. Parsed, but **not rendered by any current build**. | — |
 | `tips` | localized | no | Guidance note (Markdown, `${VAR}` references resolved from the app's `.env`) shown from the tile menu. This is where Maison writes tips edited in **App settings** — into the **override's** `x-compose-app.tips`, never the store-provided base compose. An edit is stored as `{en_us: …}`, replacing the store's map, so the operator's note shows in every locale; clearing it falls back to the store's tips. | `tips.before_install` per locale, `tips.custom` appended (and `custom` alone as `en_us`) |
 | **`folders`** | object[] | no | Directories **created and owned before every `up`**. See [Folders](#folders). |
@@ -240,7 +240,8 @@ Rules:
 
 ## The web-UI URL
 
-**An app that declares [`routes`](#routes) is opened from its first route**, under the
+**An app that declares [`routes`](#routes) is opened from its first web-UI route** (the first not marked
+`webui: false`; an app with none has no click URL), under the
 box's routing setting: `https://<name>-<primary domain><path>` behind a proxy, the
 external template's address, or — in ports mode — its published port, from the host
 the dashboard is open at. Its `webui-*` fields, if it still carries them, are not
@@ -341,6 +342,20 @@ x-compose-app:
 | `path` | `/` | Where the web UI opens (`/webui/`): the click URL's path, never a dispatch rule. |
 | `upstream-scheme` | `http` | `https` for an app that terminates TLS itself. |
 | `insecure-upstream` | `false` | Skip verifying the upstream's certificate (self-signed). Only with `https`. |
+| `webui` | `true` | `false` for a route that is not a page for a person: a public API, a webhook receiver, an MCP endpoint. It is routed like any other route, and still gives `APP_URL` when it is first, but the tile never opens it and it does not make the app a web UI for [`view`](#an-app-with-no-web-ui-is-a-service). `path` has no meaning on it, and `maison lint` says so. |
+
+**A service with a public endpoint.** An app with no UI that still has to be reached
+over HTTPS (an MCP server, an API) marks its routes `webui: false`. It lands in
+Services like Samba, and a click opens its settings and tips instead of a URL that
+serves no page:
+
+```yaml
+x-compose-app:
+  routes:
+    - { service: mcp-proxy, name: kumamcp, upstream-port: 80, webui: false }
+```
+
+A build that predates `webui` ignores it and opens the route as before.
 
 **One route is one name, one service and one port.** Dispatch by path across
 services, an auth check in front of a UI, a header rewrite: the app ships its own
@@ -355,7 +370,7 @@ a listing writes `URL: ${APP_URL}` rather than `https://outline-${APP_DOMAIN}`. 
 
 Non-HTTP listeners (BitTorrent, SMB, WireGuard) are not routes: they stay as
 `ports:` in the compose. `maison lint` checks routes, including that the first
-route's port is in its service's `expose:`. `routes` does not raise
+web-UI route's port is in its service's `expose:`. `routes` does not raise
 `schema_version`: a build that predates it generates nothing, so a label-free app is
 unreachable there but otherwise intact.
 
@@ -950,7 +965,7 @@ a web UI:
 
 | Block | Counts as a web UI |
 |---|---|
-| `x-compose-app` | `webui-host`, or any `routes` entry |
+| `x-compose-app` | `webui-host`, or any `routes` entry not marked `webui: false` |
 | `x-casaos` (no `x-compose-app`) | `hostname`, `webui_port` or `port_map` |
 
 A `webui-path`, `webui-port`, `index` or `scheme` on its own is not an address and

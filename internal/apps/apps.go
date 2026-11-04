@@ -654,7 +654,9 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 // applyRoutes gives an app that declares routes its click URL from the routing
 // setting, which wins over any webui-host it still carries: https on the primary
 // domain, the external template, or — under the ports renderer — the published port
-// of its first route, opened from the browser's own host.
+// of its first web-UI route, opened from the browser's own host. Routes that are all
+// `webui: false` leave the app with no click URL, which is what makes a service's
+// click land on its settings.
 func (r *Registry) applyRoutes(app *App, name string, ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) {
 	if ca == nil || len(ca.Routes) == 0 || r.cfg.Routing == nil {
 		return
@@ -673,8 +675,12 @@ func (r *Registry) applyRoutes(app *App, name string, ca *xcomposeapp.App, svcPo
 		app.URL = routing.WebURL(rts, s, routing.EnvResolver(env))
 		return
 	}
-	app.Scheme, app.Index = rts[0].Scheme, rts[0].Path
-	if hp := reachableHostPort(svcPorts, rts[0].Port); hp > 0 {
+	web, ok := routing.WebRoute(rts)
+	if !ok {
+		return
+	}
+	app.Scheme, app.Index = web.Scheme, web.Path
+	if hp := reachableHostPort(svcPorts, web.Port); hp > 0 {
 		app.Port = strconv.Itoa(hp)
 	}
 }

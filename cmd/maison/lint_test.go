@@ -124,6 +124,40 @@ x-compose-app:
 	}
 }
 
+// A webui: false route is never opened, so a path on it is a mistake; and the
+// expose check moves to the first route that is a web UI.
+func TestLintNonWebUIRoutes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.yml")
+	body := `services:
+  api: {image: a:1, expose: ["80"]}
+  web: {image: b:1, expose: ["3000"]}
+x-compose-app:
+  title: {en_us: App}
+  routes:
+    - {service: api, name: app, upstream-port: 9000, webui: false, path: /status}
+    - {service: web, name: app-ui, upstream-port: 8080}
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := runCLI([]string{"lint", path}, nil, &out, &errOut); code != 1 {
+		t.Fatalf("code = %d, want 1:\n%s", code, out.String())
+	}
+	for _, want := range []string{
+		"path has no effect on a webui: false route",
+		`port 8080, which service "web" does not expose`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "port 9000") {
+		t.Errorf("the API route was checked as the web UI:\n%s", out.String())
+	}
+}
+
 // A published host port means a listener the internet must dial, which a box behind
 // NAT or the tunnel does not have: the app has to say so with requires. A port bound
 // to one named address is not for the internet.

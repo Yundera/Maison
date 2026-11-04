@@ -100,6 +100,8 @@ func TestBuildAppDerivesServiceView(t *testing.T) {
 		{"x-casaos index alone", "x-casaos:\n  index: /admin\n", nil, xcomposeapp.ViewService},
 		{"x-compose-app webui-host", "x-compose-app:\n  webui-host: app-${domain}\n", nil, xcomposeapp.ViewApps},
 		{"x-compose-app routes", "x-compose-app:\n  routes: [{upstream-port: 80}]\n", nil, xcomposeapp.ViewApps},
+		{"x-compose-app api-only routes", "x-compose-app:\n  routes: [{upstream-port: 80, webui: false}]\n", nil, xcomposeapp.ViewService},
+		{"x-compose-app api route then web route", "x-compose-app:\n  routes: [{name: a, upstream-port: 80, webui: false}, {name: b, upstream-port: 81}]\n", nil, xcomposeapp.ViewApps},
 		{"x-compose-app webui-path alone", "x-compose-app:\n  webui-path: /\n", nil, xcomposeapp.ViewService},
 		{"x-compose-app webui-port alone", "x-compose-app:\n  webui-port: \"8080\"\n", nil, xcomposeapp.ViewService},
 		{"x-casaos beside x-compose-app is ignored", "x-casaos:\n  webui_port: \"80\"\nx-compose-app:\n  title: {en_us: X}\n", nil, xcomposeapp.ViewService},

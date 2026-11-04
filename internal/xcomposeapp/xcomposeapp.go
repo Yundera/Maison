@@ -441,22 +441,28 @@ type Legacy struct {
 }
 
 // DeclaresWebUI reports whether the block names a web endpoint: a click-URL
-// host, or a route Maison publishes. A webui-path or webui-port alone is not an
-// address, so neither counts — except on a translated x-casaos block, where the
-// port (`port_map`, or the container's `webui_port`) is how CasaOS names one.
+// host, or a route Maison publishes that is not marked `webui: false`. A
+// webui-path or webui-port alone is not an address, so neither counts — except on
+// a translated x-casaos block, where the port (`port_map`, or the container's
+// `webui_port`) is how CasaOS names one.
 func (a *App) DeclaresWebUI() bool {
 	if a == nil {
 		return false
 	}
-	if strings.TrimSpace(a.WebUIHost) != "" || len(a.Routes) > 0 {
+	if strings.TrimSpace(a.WebUIHost) != "" {
 		return true
+	}
+	for _, r := range a.Routes {
+		if r.IsWebUI() {
+			return true
+		}
 	}
 	return a.Legacy != nil && (strings.TrimSpace(a.WebUIPort) != "" || strings.TrimSpace(a.Legacy.WebUIPort) != "")
 }
 
 // WebUIContainerPort is the port the web UI listens on inside its container,
 // when the metadata says: x-casaos `webui_port` on a translated block, else the
-// upstream port of the app's first route. 0 when unknown.
+// upstream port of the app's first web-UI route. 0 when unknown.
 func (a *App) WebUIContainerPort() int {
 	if a == nil {
 		return 0
@@ -468,6 +474,9 @@ func (a *App) WebUIContainerPort() int {
 		return 0
 	}
 	for _, r := range a.Routes {
+		if !r.IsWebUI() {
+			continue
+		}
 		if n, err := strconv.Atoi(strings.TrimSpace(r.UpstreamPort)); err == nil {
 			return n
 		}
@@ -697,7 +706,22 @@ type Route struct {
 	// Path is where the web UI opens (`/webui/`): the click URL's path, never a
 	// dispatch rule. Empty means `/`.
 	Path string `yaml:"path,omitempty"`
+
+	// WebUI false says the route is not a page for a person: a public API, a
+	// webhook receiver, an MCP endpoint. It is routed exactly like any other route
+	// and still gives APP_URL when it is first; it is only never the tile's click
+	// URL, and it does not count as a web UI when the view is worked out. Absent
+	// means true.
+	//
+	// The polarity is the safe one for an older build, which ignores the key and
+	// opens the route as before — the behaviour this field exists to remove, not a
+	// new failure.
+	WebUI *bool `yaml:"webui,omitempty"`
 }
+
+// IsWebUI reports whether the route is a web UI a person opens: anything not
+// marked `webui: false`.
+func (r Route) IsWebUI() bool { return r.WebUI == nil || *r.WebUI }
 
 // UnmarshalYAML decodes a route through tolerant scalars, so a port or a size
 // written bare (`upstream-port: 80`) types as written. A `max-body` from an early
@@ -710,12 +734,13 @@ type Route struct {
 // refuses to render.
 func (r *Route) UnmarshalYAML(n *yaml.Node) error {
 	var raw struct {
-		Service          text `yaml:"service"`
-		Name             text `yaml:"name"`
-		UpstreamPort     text `yaml:"upstream-port"`
-		UpstreamScheme   text `yaml:"upstream-scheme"`
-		InsecureUpstream bool `yaml:"insecure-upstream"`
-		Path             text `yaml:"path"`
+		Service          text  `yaml:"service"`
+		Name             text  `yaml:"name"`
+		UpstreamPort     text  `yaml:"upstream-port"`
+		UpstreamScheme   text  `yaml:"upstream-scheme"`
+		InsecureUpstream bool  `yaml:"insecure-upstream"`
+		Path             text  `yaml:"path"`
+		WebUI            *bool `yaml:"webui"`
 	}
 	if err := n.Decode(&raw); err != nil {
 		return err
@@ -727,6 +752,7 @@ func (r *Route) UnmarshalYAML(n *yaml.Node) error {
 		UpstreamScheme:   string(raw.UpstreamScheme),
 		InsecureUpstream: raw.InsecureUpstream,
 		Path:             string(raw.Path),
+		WebUI:            raw.WebUI,
 	}
 	return nil
 }

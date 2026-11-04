@@ -106,7 +106,7 @@ func TestWebURLAndHosts(t *testing.T) {
 		{Name: "nip", Domain: "{name}-${APP_PUBLIC_IP_DASH}.nip.io"},
 	}}
 	env := map[string]string{"APP_DOMAIN": "alice.nsl.sh", "APP_PUBLIC_IP_DASH": "203-0-113-10"}
-	rts := []Route{{Name: "kubo", Service: "kubo", Port: 5001, Scheme: "http", Path: "/webui/"}}
+	rts := []Route{{Name: "kubo", Service: "kubo", Port: 5001, Scheme: "http", Path: "/webui/", WebUI: true}}
 	if got := WebURL(rts, s, EnvResolver(env)); got != "https://kubo-alice.nsl.sh/webui/" {
 		t.Errorf("WebURL = %q", got)
 	}
@@ -117,6 +117,21 @@ func TestWebURLAndHosts(t *testing.T) {
 	// An unresolved domain gives no address rather than a broken one.
 	if got := WebURL(rts, s, EnvResolver(nil)); got != "" {
 		t.Errorf("WebURL with no domain = %q", got)
+	}
+}
+
+// A webui: false route is routed but never opened: the tile opens the first route
+// that is a web UI, and none at all when every route is an API.
+func TestWebURLSkipsNonWebUIRoutes(t *testing.T) {
+	s := Setting{Renderer: Labels, Domains: []domains.Domain{{Name: "gateway", Domain: "{name}-${APP_DOMAIN}"}}}
+	env := EnvResolver(map[string]string{"APP_DOMAIN": "alice.nsl.sh"})
+	api := Route{Name: "mcp", Service: "proxy", Port: 80, Scheme: "http", Path: "/"}
+	if got := WebURL([]Route{api}, s, env); got != "" {
+		t.Errorf("WebURL of an API-only app = %q, want none", got)
+	}
+	ui := Route{Name: "ui", Service: "web", Port: 3000, Scheme: "http", Path: "/", WebUI: true}
+	if got := WebURL([]Route{api, ui}, s, env); got != "https://ui-alice.nsl.sh/" {
+		t.Errorf("WebURL = %q, want the web-UI route", got)
 	}
 }
 

@@ -1214,6 +1214,67 @@ deliberately set for itself.
 It is not free — the walk is proportional to the size of the tree, so don't put it
 on a multi-terabyte media folder that is already correct.
 
+## Certificates
+
+A web UI never needs a certificate of its own: the proxy terminates TLS for every
+route. A listener the proxy **cannot** carry does — IMAPS on 993, MQTT over TLS, a
+game server's TLS port — and the app has to present a certificate itself.
+`certificates` asks Maison for one, for the hosts of one of the app's routes:
+
+```yaml
+x-compose-app:
+  routes:
+    - { service: mailhub-proxy, name: mailhub, upstream-port: 80 }
+  certificates:
+    - route: mailhub                       # whose hosts it is for (default: the first route)
+      path: /DATA/AppData/${AppID}/tls     # cert.pem (full chain) + key.pem
+      user: "1000"                         # the service that reads them
+      group: "1000"
+      restart: [mailhub-imap]              # restarted when the files change
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `route` | route name | the first route | The route whose hosts the certificate is for. |
+| `path` | string | — (required) | Directory `cert.pem` and `key.pem` are written to, under the data root. Interpolated like a folder's `path`. |
+| `user` / `group` | uid \| name | `${PUID}` / `${PGID}` | Owner of both files. `key.pem` is `0600`, `cert.pem` `0644`. |
+| `restart` | list of services | — | Restarted when the files change on a running app (a renewal): a server reads its certificate at start. |
+
+The app learns **which name the certificate is for** from its `.env`:
+`APP_TLS_HOST` for the first route, `ROUTE_<NAME>_TLS_HOST` for a further one. That
+is the name its clients must connect to — put it in the tips
+(`IMAP server: ${APP_TLS_HOST}`). It is empty while the certificate is self-signed.
+
+### Which host
+
+The certificates come from the proxy's own store, which the deployment names in the
+routing setting (`cert-store`, see [`routing.md`](./routing.md#certificates-for-other-listeners)).
+Of the route's hosts, in domain order (primary first), Maison picks the first that
+
+- has a certificate in the store from a **public** issuer — never the proxy's local
+  CA — valid for the host (its own, or a wildcard one level up) for at least
+  another day;
+- and **resolves to the box** (one of `APP_PUBLIC_IPV4` / `IPV6`): a client of a
+  non-HTTP port must reach the box itself, and a host behind a gateway or CDN only
+  carries HTTPS. When the box's public address is unknown, this check is skipped.
+
+So the same listing gets `mailhub-203-0-113-10.sslip.io` on a box whose zone is not
+delegated, and `mailhub.alice.example` on one with a wildcard certificate — no
+domain is ever named in the app.
+
+The choice is **sticky**: the host in `APP_TLS_HOST` is kept as long as it still
+qualifies, even when a better one appears. Its clients — a phone's mail account —
+are configured with that name, and moving would break them all for nothing. It is
+replaced only when it stops qualifying (the box changed IP, a domain was removed).
+
+With no store, or no host that qualifies, the app gets a **self-signed** certificate
+and an empty `APP_TLS_HOST`, so it still starts. Maison checks again on every start
+and every 10 minutes, so it moves to a trusted certificate as soon as the proxy has
+one — a sslip.io certificate is issued a minute or so after the route first exists —
+and a renewal reaches the app the same way, restarting the `restart` services.
+
+An older Maison ignores the block, and the app starts without the files.
+
 ---
 
 ## Backup exclusions

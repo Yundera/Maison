@@ -221,6 +221,7 @@ func New(cfg config.Config, uiFS fs.FS) http.Handler {
 		)
 		go s.appHistory.Run(context.Background())
 		go s.recordAppSizes(context.Background())
+		go s.refreshCertificates(context.Background())
 		s.apps.OnUninstalled = s.appHistory.Remove
 		s.hub.AppStatsSnapshot = s.appStatsSnapshot
 		// Rebroadcast the app list whenever a lifecycle op enters/leaves its busy

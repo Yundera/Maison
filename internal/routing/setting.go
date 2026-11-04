@@ -53,6 +53,12 @@ type Setting struct {
 	// labels
 	Dialect string           `json:"dialect,omitempty"`
 	Domains []domains.Domain `json:"domains,omitempty"` // [0] is the primary
+	// CertStore is where the proxy keeps the certificates it obtains, as a host path
+	// in the dialect's layout (Caddy: <issuer>/<host>/<host>.crt|.key). It is what an
+	// app's `certificates` are served from — for a listener the proxy cannot carry
+	// (IMAPS, MQTT over TLS) — so the app never learns the proxy's internals. Empty
+	// means apps that ask for one get a self-signed certificate.
+	CertStore string `json:"cert-store,omitempty"`
 
 	// external
 	URLTemplate string `json:"url-template,omitempty"` // e.g. https://{name}.home.lan
@@ -78,6 +84,7 @@ func Normalize(s Setting) (Setting, error) {
 	s.URLHost = strings.TrimSpace(s.URLHost)
 	s.Dialect = strings.TrimSpace(s.Dialect)
 	s.URLTemplate = strings.TrimSpace(s.URLTemplate)
+	s.CertStore = strings.TrimRight(strings.TrimSpace(s.CertStore), "/")
 
 	switch s.Renderer {
 	case Ports, Labels, External:
@@ -116,6 +123,10 @@ func Normalize(s Setting) (Setting, error) {
 	s.Domains = doms
 	if s.Renderer == Labels && len(s.Domains) == 0 {
 		return s, errors.New("the labels renderer needs at least one domain: the first is the primary")
+	}
+
+	if s.CertStore != "" && !strings.HasPrefix(s.CertStore, "/") && !strings.HasPrefix(s.CertStore, "${") {
+		return s, errors.New("cert-store must be an absolute path")
 	}
 
 	if s.URLTemplate != "" {

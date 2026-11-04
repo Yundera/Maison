@@ -79,3 +79,21 @@ func upArgs(project string, files []string) []string {
 	}
 	return append(args, "up", "-d", "--remove-orphans")
 }
+
+// Restart restarts some services of a project brought up from files — a server
+// that reads a file only at start (a certificate) after the file changed. A
+// service with no container is skipped by compose.
+func Restart(ctx context.Context, dir, project string, files, env, services []string) error {
+	args := []string{"compose", "-p", project}
+	for _, f := range files {
+		args = append(args, "-f", f)
+	}
+	args = append(append(args, "restart"), services...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("compose restart: %w: %s", err, out)
+	}
+	return nil
+}

@@ -47,6 +47,7 @@ route is the web UI: the tile opens it and the app's `APP_URL` comes from it.
 | `port-range` | ports | Where ports below 1024 and taken ones go. Default `[20000, 29999]`. |
 | `dialect` | labels | The proxy's label grammar. `caddy` (the default and the only one today). |
 | `domains` | labels | The domains apps are published on. **The first is the primary**: tiles open there and `APP_URL` names it. Never empty. |
+| `cert-store` | labels | Where the proxy keeps its certificates (see below). Empty: apps' `certificates` are self-signed. |
 | `url-template` | external | The address of a route, e.g. `https://{name}.home.lan`, for `APP_URL` and the tile. |
 
 A domain's `domain` is a **host template**: `{name}` is the route's name, and the
@@ -82,6 +83,25 @@ docker exec maison-app maison settings release routing     # hand it back to the
 
 Setting or releasing it republishes every running app, as a save in the dashboard
 does. See [`config.md`](./config.md#managed-settings).
+
+### Certificates for other listeners
+
+```jsonc
+"routing": {
+  "renderer": "labels",
+  "dialect": "caddy",
+  "domains": [ … ],
+  "cert-store": "${DATA_ROOT}/AppData/mesh/data/caddy/data/caddy/certificates"
+}
+```
+
+`cert-store` is where the proxy keeps the certificates it obtains, as a host path in
+the dialect's layout (Caddy: `<issuer>/<host>/<host>.crt|.key`, wildcards as
+`wildcard_.<parent>`). It serves an app's [`certificates`](./x-compose-app.md#certificates):
+a copy of the proxy's certificate for one of the app's hosts, for a listener the
+proxy does not carry. The deployment owns this path, as it owns the domains; an app
+never names it. Empty, or under another renderer, means such apps get a
+self-signed certificate.
 
 ## What gets written
 

@@ -144,6 +144,17 @@ type App struct {
 	// docs/x-compose-app.md.
 	Folders []Folder `yaml:"folders,omitempty"`
 
+	// Certificates are TLS certificates Maison writes into the app's tree for a
+	// listener the proxy does not carry — IMAPS, MQTT over TLS, a game server's
+	// TLS port — so the app terminates TLS itself without knowing where the
+	// deployment's proxy keeps its certificates, or which of its domains has a
+	// real one. See docs/x-compose-app.md#certificates.
+	//
+	// Not raising SchemaVersion: an older build ignores the block, and the app
+	// starts without the files — a missing certificate, which the app reports,
+	// rather than the whole x-compose-app block dropped.
+	Certificates []Certificate `yaml:"certificates,omitempty"`
+
 	// Lifecycle is what the app allows the operator to do to it: whether Maison
 	// may stop it, uninstall it, and update it. All three default to yes.
 	//
@@ -595,6 +606,26 @@ func (l LifecycleSpec) CanUpdate() bool { return l.Updatable == nil || *l.Updata
 // brings the stack up, so an app that drops privileges can write to its bind
 // mounts on first boot. Paths live under the data root and may use the app's
 // interpolation variables (${DATA_ROOT}, ${AppID}, ${PUID}, …).
+// Certificate asks for one TLS certificate, for the hosts of one of the app's
+// routes. Maison writes `cert.pem` (the full chain) and `key.pem` into Path on
+// every up, and again whenever the certificate it picked is renewed or a better
+// one appears, restarting the Restart services then.
+type Certificate struct {
+	// Route is the name of the route whose hosts the certificate is for. Empty
+	// means the app's first route.
+	Route string `yaml:"route,omitempty"`
+	// Path is the directory the two files are written to, under the data root.
+	// Interpolated like a folder's path.
+	Path string `yaml:"path,omitempty"`
+	// User and Group own the files; both default to the deployment's PUID/PGID.
+	// key.pem is 0600, cert.pem 0644.
+	User  string `yaml:"user,omitempty"`
+	Group string `yaml:"group,omitempty"`
+	// Restart lists the services restarted when the files change on a running
+	// app — a renewal — since a server reads its certificate at start.
+	Restart []string `yaml:"restart,omitempty"`
+}
+
 type Folder struct {
 	Path string `yaml:"path,omitempty"`
 	// User and Group are a uid/gid or a name; both default to the deployment's

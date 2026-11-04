@@ -30,12 +30,13 @@ import (
 
 // Spec is an app's lifecycle declaration, merged across its compose files.
 type Spec struct {
-	Folders   []xcomposeapp.Folder
-	Secrets   xcomposeapp.StringMap
-	Variables xcomposeapp.StringMap
-	Inputs    []xcomposeapp.Input
-	Files     []xcomposeapp.File
-	Steps     []xcomposeapp.Step
+	Folders      []xcomposeapp.Folder
+	Certificates []xcomposeapp.Certificate
+	Secrets      xcomposeapp.StringMap
+	Variables    xcomposeapp.StringMap
+	Inputs       []xcomposeapp.Input
+	Files        []xcomposeapp.File
+	Steps        []xcomposeapp.Step
 }
 
 // Load resolves the lifecycle spec from an app's compose files, in the order
@@ -54,6 +55,7 @@ func Load(files []string) Spec {
 	var spec Spec
 	if ca, err := composefile.Resolve(fs...); err == nil && ca != nil {
 		spec.Folders = ca.Folders
+		spec.Certificates = ca.Certificates
 		spec.Secrets, spec.Variables, spec.Files, spec.Steps = ca.Secrets, ca.Variables, ca.Files, ca.Steps
 		spec.Inputs = ca.Inputs
 	}
@@ -133,6 +135,9 @@ func UpWith(ctx context.Context, cfg config.Config, project, dir string, files [
 			return RunMigrations(ctx, cfg, project, dir, *opts.Migrate, captures, opts.Progress)
 		}
 	}
+	// Services whose certificate changed: `compose up` leaves a running container
+	// alone when its definition did not change, so they are restarted after it.
+	var restartAfterUp []string
 	// Everything before `compose up`, as one pass: it runs again whole when the up
 	// has to move a route off a port, since the app's address is in what it renders.
 	prepare := func(avoid map[int]bool, migrate func(context.Context, map[string]string) error) (Spec, map[string]string, []string, map[string]string, error) {
@@ -145,6 +150,14 @@ func UpWith(ctx context.Context, cfg config.Config, project, dir string, files [
 		// The app's own address, before converge: `files` and steps render with the
 		// .env, and a config file that names the app's URL (Dex's issuer) must see it.
 		writeRouteVars(cfg, project, dir, routeVars)
+		// Certificates name a host the app's config may render (APP_TLS_HOST), so
+		// they come with the address, before converge.
+		certVars, restart, err := ensureCertificates(cfg, project, dir, upFiles)
+		if err != nil {
+			return Spec{}, nil, nil, nil, err
+		}
+		writeRouteVars(cfg, project, dir, certVars)
+		restartAfterUp = append(restartAfterUp, restart...)
 		spec := Load(upFiles)
 		outputs, err := converge(ctx, cfg, project, dir, spec, envinject.EnvFileVars(prior), migrate)
 		return spec, outputs, upFiles, routeVars, err
@@ -177,6 +190,11 @@ func UpWith(ctx context.Context, cfg config.Config, project, dir string, files [
 			return err
 		}
 		cfg.ReportIncident(portIncident(project, port, key, now))
+	}
+	if len(restartAfterUp) > 0 {
+		if err := composecmd.Restart(ctx, dir, project, upFiles, envinject.Env(cfg, project), dedupe(restartAfterUp)); err != nil {
+			log.Printf("%s: restart after certificate change: %v", project, err)
+		}
 	}
 	// After the stack is up: work that needs the app's own network, or a service
 	// of it to answer. Logged and swallowed — the app is already running, and

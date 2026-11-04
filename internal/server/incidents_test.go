@@ -189,3 +189,27 @@ func TestDismissingAFailedAppAcksItsIncidentsWithoutResolvingThem(t *testing.T) 
 		t.Errorf("incident not acked after dismiss")
 	}
 }
+
+// A disk incident is keyed by device, so its ID carries slashes ("disk.full:/dev/sda1").
+// The dashboard sends it through encodeURIComponent, and chi routes on the raw path,
+// so the handler must unescape the parameter or it looks for "disk.full:%2Fdev%2Fsda1"
+// and answers 400 — Seen and Dismiss then silently do nothing.
+func TestSeenAndDismissWorkOnAnIDWithSlashes(t *testing.T) {
+	h := bareBox(t)
+	code, body := call(t, h, http.MethodPost, "/api/incidents",
+		`{"id":"disk.full:/dev/sda1","kind":"disk.full","severity":"warning","title":"Disk / is 94% full"}`)
+	if code != http.StatusOK {
+		t.Fatalf("report = %d: %s", code, body)
+	}
+	esc := "/api/incidents/disk.full%3A%2Fdev%2Fsda1"
+	if code, body := call(t, h, http.MethodPost, esc+"/ack", ""); code != http.StatusOK {
+		t.Fatalf("ack = %d: %s", code, body)
+	}
+	if code, body := call(t, h, http.MethodPost, esc+"/dismiss", ""); code != http.StatusOK {
+		t.Fatalf("dismiss = %d: %s", code, body)
+	}
+	_, body = call(t, h, http.MethodGet, "/api/incidents", "")
+	if !strings.Contains(body, `"open":[]`) {
+		t.Errorf("incident still open after dismiss: %s", body)
+	}
+}

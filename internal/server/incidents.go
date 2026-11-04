@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -95,6 +96,18 @@ func (s *Server) handleReportIncident(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reported"})
 }
 
+// incidentID is the {id} path parameter, unescaped. chi matches on the raw path, so an
+// ID the client had to escape — a disk incident is keyed by device, "disk.full:/dev/sda1"
+// — arrives still percent-encoded, matches no open incident, and Seen / Dismiss / clear
+// all fail on exactly the alert that cannot be closed any other way.
+func incidentID(r *http.Request) string {
+	raw := chi.URLParam(r, "id")
+	if id, err := url.PathUnescape(raw); err == nil {
+		return id
+	}
+	return raw
+}
+
 // handleResolveIncident clears one. The counterpart to the POST above: a caller that
 // reports a condition is the only thing that knows when it has gone.
 func (s *Server) handleResolveIncident(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +115,7 @@ func (s *Server) handleResolveIncident(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "incidents unavailable"})
 		return
 	}
-	s.incidents.Resolve(chi.URLParam(r, "id"))
+	s.incidents.Resolve(incidentID(r))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
@@ -114,7 +127,7 @@ func (s *Server) handleDismissIncident(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "incidents unavailable"})
 		return
 	}
-	if err := s.incidents.Dismiss(chi.URLParam(r, "id")); err != nil {
+	if err := s.incidents.Dismiss(incidentID(r)); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -126,7 +139,7 @@ func (s *Server) handleAckIncident(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "incidents unavailable"})
 		return
 	}
-	if err := s.incidents.Ack(chi.URLParam(r, "id")); err != nil {
+	if err := s.incidents.Ack(incidentID(r)); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

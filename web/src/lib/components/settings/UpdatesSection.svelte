@@ -22,6 +22,7 @@
    */
   import { loc, t } from '../../i18n'
   import { settingsApp } from '../../stores/ui'
+  import { settings } from '../../stores/settings'
   import { setUpdateRef, apps, appProgress, subscribeApps, type AppProgress } from '../../stores/apps'
   import { renderDuration, renderElapsed, renderRate, renderSize } from '../../format'
   import { incidents, loadIncidents, subscribeIncidents } from '../../stores/incidents'
@@ -462,6 +463,17 @@
         </button>
       </p>
       <p class="hint">{$t('updates_hint')}</p>
+      <label class="auto">
+        <input
+          type="checkbox"
+          checked={$settings.auto_update}
+          onchange={() => settings.update((s) => ({ ...s, auto_update: !s.auto_update }))}
+        />
+        <span>
+          <strong>{$t('updates_auto')}</strong>
+          <span class="hint">{$t('updates_auto_hint')}</span>
+        </span>
+      </label>
     </div>
     {#if available.length >= 2 && !running}
       <button class="primary" disabled={busy} onclick={startAll}>{$t('updates_update_all')}</button>
@@ -493,7 +505,8 @@
     </div>
   {:else if runTotal > 0 && runResult}
     <p class="result">
-      {$t('updates_banner_result', { when: ago(run?.finished) })} <strong>{runResult}</strong>
+      {$t(run?.auto ? 'updates_banner_result_auto' : 'updates_banner_result', { when: ago(run?.finished) })}
+      <strong>{runResult}</strong>
     </p>
   {/if}
   {#if error}<p class="err">{error}</p>{/if}
@@ -694,6 +707,26 @@
   }
   .card > .hint {
     margin: 0 0 0.5rem;
+  }
+  .auto {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    margin-top: 0.75rem;
+    cursor: pointer;
+  }
+  .auto input {
+    margin-top: 0.2rem;
+  }
+  .auto strong {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .auto .hint {
+    display: block;
+    margin-top: 0.15rem;
   }
   .muted {
     color: var(--text-muted);

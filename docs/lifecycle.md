@@ -299,7 +299,8 @@ check behind it is `Installer.CheckAll`: the same byte comparison as the Update 
 each store is synced **once** however many apps follow it, and a store that cannot be
 reached marks its apps as failed, never as up to date. A check runs ten minutes after
 boot and daily at 04:00, after the store's own refresh. **It only ever checks** —
-nothing is updated without somebody pressing a button.
+nothing is updated without somebody pressing a button — unless the owner turns on
+*Update automatically every night* (the `auto_update` setting, off by default).
 
 **Update all** (`POST /api/updates/run`) queues every app with an update available and
 runs the queue on a background context (`server/updates.go`), so closing the page does
@@ -324,6 +325,11 @@ overlay. Three rules:
 - **Apps declaring `lifecycle.stoppable: false` are left out.** Updating the dashboard,
   or the gateway in front of it, can take down the process running the queue. Such an
   app is updated on its own, by naming it alone; a run naming it among others is refused.
+- **Automatic, if asked.** With `auto_update` on, the 04:00 check (never the boot
+  one) goes on to start the same run, marked `auto: true`, when it found anything to
+  update. It first waits for the nightly backup run to finish (up to four hours, then
+  skips the night): the app being backed up would otherwise be refused `backup_busy`,
+  and two backup streams at once is what the sequential rule exists to prevent.
 - **Cancel stops the queue, not the app.** `POST /api/updates/cancel` marks every queued
   app `cancelled` at once and sets the run's `cancelled`; the app being updated finishes
   (stopping it halfway would leave it neither old nor new), and the run ends with it.

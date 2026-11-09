@@ -101,6 +101,13 @@ type Settings struct {
 	// `false` would be indistinguishable from an absent field. See merge.
 	MetricsHistory *bool `json:"metrics_history,omitempty"`
 
+	// AutoUpdate runs "Update all" after the nightly update check, when that check
+	// finds anything to update (server/updates.go). Off by default: an update is the
+	// one destructive change Maison makes to an app, so doing it with nobody watching
+	// is the owner's choice, not the box's. A POINTER for the same merge reason as
+	// MetricsHistory.
+	AutoUpdate *bool `json:"auto_update,omitempty"`
+
 	// Capabilities overrides what Maison detects about the box, by capability name
 	// (public-ip, gpu-nvidia, gpu-dri) → auto | yes | no. Absent means auto. The
 	// store hides an app whose `requires` the box effectively lacks, so this is how
@@ -132,6 +139,7 @@ func Defaults() Settings {
 		// New tab: the behaviour every existing box already has, so upgrading does
 		// not silently change what a click does.
 		OpenInNewTab: boolPtr(true),
+		AutoUpdate:   boolPtr(false),
 	}
 }
 
@@ -379,6 +387,9 @@ func merge(base, in Settings) Settings {
 	if in.MetricsHistory != nil {
 		base.MetricsHistory = in.MetricsHistory
 	}
+	if in.AutoUpdate != nil {
+		base.AutoUpdate = in.AutoUpdate
+	}
 	if in.OpenInNewTab != nil {
 		base.OpenInNewTab = in.OpenInNewTab
 	}
@@ -452,6 +463,13 @@ func (s Settings) EffectiveSMTP(prov notify.SMTP) notify.SMTP {
 func (s *Store) EffectiveSMTP(prov notify.SMTP) notify.SMTP { return s.Get().EffectiveSMTP(prov) }
 
 func boolPtr(b bool) *bool { return &b }
+
+// AutoUpdateEnabled reports whether the nightly check goes on to update. Absent
+// means off.
+func (s *Store) AutoUpdateEnabled() bool {
+	v := s.Get().AutoUpdate
+	return v != nil && *v
+}
 
 // HistoryEnabled reports whether the resource-history sampler should run. Absent
 // means on, so a settings file written before the field existed keeps the default

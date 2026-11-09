@@ -81,6 +81,8 @@ export interface UpdateRun {
   running: boolean
   /** The owner stopped the run: the app being updated finishes, the rest are dropped. */
   cancelled?: boolean
+  /** Started by the nightly check (the auto_update setting), not by a button. */
+  auto?: boolean
   items: RunItem[] | null
   started?: string
   finished?: string

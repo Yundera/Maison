@@ -39,6 +39,10 @@ const (
 	// the first one waits for the boot refresh and the apps to settle.
 	updateCheckHour, updateCheckMinute = 4, 0
 	updateCheckBootDelay               = 10 * time.Minute
+	// An automatic run waits for the nightly backup run to finish (see autoUpdate),
+	// checking every autoUpdatePoll, and gives up for the night after autoUpdateMaxWait.
+	autoUpdatePoll    = time.Minute
+	autoUpdateMaxWait = 4 * time.Hour
 )
 
 // Run item states.
@@ -76,10 +80,13 @@ type UpdateRun struct {
 	Running bool `json:"running"`
 	// Cancelled: the owner stopped the run. The app being updated finishes — stopping
 	// it halfway would leave it neither old nor new — and the queued ones are dropped.
-	Cancelled bool            `json:"cancelled,omitempty"`
-	Items     []UpdateRunItem `json:"items"`
-	Started   time.Time       `json:"started,omitempty"`
-	Finished  time.Time       `json:"finished,omitempty"`
+	Cancelled bool `json:"cancelled,omitempty"`
+	// Auto: the run was started by the nightly check (the auto_update setting), not
+	// by somebody pressing a button.
+	Auto     bool            `json:"auto,omitempty"`
+	Items    []UpdateRunItem `json:"items"`
+	Started  time.Time       `json:"started,omitempty"`
+	Finished time.Time       `json:"finished,omitempty"`
 }
 
 // UpdatesSnapshot is what GET /api/updates and the "updates" channel carry.
@@ -276,6 +283,11 @@ func (s *Server) updateBudget(id string) time.Duration {
 // startUpdateRun queues ids and runs them in the background. It returns once the run
 // is accepted.
 func (s *Server) startUpdateRun(ids []string, opts installer.UpdateOptions) error {
+	return s.startRun(ids, opts, false)
+}
+
+// startRun is startUpdateRun, with auto marking a run the nightly check started.
+func (s *Server) startRun(ids []string, opts installer.UpdateOptions, auto bool) error {
 	if opts.NoBackup && len(ids) != 1 {
 		return errNoBackupNeedsOneApp
 	}
@@ -294,7 +306,7 @@ func (s *Server) startUpdateRun(ids []string, opts installer.UpdateOptions) erro
 	for i, id := range q {
 		items[i] = UpdateRunItem{ID: id, Status: runQueued}
 	}
-	u.run = UpdateRun{Running: true, Items: items, Started: time.Now()}
+	u.run = UpdateRun{Running: true, Auto: auto, Items: items, Started: time.Now()}
 	u.mu.Unlock()
 	s.broadcastUpdates()
 
@@ -390,11 +402,13 @@ func (s *Server) cancelUpdateRun() error {
 }
 
 // startDailyUpdateCheck checks once shortly after boot, then every day after the
-// store's nightly refresh. It only ever checks: nothing is updated without somebody
-// pressing a button.
+// store's nightly refresh. Unless the owner turned auto_update on, it only ever
+// checks: nothing is updated without somebody pressing a button. With it on, the
+// nightly check — not the boot one, which can land at any hour — goes on to
+// "Update all" (autoUpdate).
 func (s *Server) startDailyUpdateCheck(ctx context.Context) {
 	go func() {
-		wait := updateCheckBootDelay
+		wait, nightly := updateCheckBootDelay, false
 		for {
 			t := time.NewTimer(wait)
 			select {
@@ -403,10 +417,55 @@ func (s *Server) startDailyUpdateCheck(ctx context.Context) {
 				return
 			case <-t.C:
 				s.checkUpdates(ctx)
+				if nightly {
+					s.autoUpdate(ctx)
+				}
 			}
-			wait = untilNextAt(time.Now(), updateCheckHour, updateCheckMinute)
+			wait, nightly = untilNextAt(time.Now(), updateCheckHour, updateCheckMinute), true
 		}
 	}()
+}
+
+// autoUpdate is the nightly "Update all", when the owner turned it on: the same run
+// the button starts — same queue (system apps left out), same backup and rollback
+// per app, same refusals — just started by the clock.
+//
+// It waits for the nightly backup run first. The two would otherwise overlap (the
+// backup starts at 03:30 by default, spread over half an hour, and takes as long as
+// it takes): the app being backed up would be refused as backup_busy, and two backup
+// streams at once is what the sequential rule exists to prevent. A run that does not
+// finish within autoUpdateMaxWait skips the night; the updates stay on the page.
+//
+// Nothing to update is the normal answer and is not logged as anything else.
+func (s *Server) autoUpdate(ctx context.Context) {
+	if s.settings == nil || !s.settings.AutoUpdateEnabled() {
+		return
+	}
+	deadline := time.Now().Add(autoUpdateMaxWait)
+	for s.backupSched != nil && s.backupSched.State().Running {
+		if time.Now().After(deadline) {
+			log.Printf("updates: automatic update skipped tonight: the backup run is still going")
+			return
+		}
+		t := time.NewTimer(autoUpdatePoll)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+	}
+	// Re-read: the owner may have turned it off while the backup ran.
+	if !s.settings.AutoUpdateEnabled() {
+		return
+	}
+	switch err := s.startRun(nil, installer.UpdateOptions{}, true); {
+	case err == nil:
+		log.Printf("updates: automatic update started")
+	case errors.Is(err, errNothingToRun):
+	default:
+		log.Printf("updates: automatic update not started: %v", err)
+	}
 }
 
 // untilNextAt is the delay from now to the next hour:minute in now's location,

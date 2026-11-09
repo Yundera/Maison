@@ -91,6 +91,9 @@ export interface Settings {
    *  architecture), greyed, instead of only finding them by searching. It used to
    *  be a per-browser checkbox in the store toolbar. */
   show_unsupported_apps: boolean
+  /** Run "Update all" by itself after the nightly update check (04:00), once the
+   *  nightly backup has finished. Off by default — Settings › Updates. */
+  auto_update: boolean
   /** Mail transport. It lived under the backup configuration until it moved here,
    *  because it is a property of the box rather than of the backup schedule. */
   smtp?: SmtpConfig
@@ -112,6 +115,7 @@ const DEFAULTS: Settings = {
   open_in_new_tab: true,
   show_technical_apps: false,
   show_unsupported_apps: false,
+  auto_update: false,
 }
 
 export const settings = writable<Settings>({ ...DEFAULTS })

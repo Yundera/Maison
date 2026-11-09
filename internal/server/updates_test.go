@@ -15,6 +15,7 @@ import (
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/installer"
 	"github.com/yundera/maison/internal/live"
+	"github.com/yundera/maison/internal/usersettings"
 )
 
 func rows(rs ...installer.AppUpdate) []installer.AppUpdate { return rs }
@@ -128,6 +129,31 @@ func TestRunContinuesPastAFailure(t *testing.T) {
 	}
 	if run.Finished.IsZero() {
 		t.Error("finished run carries no finish time")
+	}
+}
+
+// The nightly auto update does nothing while the setting is off (the default), and
+// with it on starts the same run as the button, marked auto.
+func TestAutoUpdateFollowsTheSetting(t *testing.T) {
+	s := testUpdatesServer(t)
+	s.settings = usersettings.New(filepath.Join(t.TempDir(), "settings.json"))
+	s.updates.rows = rows(
+		installer.AppUpdate{ID: "a", State: installer.StateAvailable},
+		installer.AppUpdate{ID: "sys", State: installer.StateAvailable, StaysUp: true},
+	)
+	s.autoUpdate(t.Context())
+	if s.updates.run.Running || len(s.updates.run.Items) != 0 {
+		t.Fatalf("auto update ran with the setting off: %+v", s.updates.run)
+	}
+
+	on := true
+	if err := s.settings.Set(usersettings.Settings{AutoUpdate: &on}); err != nil {
+		t.Fatal(err)
+	}
+	s.autoUpdate(t.Context())
+	run := waitRunDone(t, s)
+	if !run.Auto || len(run.Items) != 1 || run.Items[0].ID != "a" {
+		t.Errorf("run = %+v, want an auto run of [a]", run)
 	}
 }
 

@@ -552,10 +552,15 @@
   .hidden-link:hover {
     text-decoration: underline;
   }
+  /* Category left, badges right. Both may shrink: a badge is store data of any
+     length, and an unshrinkable one spills over the next card. */
   .row2 {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 0.5rem;
+    min-width: 0;
+    min-height: 1.1rem; /* a badge's height, so cards with and without badges align */
     margin: 0.4rem 0 0 calc(64px + 1rem);
   }
   .installbar {
@@ -587,10 +592,17 @@
     color: hsl(0, 0%, 45%);
   }
   .cat {
+    flex: 0 1 auto;
+    min-width: 2rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 0.75rem;
     color: hsl(0, 0%, 71%);
   }
   .badges {
+    flex: 0 1 auto;
+    min-width: 0;
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -604,6 +616,9 @@
     background: var(--surface-2, hsl(0, 0%, 94%));
     color: var(--text-subtle);
     white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .badge.paid {
     background: hsl(38, 92%, 90%);

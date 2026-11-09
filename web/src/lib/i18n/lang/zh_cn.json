@@ -94,6 +94,8 @@
   "routing_primary": "主",
   "move_up": "上移",
   "move_down": "下移",
+  "move_apps": "移动应用",
+  "move_done": "完成",
   "routing_labels": "标签",
   "routing_label_key": "标签",
   "routing_label_value": "值",

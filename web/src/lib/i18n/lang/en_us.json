@@ -44,6 +44,8 @@
   "routing_primary": "Main",
   "move_up": "Move up",
   "move_down": "Move down",
+  "move_apps": "Move apps",
+  "move_done": "Done",
   "routing_labels": "Labels",
   "routing_label_key": "Label",
   "routing_label_value": "Value",

@@ -7,7 +7,7 @@
   import { apps, loadApps, subscribeApps, type App } from '../stores/apps'
   import { links, type Link } from '../stores/links'
   import { clickOutside } from '../actions'
-  import { tileDragging } from '../stores/ui'
+  import { moveMode, tileDragging } from '../stores/ui'
   import { t } from '../i18n'
   import { openStore } from '../route'
 
@@ -43,8 +43,25 @@
   onMount(() => {
     loadApps()
     const off = subscribeApps()
-    return off
+    return () => {
+      off()
+      moveMode.set(false)
+    }
   })
+
+  // On a touch screen drag is armed only in move mode: armed by default, a swipe
+  // to scroll the grid kept picking a tile up instead. A mouse drag is never an
+  // accident, so it stays available at all times. Read live, not once: a tablet
+  // with a keyboard/trackpad attached can change it mid-session.
+  const coarseQuery = typeof matchMedia === 'function' ? matchMedia('(pointer: coarse)') : null
+  let coarse = $state(coarseQuery?.matches ?? false)
+  $effect(() => {
+    if (!coarseQuery) return
+    const on = (e: MediaQueryListEvent) => (coarse = e.matches)
+    coarseQuery.addEventListener('change', on)
+    return () => coarseQuery.removeEventListener('change', on)
+  })
+  const dragDisabled = $derived(coarse && !$moveMode)
 
   function loadOrder(): string[] {
     try {
@@ -139,6 +156,10 @@
     if (!views.includes(view)) view = 'apps'
   })
 
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && $moveMode) moveMode.set(false)
+  }
+
   // The switch's light thumb slides under the active view. It is measured rather
   // than laid out on equal tracks because the labels differ in width — and differ
   // again per language — so the thumb is re-measured whenever the control resizes
@@ -182,7 +203,9 @@
   }
 </script>
 
-<section class="app-section">
+<svelte:window onkeydown={onKeydown} />
+
+<section class="app-section" class:moving={$moveMode}>
   <header class="section-header">
     {#if views.length > 1}
       <!-- Dark glass like the tiles beside it, with the active view on a light thumb:
@@ -200,7 +223,11 @@
     <!-- An external link is a shortcut the operator adds to their own grid;
          there is nothing to add to the platform's. -->
     <div class="header-end">
-    {#if view === 'apps'}
+    {#if $moveMode}
+      <!-- Replaces the "+" while tiles are movable: the one way out, where the
+           thumb already is. -->
+      <button class="done" onclick={() => moveMode.set(false)}>{$t('move_done')}</button>
+    {:else if view === 'apps'}
       <div class="add-wrap" use:clickOutside={() => (addMenu = false)}>
         <button class="add" title="Add" aria-label="Add" aria-expanded={addMenu} onclick={() => (addMenu = !addMenu)}>
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
@@ -242,13 +269,17 @@
 
   <div
     class="app-list"
-    use:dndzone={{ items, flipDurationMs: 200, dropTargetStyle: {} }}
+    use:dndzone={{ items, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled }}
     onconsider={onConsider}
     onfinalize={onFinalize}
   >
     {#each items as tile (tile.id)}
-      <div class="cell" class:grabbing={dragging}>
-        <Tile {tile} ontoggleextensions={() => tile.kind === 'app' && toggleExtensions(tile.app.id)} />
+      <div class="cell" class:grabbing={dragging} class:locked={dragDisabled}>
+        <!-- The jiggle runs on an inner wrapper: the cell itself is the element the
+             dnd library transforms for its flip animation. -->
+        <div class="wiggle">
+          <Tile {tile} ontoggleextensions={() => tile.kind === 'app' && toggleExtensions(tile.app.id)} />
+        </div>
       </div>
     {/each}
   </div>
@@ -263,6 +294,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    /* Three view labels (longer again in French) plus the "+" and the status
+       capsule do not fit one phone-width row: the controls wrap under the switch
+       instead of pushing the header past the screen edge. */
+    flex-wrap: wrap;
+    gap: 0.5rem;
     min-height: 2.25rem;
     color: var(--grey-100);
     margin: 0.25rem 0.25rem 0.75rem;
@@ -278,6 +314,11 @@
   .views {
     position: relative;
     display: inline-flex;
+    /* Never wider than the header: on the narrowest screens the switch scrolls
+       rather than overflowing the page. */
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
     padding: 3px;
     border-radius: var(--r-pill);
     background: var(--glass-color);
@@ -299,8 +340,13 @@
       transform var(--dur) var(--ease-ios),
       width var(--dur) var(--ease-ios);
   }
+  .views::-webkit-scrollbar {
+    display: none;
+  }
   .views button {
     position: relative;
+    flex: none;
+    white-space: nowrap;
     height: 2.25rem;
     padding: 0 1rem;
     border: none;
@@ -332,6 +378,13 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    /* Stays right-aligned when it wraps onto its own line. */
+    margin-left: auto;
+  }
+  @media (max-width: 768px) {
+    .views button {
+      padding: 0 0.75rem;
+    }
   }
   .add-wrap {
     position: relative;
@@ -407,6 +460,46 @@
   }
   .cell.grabbing {
     cursor: grabbing;
+  }
+  .cell.locked {
+    cursor: default;
+  }
+  /* iOS move mode: every tile jiggles, alternate tiles out of phase so the grid
+     reads as loose rather than as one rigid block swaying. */
+  .moving .wiggle {
+    animation: jiggle 0.3s ease-in-out infinite alternate;
+  }
+  .moving .cell:nth-child(even) .wiggle {
+    animation-delay: -0.15s;
+  }
+  @keyframes jiggle {
+    from {
+      transform: rotate(-1.2deg);
+    }
+    to {
+      transform: rotate(1.2deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .moving .wiggle {
+      animation: none;
+    }
+  }
+  .done {
+    height: 2.25rem;
+    padding: 0 1rem;
+    border: none;
+    border-radius: var(--r-pill);
+    background: rgb(255 255 255 / 0.9);
+    color: var(--grey-800);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: var(--glass-shadow);
+  }
+  .done:focus-visible {
+    outline: 2px solid rgb(255 255 255 / 0.85);
+    outline-offset: 2px;
   }
   @media (min-width: 1024px) {
     .app-list {

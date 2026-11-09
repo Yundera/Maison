@@ -94,6 +94,8 @@
   "routing_primary": "Haupt",
   "move_up": "Nach oben",
   "move_down": "Nach unten",
+  "move_apps": "Apps verschieben",
+  "move_done": "Fertig",
   "routing_labels": "Labels",
   "routing_label_key": "Label",
   "routing_label_value": "Wert",

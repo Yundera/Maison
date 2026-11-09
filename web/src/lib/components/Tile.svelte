@@ -12,7 +12,7 @@
   } from '../stores/apps'
   import { renderDuration, renderRate, renderSize } from '../format'
   import { removeLink, type Link } from '../stores/links'
-  import { credentialsApp, settingsApp, setupApp, tipsApp, uninstallTarget, tileDragging } from '../stores/ui'
+  import { credentialsApp, settingsApp, setupApp, tipsApp, uninstallTarget, tileDragging, moveMode } from '../stores/ui'
   import { openStore } from '../route'
   import { t } from '../i18n'
 
@@ -102,6 +102,8 @@
     // A drag that just dropped fires a trailing click on this tile; swallow it so
     // reordering never opens the app. Genuine clicks never set this flag.
     if (get(tileDragging)) return
+    // In move mode a tap picks the tile up; it never opens it.
+    if (get(moveMode)) return
     // Go through the router, not storeOpen: opening the store must push a /store
     // history entry, otherwise Back from an app's detail page lands on whatever
     // was below it (the dashboard) instead of the catalog.
@@ -158,7 +160,7 @@
 >
   <div class="glass"></div>
 
-  {#if tile.kind !== 'system' && !locked}
+  {#if tile.kind !== 'system' && !locked && !$moveMode}
     <button
       class="burger"
       class:alert={!!failure}
@@ -176,7 +178,7 @@
     <span class="spinner" title="Working…">…</span>
   {/if}
 
-  {#if menuOpen && !locked}
+  {#if menuOpen && !locked && !$moveMode}
     <div class="menu popover" use:clickOutside={() => (menuOpen = false)}>
       <!-- A failed install or uninstall is explained here, not in a tooltip: a touch
            screen never shows a tooltip, and the PWA is mostly touch. It sits in the
@@ -236,10 +238,22 @@
             <button onclick={() => act('stop')}>{$t('stop')}</button>
           {/if}
         {/if}
+        <button
+          onclick={() => {
+            menuOpen = false
+            moveMode.set(true)
+          }}>{$t('move_apps')}</button
+        >
         {#if tile.app.uninstallable !== false}
           <button class="danger" onclick={remove}>{$t('uninstall')}</button>
         {/if}
       {:else if tile.kind === 'link'}
+        <button
+          onclick={() => {
+            menuOpen = false
+            moveMode.set(true)
+          }}>{$t('move_apps')}</button
+        >
         <button class="danger" onclick={remove}>{$t('remove')}</button>
       {/if}
     </div>

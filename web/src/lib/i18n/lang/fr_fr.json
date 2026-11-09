@@ -100,6 +100,8 @@
   "routing_primary": "Principal",
   "move_up": "Monter",
   "move_down": "Descendre",
+  "move_apps": "Déplacer les apps",
+  "move_done": "Terminé",
   "routing_labels": "Labels",
   "routing_label_key": "Label",
   "routing_label_value": "Valeur",

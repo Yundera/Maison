@@ -54,6 +54,13 @@ export const uninstallTarget = writable<{ id: string; name: string } | null>(nul
 // app; tiles consult this flag in their click handler so a reorder never opens.
 export const tileDragging = writable(false)
 
+// iOS-style move mode: tiles jiggle and can be dragged to reorder, and a click
+// no longer opens anything. On a touch screen it is the ONLY way to reorder —
+// with drag always armed, scrolling the grid kept picking tiles up by mistake.
+// A mouse still drags at any time. Entered from a tile's menu, left with Done or
+// Escape; deliberately not persisted.
+export const moveMode = writable(false)
+
 // The install waiting on the operator's acknowledgement that this box falls short of
 // the app's requirements (null = no dialog). confirmInstall opens it and resolves
 // with the answer; InstallConfirmDialog is what answers.

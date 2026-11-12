@@ -828,11 +828,19 @@ func (r *Registry) EnsureStarted(ctx context.Context, id string) error {
 	if r.RestoreInterrupted(id) {
 		return fmt.Errorf("%s was not started: an interrupted restore left its data incomplete", id)
 	}
+	var err error
 	if r.isManaged(id) {
 		dir := filepath.Join(r.cfg.AppsDir(), id)
-		return stackup.Up(ctx, r.cfg, id, dir, r.composeFiles(dir))
+		err = stackup.Up(ctx, r.cfg, id, dir, r.composeFiles(dir))
+	} else {
+		err = r.dx.StartProject(ctx, id)
 	}
-	return r.dx.StartProject(ctx, id)
+	// Any successful start — the next backup's, or the owner's click — clears a
+	// "did not come back up after its backup" incident (a no-op when none is open).
+	if err == nil {
+		r.cfg.ResolveIncident(restartIncidentID(id))
+	}
+	return err
 }
 
 // Start brings an app up. For a managed app this is `compose up -d` (so a fully

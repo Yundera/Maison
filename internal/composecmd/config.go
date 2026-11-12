@@ -2,9 +2,11 @@ package composecmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -67,4 +69,49 @@ func composeError(err error) string {
 		}
 	}
 	return err.Error()
+}
+
+// Images lists the images `docker compose up` would need from a registry for a
+// project: every service's resolved image, base + override merged and variables
+// interpolated, exactly as compose itself resolves them.
+//
+// Services compose would build rather than pull (a `build:` section, or
+// pull_policy build) are left out, and so are pull_policy never — compose is
+// forbidden to pull those, so a missing one is not something a pull can fix.
+func Images(ctx context.Context, dir, project string, files, env []string) ([]string, error) {
+	out, err := config(ctx, dir, project, files, env, "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	return imagesFromConfig([]byte(out))
+}
+
+func imagesFromConfig(raw []byte) ([]string, error) {
+	var doc struct {
+		Services map[string]struct {
+			Image      string          `json:"image"`
+			Build      json.RawMessage `json:"build"`
+			PullPolicy string          `json:"pull_policy"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("compose config: %w", err)
+	}
+	seen := map[string]bool{}
+	var images []string
+	for _, svc := range doc.Services {
+		if svc.Image == "" || len(svc.Build) > 0 && string(svc.Build) != "null" {
+			continue
+		}
+		switch svc.PullPolicy {
+		case "build", "never":
+			continue
+		}
+		if !seen[svc.Image] {
+			seen[svc.Image] = true
+			images = append(images, svc.Image)
+		}
+	}
+	sort.Strings(images)
+	return images, nil
 }

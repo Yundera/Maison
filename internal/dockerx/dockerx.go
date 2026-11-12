@@ -277,6 +277,18 @@ func (c *Client) RestartProject(ctx context.Context, project string) error {
 	return nil
 }
 
+// HasImage reports whether ref is present in the local image store, so a
+// `compose up` would start from it without touching a registry.
+func (c *Client) HasImage(ctx context.Context, ref string) (bool, error) {
+	if _, _, err := c.cli.ImageInspectWithRaw(ctx, ref); err != nil {
+		if client.IsErrNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // PullImage pulls an image, invoking onProgress with an aggregate download
 // percentage (0-100 across all layers) and the latest status string.
 func (c *Client) PullImage(ctx context.Context, ref string, onProgress func(pct float64, status string)) error {

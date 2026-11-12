@@ -658,6 +658,20 @@ func (r *Registry) BackupTo(ctx context.Context, ps []Provider, id string, zip b
 	r.enter(id)
 	defer r.leave(id)
 
+	// The restart at the end is a `compose up`, which pulls anything missing — after
+	// the containers are gone. Make sure it will not need to, while the app still
+	// serves; refusing here costs a backup, failing there costs the app. See
+	// ensureImages.
+	if r.isRunning(ctx, id) {
+		if err := r.ensureImages(ctx, id, emit); err != nil {
+			res := make([]Result, len(ps))
+			for i, p := range ps {
+				res[i] = Result{Engine: p.ID(), Err: err}
+			}
+			return res, fmt.Errorf("%s %w", id, err)
+		}
+	}
+
 	// Resolved once, here, and carried through both passes: re-reading it between them
 	// would let a store update landing mid-backup make pass 2 disagree with pass 1
 	// about what the snapshot is supposed to contain.
@@ -725,6 +739,7 @@ func (r *Registry) BackupTo(ctx context.Context, ps []Provider, id string, zip b
 			emit(BackupEvent{Phase: PhaseStart, Message: "Starting " + id, Copy: 100, Sync: 100})
 			if err := r.EnsureStarted(context.WithoutCancel(ctx), id); err != nil {
 				log.Printf("backup %s: restart after backup: %v", id, err)
+				r.cfg.ReportIncident(restartIncident(id, err))
 			}
 		}()
 	}

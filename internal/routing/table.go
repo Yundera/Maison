@@ -71,8 +71,12 @@ type Entry struct {
 	// Target is the domain's name, or "port" for the ports renderer.
 	Target string `json:"target"`
 	// Primary marks the entry the route's public address comes from: the primary
-	// domain, or the published port.
+	// domain, or the published port — or a primary alias's (see WithAliases).
 	Primary bool `json:"primary"`
+
+	// Alias is the operator's alias this entry publishes the route under, empty for
+	// the route's own name. Labels renderer only.
+	Alias string `json:"alias,omitempty"`
 
 	// Host is the host, still templated (`outline-${APP_DOMAIN}`), as it goes into a
 	// label for Compose to interpolate. Labels renderer only.
@@ -191,12 +195,20 @@ func EnvResolver(env map[string]string) Resolver {
 // WebURL is the click URL of an app's first web-UI route under s: https on the primary
 // domain, the external template, or "" under the ports renderer — there the tile is
 // opened on the published port from the browser's own host.
-func WebURL(rts []Route, s Setting, resolve Resolver) string {
+//
+// A primary alias of that route (see WithAliases) is where it opens instead. Other
+// apps' names are not consulted here, so an alias the up refused for a clash still
+// names the tile — and the incident that refusal raised says why it does not answer.
+func WebURL(rts []Route, aliases []Alias, s Setting, resolve Resolver) string {
 	rt, ok := WebRoute(rts)
 	if !ok {
 		return ""
 	}
-	for _, e := range Table([]Route{rt}, s, resolve, nil) {
+	entries, _ := WithAliases(Table(rts, s, resolve, nil), rts, aliases, s, resolve, nil)
+	for _, e := range entries {
+		if e.Name != rt.Name {
+			continue
+		}
 		if e.Primary && e.URL != "" {
 			return e.URL + rt.Path
 		}

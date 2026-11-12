@@ -107,7 +107,7 @@ func TestWebURLAndHosts(t *testing.T) {
 	}}
 	env := map[string]string{"APP_DOMAIN": "alice.nsl.sh", "APP_PUBLIC_IP_DASH": "203-0-113-10"}
 	rts := []Route{{Name: "kubo", Service: "kubo", Port: 5001, Scheme: "http", Path: "/webui/", WebUI: true}}
-	if got := WebURL(rts, s, EnvResolver(env)); got != "https://kubo-alice.nsl.sh/webui/" {
+	if got := WebURL(rts, nil, s, EnvResolver(env)); got != "https://kubo-alice.nsl.sh/webui/" {
 		t.Errorf("WebURL = %q", got)
 	}
 	hosts := Hosts(s, "maison", EnvResolver(env))
@@ -115,7 +115,7 @@ func TestWebURLAndHosts(t *testing.T) {
 		t.Errorf("Hosts = %v", hosts)
 	}
 	// An unresolved domain gives no address rather than a broken one.
-	if got := WebURL(rts, s, EnvResolver(nil)); got != "" {
+	if got := WebURL(rts, nil, s, EnvResolver(nil)); got != "" {
 		t.Errorf("WebURL with no domain = %q", got)
 	}
 }
@@ -126,11 +126,11 @@ func TestWebURLSkipsNonWebUIRoutes(t *testing.T) {
 	s := Setting{Renderer: Labels, Domains: []domains.Domain{{Name: "gateway", Domain: "{name}-${APP_DOMAIN}"}}}
 	env := EnvResolver(map[string]string{"APP_DOMAIN": "alice.nsl.sh"})
 	api := Route{Name: "mcp", Service: "proxy", Port: 80, Scheme: "http", Path: "/"}
-	if got := WebURL([]Route{api}, s, env); got != "" {
+	if got := WebURL([]Route{api}, nil, s, env); got != "" {
 		t.Errorf("WebURL of an API-only app = %q, want none", got)
 	}
 	ui := Route{Name: "ui", Service: "web", Port: 3000, Scheme: "http", Path: "/", WebUI: true}
-	if got := WebURL([]Route{api, ui}, s, env); got != "https://ui-alice.nsl.sh/" {
+	if got := WebURL([]Route{api, ui}, nil, s, env); got != "https://ui-alice.nsl.sh/" {
 		t.Errorf("WebURL = %q, want the web-UI route", got)
 	}
 }

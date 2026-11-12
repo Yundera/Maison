@@ -657,12 +657,12 @@ func buildApp(name string, ca *xcomposeapp.App, domain string, managed bool, sta
 // of its first web-UI route, opened from the browser's own host. Routes that are all
 // `webui: false` leave the app with no click URL, which is what makes a service's
 // click land on its settings.
+//
+// A primary alias the operator gave the app (x-compose-app `aliases`) is where the
+// tile opens instead — also for an app with no declared routes, whose tile would
+// otherwise come from its webui-host.
 func (r *Registry) applyRoutes(app *App, name string, ca *xcomposeapp.App, svcPorts map[string][]dockerx.Port) {
-	if ca == nil || len(ca.Routes) == 0 || r.cfg.Routing == nil {
-		return
-	}
-	rts := routing.Routes(ca, name, nil)
-	if len(rts) == 0 {
+	if ca == nil || r.cfg.Routing == nil {
 		return
 	}
 	s := r.cfg.Routing()
@@ -670,9 +670,23 @@ func (r *Registry) applyRoutes(app *App, name string, ca *xcomposeapp.App, svcPo
 	if r.cfg.AppEnv != nil {
 		env = r.cfg.AppEnv()
 	}
+	aliases := routing.Aliases(ca)
+	rts := routing.Routes(ca, name, nil)
+	if len(ca.Routes) == 0 || len(rts) == 0 {
+		if _, host, ok := routing.PrimaryAlias(aliases, s); ok {
+			if h := routing.EnvResolver(env)(host); h != "" && !strings.Contains(h, "${") {
+				path := strings.TrimSpace(ca.WebUIPath)
+				if !strings.HasPrefix(path, "/") {
+					path = "/" + path
+				}
+				app.URL, app.Port, app.Scheme, app.Index = "https://"+h+path, "", "", ""
+			}
+		}
+		return
+	}
 	app.URL, app.Port, app.Scheme, app.Index = "", "", "", ""
 	if s.Renderer != routing.Ports {
-		app.URL = routing.WebURL(rts, s, routing.EnvResolver(env))
+		app.URL = routing.WebURL(rts, aliases, s, routing.EnvResolver(env))
 		return
 	}
 	web, ok := routing.WebRoute(rts)

@@ -90,6 +90,11 @@ type Plan struct {
 	// Entries are the app's routes under the setting (routing.Table). Empty means
 	// the app declares no routes.
 	Entries []routing.Entry
+	// Aliases are the operator's extra names for those routes — or, in clone mode,
+	// for the names the listing's own groups have on the primary domain — already
+	// checked (routing.WithAliases): one entry per alias per domain. They are
+	// rendered and recorded in the manifest like every other generated group.
+	Aliases []routing.Entry
 	// Network is the deployment's app network as it resolves (`pcs`), and NetworkRef
 	// how it is written into the override (`${APP_NET:-pcs}`). An empty Network
 	// attaches nothing.
@@ -173,14 +178,14 @@ func renderLabels(baseRoot, overRoot *yaml.Node, p Plan, resolve Resolver, manif
 		next := dialect.NextIndex(p.Dialect, baseLabels, overLabels)
 
 		var written []string
-		for _, e := range p.Entries {
+		for _, e := range append(append([]routing.Entry{}, p.Entries...), p.Aliases...) {
 			if e.Service != svc || routed[resolve(e.Host)] {
 				continue
 			}
 			routed[resolve(e.Host)] = true
 			group := p.Dialect.Render(next, e.Host, dialect.Upstream{Port: e.Port, Scheme: e.Scheme, Insecure: e.Insecure}, e.Labels)
 			next++
-			written = append(written, writeGroup(overRoot, svc, group, fmt.Sprintf("%s: route %s on %s", brand.Name, e.Name, e.Target))...)
+			written = append(written, writeGroup(overRoot, svc, group, entryNote(e))...)
 		}
 		if len(written) > 0 {
 			manifest[svc] = append(manifest[svc], written...)
@@ -197,7 +202,7 @@ func renderLabels(baseRoot, overRoot *yaml.Node, p Plan, resolve Resolver, manif
 // sidecar has its own `outline-auth-${APP_DOMAIN}` route, and OIDC breaks if it is
 // not reachable at the same names as the app.
 func cloneLabels(baseRoot, overRoot *yaml.Node, p Plan, resolve Resolver, manifest map[string][]string) {
-	if len(p.Domains) < 2 {
+	if len(p.Domains) < 2 && len(p.Aliases) == 0 {
 		return
 	}
 	primary := p.Domains[0]
@@ -228,11 +233,61 @@ func cloneLabels(baseRoot, overRoot *yaml.Node, p Plan, resolve Resolver, manife
 				next++
 				written = append(written, writeGroup(overRoot, svc, group, fmt.Sprintf("%s: %s — generated from %s", brand.Name, d.Name, g.Key))...)
 			}
+			// The group is the route here, so an alias of it is the same group again
+			// under the alias's host — on the primary domain too, if it names it.
+			for _, e := range p.Aliases {
+				if e.Name != name || routed[resolve(e.Host)] {
+					continue
+				}
+				routed[resolve(e.Host)] = true
+				group := p.Dialect.Clone(next, g, e.Host, e.Labels)
+				next++
+				written = append(written, writeGroup(overRoot, svc, group, fmt.Sprintf("%s: alias %s for %s on %s — generated from %s", brand.Name, e.Alias, name, e.Target, g.Key))...)
+			}
 		}
 		if len(written) > 0 {
 			manifest[svc] = append(manifest[svc], written...)
 		}
 	}
+}
+
+// entryNote is the comment over a rendered group: which route, or which alias of
+// it, on which domain.
+func entryNote(e routing.Entry) string {
+	if e.Alias != "" {
+		return fmt.Sprintf("%s: alias %s for route %s on %s", brand.Name, e.Alias, e.Name, e.Target)
+	}
+	return fmt.Sprintf("%s: route %s on %s", brand.Name, e.Name, e.Target)
+}
+
+// ClonedRoutes are the routes a listing with no `routes` carries as its own
+// labels: one per group on the primary domain, named as the domain reads its host
+// back (`metawatch` for `metawatch-${APP_DOMAIN}`), on the service that carries it.
+// They are what an alias of such an app names. Port and the rest are unknown and
+// unneeded: the group itself is what gets cloned.
+func ClonedRoutes(base []byte, d dialect.Dialect, primary domains.Domain) []routing.Route {
+	if d == nil {
+		return nil
+	}
+	root, err := yamlnode.Root(base)
+	if err != nil {
+		return nil
+	}
+	svcs := yamlnode.Get(root, "services")
+	var out []routing.Route
+	seen := map[string]bool{}
+	for _, svc := range yamlnode.Keys(svcs) {
+		labels := labelPairs(yamlnode.Get(yamlnode.Get(svcs, svc), "labels"))
+		for _, g := range dialect.Groups(d, labels) {
+			name, ok := primary.NameOf(primaryHost(g.Host))
+			if !ok || seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, routing.Route{Name: name, Service: svc, Scheme: "http", Path: "/", WebUI: true})
+		}
+	}
+	return out
 }
 
 // primaryHost reads the store's other spelling of the primary domain as the one

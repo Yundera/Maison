@@ -140,6 +140,11 @@ type App struct {
 	// only a build that understands routes ever subscribes to.
 	Routes []Route `yaml:"routes,omitempty"`
 
+	// Aliases are extra names the operator gives the app's routes on this box,
+	// written into the override (see Alias). `maison lint` refuses them in a
+	// listing.
+	Aliases []Alias `yaml:"aliases,omitempty"`
+
 	// Bring-up: directories ensured before every `compose up`. See
 	// docs/x-compose-app.md.
 	Folders []Folder `yaml:"folders,omitempty"`

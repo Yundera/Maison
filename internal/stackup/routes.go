@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/yundera/maison/internal/brand"
 	"github.com/yundera/maison/internal/composefile"
 	"github.com/yundera/maison/internal/config"
 	"github.com/yundera/maison/internal/envinject"
@@ -19,6 +20,7 @@ import (
 	"github.com/yundera/maison/internal/routes"
 	"github.com/yundera/maison/internal/routes/dialect"
 	"github.com/yundera/maison/internal/routing"
+	"github.com/yundera/maison/internal/xcomposeapp"
 )
 
 // AppNetRef is how the deployment's app network is written into an override: the
@@ -64,11 +66,13 @@ func syncRoutes(cfg config.Config, project, dir string, files []string, avoid ma
 
 	entries := table(cfg, s, project, base, appEnv, resolve, avoid)
 	d, _ := dialect.Get(s.Dialect)
+	all, aliasEntries := withAliases(cfg, s, d, project, base, override, entries, resolve)
 	plan := routes.Plan{
 		Renderer:   s.Renderer,
 		Dialect:    d,
 		Domains:    s.Domains,
 		Entries:    entries,
+		Aliases:    aliasEntries,
 		Network:    resolve(AppNetRef),
 		NetworkRef: AppNetRef,
 	}
@@ -92,8 +96,169 @@ func syncRoutes(cfg config.Config, project, dir string, files []string, avoid ma
 			return files, nil
 		}
 	}
-	recordRoutes(cfg, project, entries)
-	return composeFiles(basePath, overridePath), routing.Vars(entries, s)
+	recordRoutes(cfg, project, all)
+	return composeFiles(basePath, overridePath), routing.Vars(all, s)
+}
+
+// aliasIncidentID is the one incident an app's refused aliases raise.
+func aliasIncidentID(project string) string { return "app.address.alias:" + project }
+
+// withAliases adds the operator's aliases (x-compose-app `aliases`, see
+// routing.WithAliases) to the app's route table. It returns the whole table — what
+// Vars and routes.json read — and the alias entries alone, which are what the
+// generator renders on top of the routes it already renders.
+//
+// An app that declares no routes is in clone mode: its routes are the groups its
+// listing carries on the primary domain (routes.ClonedRoutes), and only when it has
+// aliases does it get a table at all — which is also when it starts being told its
+// APP_URL. Without aliases nothing changes for such an app.
+//
+// What could not be published is one warning incident for the app, cleared by the
+// next up that publishes every alias (or has none).
+func withAliases(cfg config.Config, s routing.Setting, d dialect.Dialect, project string, base, override []byte, entries []routing.Entry, resolve routing.Resolver) ([]routing.Entry, []routing.Entry) {
+	aliases := routing.Aliases(resolvedApp(base, override))
+	if len(aliases) == 0 {
+		cfg.ResolveIncident(aliasIncidentID(project))
+		return entries, nil
+	}
+	rts := appRoutes(project, base)
+	table := entries
+	if len(rts) == 0 && s.Renderer == routing.Labels && len(s.Domains) > 0 {
+		rts = primaryFirst(routes.ClonedRoutes(base, d, s.Domains[0]), aliases)
+		table = routing.Table(rts, s, resolve, nil)
+	}
+	all, errs := routing.WithAliases(table, rts, aliases, s, resolve, claimedHosts(cfg, project, s, d, resolve))
+	if len(errs) == 0 {
+		cfg.ResolveIncident(aliasIncidentID(project))
+	} else {
+		msgs := make([]string, 0, len(errs))
+		for _, e := range errs {
+			msgs = append(msgs, e.Error())
+			log.Printf("%s: routes: %v", project, e)
+		}
+		cfg.ReportIncident(incident.Report{
+			ID:       aliasIncidentID(project),
+			Kind:     incident.KindAppAddress,
+			Severity: incident.Warning,
+			Title:    project + " is not reachable at every name it was given",
+			Detail: "Some of the aliases in " + project + "'s override were not published: " + strings.Join(msgs, "; ") +
+				". The app still answers on its own names. Edit `x-compose-app.aliases` in its override to fix this.",
+			Args: map[string]string{"app": project},
+		})
+	}
+	var only []routing.Entry
+	for _, e := range all {
+		if e.Alias != "" {
+			only = append(only, e)
+		}
+	}
+	return all, only
+}
+
+// primaryFirst moves the route a primary alias takes over to the front of a clone-
+// mode table: such an app has no declared first route, so its APP_URL is wherever
+// the operator said it lives.
+func primaryFirst(rts []routing.Route, aliases []routing.Alias) []routing.Route {
+	if len(rts) < 2 {
+		return rts
+	}
+	for _, a := range aliases {
+		if !a.Primary {
+			continue
+		}
+		target := a.Route
+		if target == "" {
+			target = rts[0].Name
+		}
+		for i, r := range rts {
+			if r.Name == target && i > 0 {
+				out := append([]routing.Route{r}, rts[:i]...)
+				return append(out, rts[i+1:]...)
+			}
+		}
+		return rts
+	}
+	return rts
+}
+
+// resolvedApp is the app's x-compose-app as its two files layer it (composefile.
+// Resolve), nil when neither says anything readable.
+func resolvedApp(base, override []byte) *xcomposeapp.App {
+	bf, err := composefile.Parse(base)
+	if err != nil {
+		return nil
+	}
+	files := []*composefile.File{bf}
+	if len(bytes.TrimSpace(override)) > 0 {
+		if of, err := composefile.Parse(override); err == nil {
+			files = append(files, of)
+		}
+	}
+	a, err := composefile.Resolve(files...)
+	if err != nil {
+		return nil
+	}
+	return a
+}
+
+// claimedHosts is every host an alias of project must not take, resolved, mapped to
+// who holds it: the dashboard's names, and every other installed app's — its id
+// and route names (declared, or its listing's own groups) on every domain, and its
+// own aliases. Two apps that alias the same name both lose it, and both are told:
+// whichever came up first winning would make the route depend on boot order.
+func claimedHosts(cfg config.Config, project string, s routing.Setting, d dialect.Dialect, resolve routing.Resolver) map[string]string {
+	out := map[string]string{}
+	claim := func(owner string, names ...string) {
+		for _, n := range names {
+			for _, h := range routing.Hosts(s, n, resolve) {
+				out[h] = owner
+			}
+		}
+	}
+	claim("the dashboard's", brand.Slug, "casaos")
+	dirs, _ := os.ReadDir(cfg.AppsDir())
+	for _, ent := range dirs {
+		id := ent.Name()
+		if !ent.IsDir() || id == project {
+			continue
+		}
+		dir := filepath.Join(cfg.AppsDir(), id)
+		base, err := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
+		if err != nil {
+			continue
+		}
+		override, _ := os.ReadFile(filepath.Join(dir, "docker-compose.override.yml"))
+		claim(id, strings.ToLower(id))
+		rts := appRoutes(id, base)
+		if len(rts) == 0 && len(s.Domains) > 0 {
+			rts = routes.ClonedRoutes(base, d, s.Domains[0])
+		}
+		for _, r := range rts {
+			claim(id, r.Name)
+		}
+		for _, a := range routing.Aliases(resolvedApp(base, override)) {
+			if !xcomposeapp.ValidName(a.Name) {
+				continue
+			}
+			for _, dom := range s.Domains {
+				if len(a.Domains) == 0 || containsString(a.Domains, dom.Name) {
+					if h := resolve(dom.Host(a.Name)); h != "" {
+						out[strings.ToLower(h)] = id
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Table is an app's route table as it stands, without allocating anything: a port

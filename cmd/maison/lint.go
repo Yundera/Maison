@@ -67,6 +67,11 @@ func lintFile(path string) []string {
 		for _, e := range xcomposeapp.ValidateRoutes(a.Routes, f.Exposed()) {
 			out = append(out, e.Error())
 		}
+		if len(a.Aliases) > 0 {
+			// What a box calls an app is the box's choice: a listing that shipped one
+			// would hand every box the same extra name.
+			out = append(out, "aliases are an operator's names for the app on one box: they go in its docker-compose.override.yml, never in a listing")
+		}
 		for _, s := range a.Steps {
 			out = append(out, missingFile(dir, "step "+s.Name, s.Script)...)
 		}

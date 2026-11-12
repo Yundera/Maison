@@ -81,8 +81,11 @@ func Vars(entries []Entry, s Setting) map[string]string {
 
 // hostSuffix is what follows `<name>-` in e's host, when e is on a labels domain
 // whose template reads `{name}-<suffix>` — the only shape a suffix list can describe.
+//
+// An alias's entry has none: it is not `<name>-` anything, and an AppShield gate told
+// its suffix would accept every name on that domain.
 func hostSuffix(s Setting, e Entry) (string, bool) {
-	if s.Renderer != Labels {
+	if s.Renderer != Labels || e.Alias != "" {
 		return "", false
 	}
 	for _, d := range s.Domains {

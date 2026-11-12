@@ -210,6 +210,51 @@ deployment does not set) gets no keys: an unresolved `${APP_URL}` is reported by
 compose, a blank one would silently route at nothing. `<NAME>` is the route name
 upper-cased, with `-` turned into `_`.
 
+## Aliases
+
+What a box calls an app is the box's choice, so an operator can give a route extra
+names, in the app's **override** (never a listing; `maison lint` refuses them there):
+
+```yaml
+# docker-compose.override.yml (metawatch on metastar)
+x-compose-app:
+  aliases:
+    - { name: watch, domains: [dot], primary: true }
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | The alias, in the route name's place in each domain's host template: `watch` on `{name}.${APP_DOMAIN}` is `watch.${APP_DOMAIN}`. A lowercase DNS label. |
+| `route` | The route it answers for: a declared route's name or, for a listing that routes itself, the name its group has on the primary domain (`metawatch` for `metawatch-${APP_DOMAIN}`). Empty: the app's first route. |
+| `domains` | The routing setting's domain names to publish it on. Empty: every domain. |
+| `primary` | The alias becomes the route's address, on the first of its domains in the setting's order: the tile opens it, and the route's URL variable (`APP_URL` for the first route) names it. It is also listed first in `APP_URLS`. |
+
+An alias is **generated output**: rendered like the route it answers for (the
+domain's labels, TLS included), recorded in the manifest, and removed when the alias
+is. That is the point. A hand-written label group on a further domain is swept as a
+stale route on the next up (see the exception below), which on a box whose domain
+list includes `{name}.${APP_DOMAIN}` means every subdomain of the box. An alias is
+how a name gets there and stays.
+
+For a listing that routes itself (clone mode) the alias is the listing's group
+cloned once more under the alias's host. Such an app is not told its address
+otherwise, but one with aliases gets the full set of address variables for its
+routes, the aliased-primary route first, so `BASE_URL: ${APP_URL}` follows the alias.
+
+An alias is **refused, never fatal**, and one warning incident per app
+(`app.address.alias:<app>`) says why; the next up that publishes them all clears it.
+It is refused if:
+
+- its name is not a DNS label, or the app declares it twice;
+- it names a route the app does not have, or a domain the setting does not;
+- one of its hosts is already the app's own (an alias `outline` on the dot domain is
+  just the route's own name), another installed app's (its id, its route names, or
+  one of its aliases), or the dashboard's (`maison`, `casaos`). Only that host is
+  left out. **Two apps that alias the same name both lose it**: a name that went to
+  whichever came up first would depend on boot order;
+- the box does not use the `labels` renderer: a name means nothing to a published
+  port or an operator's own router.
+
 ## The override is shared, so generation is exact
 
 The base compose is off limits: it is byte-compared against the store's on every
@@ -227,7 +272,8 @@ nothing else.
 > One deliberate exception: a label group in the override whose host sits on one of
 > the further domains is treated as Maison's even if the manifest does not list it —
 > that is how generation recovers if the manifest is edited away through the YAML
-> view.
+> view. It is also why a name of your own on one of those domains is an
+> [alias](#aliases), not a label group.
 
 ## When it runs
 

@@ -714,6 +714,11 @@ x-compose-app:
   username nor password after rendering is dropped. A list rather than one entry,
   because some apps ship two accounts.
 - An override's `credentials` **replaces** the store's list as a whole.
+- `prompt: false` keeps an entry out of the first-click dialog; it is shown only
+  from the tile menu's **Credentials**. Use it for a credential nobody needs day to
+  day, such as an AppShield gate's fallback password behind single sign-on. When
+  every entry says `prompt: false`, the tile opens the app directly. Absent (or
+  anything but a boolean) means `true`. An older Maison ignores the key and prompts.
 
 **What the operator sees.** Clicking the tile of an app that declares credentials
 opens a dialog first — username and password with copy buttons, the password masked

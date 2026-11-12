@@ -234,7 +234,16 @@ type Credential struct {
 	Password string            `yaml:"password,omitempty"`
 	Note     Localized         `yaml:"note,omitempty"`
 	Change   *CredentialChange `yaml:"change,omitempty"`
+	// Prompt false keeps the entry out of the dialog shown on the tile's first
+	// click: it is reachable only from the tile menu's Credentials. For a
+	// credential nobody needs day to day, such as a gate's fallback password
+	// behind single sign-on. Absent means true.
+	Prompt *bool `yaml:"prompt,omitempty"`
 }
+
+// Prompts reports whether this credential is shown when the tile is first
+// clicked (see Prompt).
+func (c Credential) Prompts() bool { return c.Prompt == nil || *c.Prompt }
 
 // How a changed credential reaches the app.
 const (
@@ -284,6 +293,7 @@ func (c *Credential) UnmarshalYAML(n *yaml.Node) error {
 		Password text      `yaml:"password"`
 		Note     Localized `yaml:"note"`
 		Change   yaml.Node `yaml:"change"`
+		Prompt   yaml.Node `yaml:"prompt"`
 	}
 	if err := n.Decode(&raw); err != nil {
 		return err
@@ -294,8 +304,23 @@ func (c *Credential) UnmarshalYAML(n *yaml.Node) error {
 		Password: string(raw.Password),
 		Note:     raw.Note,
 		Change:   decodeChange(&raw.Change),
+		Prompt:   decodePrompt(&raw.Prompt),
 	}
 	return nil
+}
+
+// decodePrompt reads a credential's `prompt`, or nil (prompt). Anything but a
+// boolean is ignored the same way: the safe reading of a typo is to show the
+// credential, as a listing without the key always did.
+func decodePrompt(n *yaml.Node) *bool {
+	if n.Kind != yaml.ScalarNode {
+		return nil
+	}
+	var b bool
+	if err := n.Decode(&b); err != nil {
+		return nil
+	}
+	return &b
 }
 
 // decodeChange reads a credential's `change` block, or nil. A malformed block

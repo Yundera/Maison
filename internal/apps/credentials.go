@@ -32,6 +32,21 @@ type RenderedCredential struct {
 
 // declaresCredentials reports whether ca carries at least one credential with
 // something to show.
+// promptsCredentials reports whether any declared credential asks to be shown
+// on the tile's first click. With none, the tile opens the app directly and the
+// credentials stay in the tile menu.
+func promptsCredentials(ca *xcomposeapp.App) bool {
+	if ca == nil {
+		return false
+	}
+	for _, c := range ca.Credentials {
+		if c.Prompts() && (strings.TrimSpace(c.Username) != "" || strings.TrimSpace(c.Password) != "") {
+			return true
+		}
+	}
+	return false
+}
+
 func declaresCredentials(ca *xcomposeapp.App) bool {
 	if ca == nil {
 		return false

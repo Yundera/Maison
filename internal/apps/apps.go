@@ -400,7 +400,7 @@ func (r *Registry) List(ctx context.Context) ([]App, error) {
 		if u := r.localIcon(name); u != "" {
 			app.Icon = u
 		}
-		app.CredentialsPending = app.HasCredentials && !r.CredentialsDismissed(name)
+		app.CredentialsPending = app.HasCredentials && promptsCredentials(ca) && !r.CredentialsDismissed(name)
 		app.SetupPending = setupPending(filepath.Join(r.cfg.AppsDir(), name), ca)
 		app.Busy = r.isBusy(name)
 		out = append(out, app)
